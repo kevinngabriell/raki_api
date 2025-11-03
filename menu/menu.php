@@ -9,13 +9,27 @@ header("Access-Control-Allow-Origin: *");
 header("Content-Type: application/json");
 
 function createMenu($conn, $input, $username){
-    $menu_name = $input['menu_name'];
-    $category_id = $input['category_id'];
-    $price = $input['price'];
+    // Accept JSON body and multipart/form-data
+    $menu_name   = $input['menu_name']   ?? ($_POST['menu_name']   ?? null);
+    $category_id = $input['category_id'] ?? ($_POST['category_id'] ?? null);
+    $price       = $input['price']       ?? ($_POST['price']       ?? null);
+    if ($menu_name === null || $category_id === null) {
+        jsonResponse(400, 'menu_name and category_id are required');
+    }
 
     $menu_name = mysqli_real_escape_string($conn, $menu_name);
     $category_id = mysqli_real_escape_string($conn, $category_id);
     $price = mysqli_real_escape_string($conn, $price);
+
+    // Normalize price for SQL
+    if ($price === null || $price === '') {
+        $price_sql = "NULL";
+    } else {
+        if (!is_numeric($price)) {
+            jsonResponse(400, 'price must be numeric');
+        }
+        $price_sql = (string)(0 + $price); // numeric literal
+    }
 
     $check_app_query = "SELECT * FROM raki_dev.menu WHERE menu_name = '$menu_name'";
     $check_app_result = mysqli_query($conn, $check_app_query);
@@ -34,10 +48,14 @@ function createMenu($conn, $input, $username){
             [$image_url, $thumb_url] = handle_menu_image_upload($_FILES['image'], 'menu');
         }
 
-        $menu_query = "INSERT INTO raki_dev.menu (menu_id, menu_name, category_id, price, image_url, thumb_url, created_by) 
-        VALUES ('$menuID', '$menu_name', '$category_id', $price, " . 
-        ($image_url ? "'" . mysqli_real_escape_string($conn, $image_url) . "'" : "NULL") . ", " .
-        ($thumb_url ? "'" . mysqli_real_escape_string($conn, $thumb_url) . "'" : "NULL") . ", '$username')";
+        $img_sql   = $image_url ? "'" . mysqli_real_escape_string($conn, $image_url) . "'" : "NULL";
+        $thumb_sql = $thumb_url ? "'" . mysqli_real_escape_string($conn, $thumb_url) . "'" : "NULL";
+        $menu_query = "
+            INSERT INTO raki_dev.menu
+                (menu_id, menu_name, category_id, price, image_url, thumb_url, created_by)
+            VALUES
+                ('$menuID', '$menu_name', '$category_id', $price_sql, $img_sql, $thumb_sql, '$username')
+        ";
 
         if (mysqli_query($conn, $menu_query)) {
             jsonResponse(201, 'New menu has been created successfully', ['menu' => $menu_name]);
@@ -50,6 +68,8 @@ function createMenu($conn, $input, $username){
 
 function getAllMenu($conn, $params, $page = 1, $limit = 10){
     $offset = ($page - 1) * $limit;
+
+    $params = mysqli_real_escape_string($conn, $params ?? '');
 
     $countQuery = "SELECT COUNT(*) as total FROM raki_dev.menu WHERE (menu_name LIKE '%$params%')";
     $countResult = mysqli_query($conn, $countQuery);
@@ -115,7 +135,13 @@ try {
 
     switch($method){
         case 'POST':
-            $input = json_decode(file_get_contents('php://input'), true);
+            $contentType = $_SERVER['CONTENT_TYPE'] ?? '';
+            if (stripos($contentType, 'application/json') !== false) {
+                $input = json_decode(file_get_contents('php://input'), true) ?? [];
+            } else {
+                // For form-data/x-www-form-urlencoded use $_POST
+                $input = $_POST ?? [];
+            }
             createMenu($conn, $input, $token_username);
             break;
         case 'GET':
