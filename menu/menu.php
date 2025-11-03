@@ -35,7 +35,7 @@ function createMenu($conn, $input, $username){
         }
 
         $menu_query = "INSERT INTO raki_dev.menu (menu_id, menu_name, category_id, price, image_url, thumb_url, created_by) 
-        VALUES ('$menuID', '$menu_name', '$category_id', '$price', " . 
+        VALUES ('$menuID', '$menu_name', '$category_id', $price, " . 
         ($image_url ? "'" . mysqli_real_escape_string($conn, $image_url) . "'" : "NULL") . ", " .
         ($thumb_url ? "'" . mysqli_real_escape_string($conn, $thumb_url) . "'" : "NULL") . ", '$username')";
 
