@@ -76,7 +76,10 @@ function getAllMenu($conn, $params, $page = 1, $limit = 10){
     $totalRow = mysqli_fetch_assoc($countResult);
     $total = $totalRow['total'];
 
-    $query = "SELECT menu_id, menu_name, price FROM raki_dev.menu WHERE (menu_name LIKE '%$params%') LIMIT $limit OFFSET $offset";
+    $query = "SELECT menu_id, menu_name, price, category_name, image_url, thumb_url
+              FROM raki_dev.menu ME
+              LEFT JOIN raki_dev.category_menu CM ON ME.category_id = CM.category_id 
+              WHERE (menu_name LIKE '%$params%') LIMIT $limit OFFSET $offset";
     $result = mysqli_query($conn, $query);
 
     if ($result && mysqli_num_rows($result) > 0) {
@@ -96,8 +99,27 @@ function getAllMenu($conn, $params, $page = 1, $limit = 10){
     }
 }
 
-function getDetailMenu(){
+function getDetailMenu($conn, $menu_id){
+    $query = "SELECT menu_id, menu_name, price, category_name, image_url, thumb_url, ME.company_id, is_active, ME.created_at, ME.created_by, ME.updated_at, ME.updated_by
+    FROM raki_dev.menu ME
+    LEFT JOIN raki_dev.category_menu CM ON ME.category_id = CM.category_id WHERE  ME.menu_id = '$menu_id'";
+    $result = mysqli_query($conn, $query);
 
+    if ($result && mysqli_num_rows($result) > 0) {
+        $data = mysqli_fetch_all($result, MYSQLI_ASSOC);
+        $response = [
+            'data' => $data,
+            'pagination' => [
+                'total' => 1,
+                'page' => 1,
+                'limit' => 1,
+                'total_pages' => 1,
+            ]
+        ];
+        jsonResponse(200, 'Menu found', $response);
+    } else {
+        jsonResponse(404, 'Menu not found');
+    }
 }
 
 function updateMenu(){
@@ -150,7 +172,7 @@ try {
             $limit = $_GET['limit'] ?? 10;
             $menu_id = $_GET['menu_id'] ?? null;
             if($menu_id != null){
-                // getDetailCategory($conn, $category_id);
+                getDetailMenu($conn, $menu_id);
             } else {
                 getAllMenu($conn, $params, $page, $limit);
              }
