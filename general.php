@@ -142,7 +142,7 @@ function handle_menu_image_upload(array $file, string $bucket='menu'): array {
     // generate thumbnail 600px webp
     $thumb = pathinfo($name, PATHINFO_FILENAME) . '_thumb.webp';
     $thumbPath = "$dir/$thumb";
-    create_thumbnail($dest, $thumbPath, 600);
+    // create_thumbnail($dest, $thumbPath, 600);
 
     // build URL publik
     $base = ($_SERVER['HTTPS'] ? 'http' : 'http') . '://getmovira.com';
