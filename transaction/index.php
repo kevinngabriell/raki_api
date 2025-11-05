@@ -103,8 +103,73 @@ function createTransaction($conn, $input, $username){
     }
 }
 
-function getDetailTransaction($conn, $category_id){
+function getDetailTransaction($conn, $trx_id){
+    if (!$trx_id) {
+        jsonResponse(400, 'trx_id is required');
+    }
 
+    $sql = "SELECT 
+                t.transaction_id,
+                t.company_id,
+                t.transaction_date,
+                t.total_amount,
+                t.created_at,
+                t.created_by,
+                t.updated_at,
+                t.updated_by,
+                td.detail_id,
+                td.menu_id,
+                m.menu_name,
+                td.quantity,
+                td.subtotal
+            FROM raki_dev.transaction t
+            JOIN raki_dev.transaction_detail td ON td.transaction_id = t.transaction_id
+            LEFT JOIN raki_dev.menu m ON m.menu_id = td.menu_id
+            WHERE t.transaction_id = ?";
+
+    $stmt = $conn->prepare($sql);
+    if (!$stmt) {
+        jsonResponse(500, 'Failed to prepare statement', ['error' => $conn->error]);
+    }
+
+    $stmt->bind_param('s', $trx_id);
+    if (!$stmt->execute()) {
+        jsonResponse(500, 'Failed to execute statement', ['error' => $stmt->error]);
+    }
+
+    $result = $stmt->get_result();
+    if ($result->num_rows === 0) {
+        jsonResponse(404, 'Transaction not found');
+    }
+
+    $header = null;
+    $items = [];
+    while ($row = $result->fetch_assoc()) {
+        if ($header === null) {
+            $header = [
+                'transaction_id' => $row['transaction_id'],
+                'company_id' => $row['company_id'],
+                'transaction_date' => $row['transaction_date'],
+                'total_amount' => (float)$row['total_amount'],
+                'created_at' => $row['created_at'],
+                'created_by' => $row['created_by'],
+                'updated_at' => $row['updated_at'],
+                'updated_by' => $row['updated_by'],
+            ];
+        }
+        $items[] = [
+            'detail_id' => $row['detail_id'],
+            'menu_id' => $row['menu_id'],
+            'menu_name' => $row['menu_name'],
+            'quantity' => (int)$row['quantity'],
+            'subtotal' => (float)$row['subtotal'],
+        ];
+    }
+
+    jsonResponse(200, 'Transaction detail fetched', [
+        'transaction' => $header,
+        'items' => $items,
+    ]);
 }
 
 function getAllTransaction($conn, $company_id, $page = 1, $limit = 10){

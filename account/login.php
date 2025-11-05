@@ -36,10 +36,15 @@ function login($conn, $input){
     $issuedAt       = time();
     $expirationTime = $issuedAt + 3 * 60 * 60; // 3 jam
 
+    $company_id = $row['company_id'];
+    $role = $row['app_role_id'];
+
     $payload = [
         'iat' => $issuedAt,
         'exp' => $expirationTime,
         'username' => $username,
+        'company_id' => $company_id,
+        'role' => $role
     ];
 
     $jwt = JWT::encode($payload, $_ENV['JWT_SECRET'], 'HS256');
