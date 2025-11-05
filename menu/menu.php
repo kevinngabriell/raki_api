@@ -6,7 +6,19 @@ require_once '../general.php';
 require_once '../config.php';
 
 header("Access-Control-Allow-Origin: *");
+header("Vary: Origin");
 header("Content-Type: application/json");
+
+// Early CORS preflight handler (must run before auth checks)
+if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+    header("Access-Control-Allow-Origin: *");
+    header("Vary: Origin");
+    header("Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, OPTIONS");
+    header("Access-Control-Allow-Headers: Authorization, Content-Type");
+    header("Access-Control-Allow-Credentials: true");
+    http_response_code(204);
+    exit();
+}
 
 function createMenu($conn, $input, $username){
     // Accept JSON body and multipart/form-data
@@ -133,21 +145,14 @@ function deleteMenu(){
 use Firebase\JWT\JWT;
 use Firebase\JWT\Key;
 
-$headers = getallheaders();
-if (!isset($headers['Authorization'])) {
+$headers = function_exists('getallheaders') ? getallheaders() : [];
+$authHeader = $headers['Authorization'] ?? $headers['authorization'] ?? ($_SERVER['HTTP_AUTHORIZATION'] ?? null);
+if (!$authHeader) {
     jsonResponse(401, 'Authorization header not found');
 }
 
-if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-    header("Access-Control-Allow-Origin: *");
-    header("Access-Control-Allow-Methods: POST, GET, OPTIONS, PUT, DELETE");
-    header("Access-Control-Allow-Headers: Origin, X-Requested-With, Content-Type, Accept");
-    http_response_code(200);
-    exit();
-}
-
 try {
-    $token = str_replace('Bearer ', '', $headers['Authorization']);
+    $token = preg_replace('/^Bearer\s+/i', '', $authHeader);
     $decoded = JWT::decode($token, new Key($_ENV['JWT_SECRET'], 'HS256'));
 
     $conn = DB::conn();
