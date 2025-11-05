@@ -5,8 +5,8 @@ require_once '../vendor/autoload.php';
 require_once '../general.php';
 require_once '../config.php';
 
-header("Access-Control-Allow-Origin: *");
-header("Vary: Origin");
+// header("Access-Control-Allow-Origin: *");
+// header("Vary: Origin");
 header("Content-Type: application/json");
 
 // Early CORS preflight handler (must run before auth checks)
