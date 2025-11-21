@@ -77,6 +77,15 @@ try {
             $input = json_decode(file_get_contents('php://input'), true);
             login($conn, $input);
             break;
+        case 'GET':
+            jsonResponse(500, 'Internal Server Error', ['message' => 'Under development']);
+            break;
+        case 'PUT':
+            jsonResponse(500, 'Internal Server Error', ['message' => 'Under development']);
+            break;
+        case 'DELETE':
+            jsonResponse(500, 'Internal Server Error', ['message' => 'Under development']);
+            break;
     }
 
 } catch (Exception $e){

@@ -21,7 +21,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 }
 
 function createMenu($conn, $input, $username){
-    // Accept JSON body and multipart/form-data
     $menu_name   = $input['menu_name']   ?? ($_POST['menu_name']   ?? null);
     $category_id = $input['category_id'] ?? ($_POST['category_id'] ?? null);
     $price       = $input['price']       ?? ($_POST['price']       ?? null);
@@ -55,9 +54,17 @@ function createMenu($conn, $input, $username){
         // Handle upload (optional)
         $image_url = null;
         $thumb_url = null;
-        if (!empty($_FILES['image']) && $_FILES['image']['error'] === UPLOAD_ERR_OK) {
-            // Uses helper from general.php
-            [$image_url, $thumb_url] = handle_menu_image_upload($_FILES['image'], 'menu');
+
+        error_log("CONTENT_TYPE: " . ($_SERVER['CONTENT_TYPE'] ?? 'N/A'));
+        error_log("FILES: " . print_r($_FILES, true));
+        error_log("POST: " . print_r($_POST, true));
+
+        if (!empty($_FILES['image'])) {
+            if ($_FILES['image']['error'] === UPLOAD_ERR_OK) {
+                [$image_url, $thumb_url] = handle_menu_image_upload($_FILES['image'], 'menu');
+            } else {
+                jsonResponse(400, 'Upload error code: ' . $_FILES['image']['error']);
+            }
         }
 
         $img_sql   = $image_url ? "'" . mysqli_real_escape_string($conn, $image_url) . "'" : "NULL";
@@ -134,12 +141,85 @@ function getDetailMenu($conn, $menu_id){
     }
 }
 
-function updateMenu(){
+function updateMenu($conn, $input){
+    if (!isset($input['menu_id'])) {
+        jsonResponse(400, 'Missing required fields (menu_id)');
+    }
+
+    $menu_id = mysqli_real_escape_string($conn, $input['menu_id']);
+
+    $query = "SELECT * FROM raki_dev.menu WHERE menu_id = '$menu_id'";
+    $result = mysqli_query($conn, $query);
+
+    $now = getCurrentDateTimeJakarta();
+
+    $updates = [];
+    if (isset($input['menu_name'])) {
+        $updates[] = "menu_name = '" . mysqli_real_escape_string($conn, $input['menu_name']) . "'";
+    }
+    if (isset($input['category_id'])) {
+        $updates[] = "category_id = '" . mysqli_real_escape_string($conn, $input['category_id']) . "'";
+    }
+    if (isset($input['price'])) {
+        $updates[] = "price = '" . mysqli_real_escape_string($conn, $input['price']) . "'";
+    }
+
+    if (!empty($_FILES['image']) && isset($_FILES['image']['error'])) {
+        if ($_FILES['image']['error'] === UPLOAD_ERR_OK) {
+            [$image_url, $thumb_url] = handle_menu_image_upload($_FILES['image'], 'menu');
+
+            if ($image_url) {
+                $img_sql = mysqli_real_escape_string($conn, $image_url);
+                $updates[] = "image_url = '$img_sql'";
+            }
+
+            if ($thumb_url) {
+                $thumb_sql = mysqli_real_escape_string($conn, $thumb_url);
+                $updates[] = "thumb_url = '$thumb_sql'";
+            }
+        } elseif ($_FILES['image']['error'] !== UPLOAD_ERR_NO_FILE) {
+            jsonResponse(400, 'Upload error code: ' . $_FILES['image']['error']);
+        }
+    }
+
+    if (empty($updates)) {
+        jsonResponse(400, 'No fields provided for update');
+    }
+
+    if(mysqli_num_rows($result) > 0) {
+        $updateQuery = "UPDATE raki_dev.menu SET " . implode(', ', $updates) . " WHERE menu_id = '$menu_id'";
+
+        if (mysqli_query($conn, $updateQuery)) {
+            jsonResponse(200, 'Menu updated successfully', ['menu_id' => $menu_id]);
+        } else {
+            jsonResponse(500, 'Failed to update menu');
+        }
+    } else {
+        jsonResponse(404, message: 'Menu not registered in systems');
+    }
 
 }
 
-function deleteMenu(){
-    
+function deleteMenu($conn, $menu_id){
+    if($menu_id === null || $menu_id === ''){
+        jsonResponse(400, 'Missing required fields (menu_id)');
+    }
+
+    $query = "SELECT * FROM raki_dev.menu WHERE menu_id = '$menu_id'";
+    $result = mysqli_query($conn, $query);
+
+    if(mysqli_num_rows($result) > 0) {
+        $query = "DELETE FROM raki_dev.menu WHERE menu_id = '$menu_id'";
+
+        if (mysqli_query($conn, $query)) {
+            jsonResponse(200, 'Menu deleted successfully');
+        } else {
+            jsonResponse(500, 'Failed to delete menu');
+        }
+
+    } else {
+        jsonResponse(404, 'Menu is not registered in systems');
+    }
 }
 
 use Firebase\JWT\JWT;
@@ -166,10 +246,16 @@ try {
             if (stripos($contentType, 'application/json') !== false) {
                 $input = json_decode(file_get_contents('php://input'), true) ?? [];
             } else {
-                // For form-data/x-www-form-urlencoded use $_POST
                 $input = $_POST ?? [];
             }
-            createMenu($conn, $input, $token_username);
+
+            if (!empty($input['menu_id'])) {
+                // UPDATE + boleh ada $_FILES['image']
+                updateMenu($conn, $input);
+            } else {
+                // CREATE
+                createMenu($conn, $input, $token_username);
+            }
             break;
         case 'GET':
             $params = $_GET['params'] ?? null;
@@ -183,8 +269,19 @@ try {
              }
             break;
         case 'PUT':
+            $contentType = $_SERVER['CONTENT_TYPE'] ?? '';
+            if (stripos($contentType, 'application/json') !== false) {
+                $input = json_decode(file_get_contents('php://input'), true) ?? [];
+            } else {
+                $raw = file_get_contents('php://input');
+                $input = [];
+                parse_str($raw, $input); // x-www-form-urlencoded (tanpa file)
+            }
+            updateMenu($conn, $input);
             break;
         case 'DELETE':
+            $menu_id = $_GET['menu_id'] ?? null;
+            deleteMenu($conn, $menu_id);
             break;
     }
 

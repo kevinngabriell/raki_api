@@ -202,6 +202,35 @@ function getAllTransaction($conn, $company_id, $page = 1, $limit = 10){
     jsonResponse(200, 'Success', ['transactions' => $transactions]);
 }
 
+function deleteTransaction ($conn, $transaction_id){
+    if($transaction_id === null || $transaction_id === ''){
+        jsonResponse(400, 'Missing required fields (transaction_id)');
+    }
+
+    $query = "SELECT * FROM raki_dev.transaction WHERE transaction_id = '$transaction_id'";
+    $result = mysqli_query($conn, $query);
+
+    if(mysqli_num_rows($result) > 0) {
+        $query_one =  "DELETE FROM raki_dev.transaction_detail WHERE transaction_id = '$transaction_id'";
+        $query = "DELETE FROM raki_dev.transaction WHERE transaction_id = '$transaction_id'";
+
+        if (mysqli_query($conn, $query_one)) {
+            if (mysqli_query($conn, $query)) {
+                jsonResponse(200, 'Transaction deleted successfully');
+            } else {
+                jsonResponse(500, 'Failed to delete transaction');
+            }
+        } else {
+            jsonResponse(500, 'Failed to delete transaction detail');
+        }
+
+        
+
+    } else {
+        jsonResponse(404, 'Transaction is not registered in systems');
+    }
+}
+
 use Firebase\JWT\JWT;
 use Firebase\JWT\Key;
 
@@ -253,6 +282,8 @@ try {
         case 'PUT':
             break;
         case 'DELETE':
+            $transaction_id = $_GET['transaction_id'] ?? null;
+            deleteTransaction($conn, $transaction_id);
             break;
     }
 

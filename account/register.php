@@ -18,12 +18,14 @@ function register($conn, $input){
 
     $checkAppQuery = "SELECT * FROM movira_core_dev.app WHERE app_id = '$app_id'";
     $checkAppResult = mysqli_query($conn, $checkAppQuery);
+
     if (mysqli_num_rows($checkAppResult) === 0) {
         return ['success' => false, 'message' => 'App ID tidak valid.'];
     }
 
     $checkAppRoleQuery = "SELECT * FROM movira_core_dev.app_role WHERE app_role_id = '$app_role_id'";
     $checkAppRoleResult = mysqli_query($conn, $checkAppRoleQuery);
+    
     if (mysqli_num_rows($checkAppRoleResult) === 0) {
         return ['success' => false, 'message' => 'App role ID tidak valid.'];
     }
@@ -36,14 +38,9 @@ function register($conn, $input){
     }
 
     $hashedPassword = password_hash($password, PASSWORD_DEFAULT);
-
     $userID = "user" . uniqid();
 
-    // Insert user baru
-    $insertQuery = "
-        INSERT INTO movira_core_dev.app_user (user_id, username, password, app_id, app_role_id, created_at)
-        VALUES ('$userID','$username', '$hashedPassword', '$app_id', '$app_role_id', NOW())
-    ";
+    $insertQuery = "INSERT INTO movira_core_dev.app_user (user_id, username, password, app_id, app_role_id, created_at) VALUES ('$userID','$username', '$hashedPassword', '$app_id', '$app_role_id', NOW())";
 
     if (mysqli_query($conn, $insertQuery)) {
         $userId = mysqli_insert_id($conn);

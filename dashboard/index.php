@@ -126,9 +126,18 @@ try {
     $method = $_SERVER['REQUEST_METHOD'];
 
     switch($method){
+        case 'POST':
+            jsonResponse(500, 'Internal Server Error', ['message' => 'Under development']);
+            break;
         case 'GET':
             $company_id = $_GET['company_id'] ?? null;
             getDashboard($conn, $company_id);
+            break;
+        case 'PUT':
+            jsonResponse(500, 'Internal Server Error', ['message' => 'Under development']);
+            break;
+        case 'DELETE':
+            jsonResponse(500, 'Internal Server Error', ['message' => 'Under development']);
             break;
     }
 
