@@ -4,6 +4,7 @@ require_once '../connection/db.php';
 require_once '../vendor/autoload.php';
 require_once '../general.php';
 require_once '../config.php';
+require_once '../notification/notification.php';
 
 function createOrderTransaction($conn, $input, $username){
     if (
@@ -137,7 +138,74 @@ function createOrderTransaction($conn, $input, $username){
             }
         }
 
+        // Compute item summary for notification
+        $item_count = count($prepared_items);
+        $total_qty  = 0;
+        foreach ($prepared_items as $pi) {
+            $total_qty += $pi['qty'];
+        }
+
         mysqli_commit($conn);
+
+        // Fetch PIC contact (tujuan supply) dan nama mitra (asal supply)
+        $ownerPhone      = '';
+        $fromCompanyName = '';
+
+        // PIC contact untuk company tujuan (biasanya Raki pusat)
+        $sqlPhone = "SELECT pic_contact FROM movira_core_dev.app_company WHERE company_id = ?";
+        $stmtPhone = $conn->prepare($sqlPhone);
+        if ($stmtPhone) {
+            $stmtPhone->bind_param('s', $to_company_id);
+            if ($stmtPhone->execute()) {
+                $resultPhone = $stmtPhone->get_result();
+                if ($rowPhone = $resultPhone->fetch_assoc()) {
+                    // sanitize: ambil hanya angka
+                    $ownerPhone = preg_replace('/[^0-9]/', '', (string)$rowPhone['pic_contact']);
+                }
+            }
+            $stmtPhone->close();
+        }
+
+        // Nama mitra (asal permintaan supply)
+        $sqlFrom = "SELECT company_name FROM movira_core_dev.app_company WHERE company_id = ?";
+        $stmtFrom = $conn->prepare($sqlFrom);
+        if ($stmtFrom) {
+            $stmtFrom->bind_param('s', $from_company_id);
+            if ($stmtFrom->execute()) {
+                $resFrom = $stmtFrom->get_result();
+                if ($rowFrom = $resFrom->fetch_assoc()) {
+                    $fromCompanyName = $rowFrom['company_name'];
+                }
+            }
+            $stmtFrom->close();
+        }
+
+        if (!empty($ownerPhone)) {
+            $chatId = $ownerPhone . '@c.us';
+
+            // Format tanggal sederhana untuk WA (misal: 22-11-2025 14:30)
+            $requestedAtDisplay = date('d-m-Y H:i', strtotime($now));
+
+            // WhatsApp-friendly message
+            $text = "Halo, tim *Raki* 👋\n\n"
+                . "Ada permintaan suplai baru dari mitra *{$fromCompanyName}*.\n\n"
+                . "*Kode Order:* {$order_code}\n"
+                . "*Tgl Permintaan:* {$requestedAtDisplay}\n"
+                . "*Jumlah Item:* {$item_count} jenis\n"
+                . "*Total Kuantitas:* {$total_qty} unit\n\n"
+                . (!empty($notes)
+                    ? "*Catatan dari mitra:*\n\"{$notes}\"\n\n"
+                    : ""
+                )
+                . "Silakan dicek dan diproses melalui *Dashboard Raki* pada menu *Supply Order*.\n\n"
+                . "Terima kasih dan semangat selalu! ☕😊";
+
+            $result = sendWhatsAppText($chatId, $text);
+
+            if (!$result['success']) {
+                error_log('Gagal kirim WhatsApp: ' . $result['raw']);
+            }
+        }
 
         jsonResponse(201, 'Supply order created successfully', [
             'supply_order_id' => $supply_order_id,

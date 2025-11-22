@@ -4,6 +4,7 @@ require_once '../connection/db.php';
 require_once '../vendor/autoload.php';
 require_once '../general.php';
 require_once '../config.php';
+require_once '../notification/notification.php';
 
 function createTransaction($conn, $input, $username){
     // Basic validation
@@ -87,8 +88,45 @@ function createTransaction($conn, $input, $username){
             ];
         }
 
+        // compute total cups
+        $total_cups = 0;
+        foreach ($prepared_items as $pi) {
+            $total_cups += $pi['quantity'];
+        }
+
         // Commit
         $conn->commit();
+
+        // Fetch PIC contact from app_company
+        $sqlPhone = "SELECT pic_contact FROM movira_core_dev.app_company WHERE company_id = ?";
+        $stmtPhone = $conn->prepare($sqlPhone);
+        if ($stmtPhone) {
+            $stmtPhone->bind_param('s', $company_id);
+            if ($stmtPhone->execute()) {
+                $resultPhone = $stmtPhone->get_result();
+                if ($rowPhone = $resultPhone->fetch_assoc()) {
+                    $ownerPhone = preg_replace('/[^0-9]/', '', $rowPhone['pic_contact']); // sanitize
+                }
+            }
+        }
+
+        if (!empty($ownerPhone)) {
+            $chatId = $ownerPhone . '@c.us';
+
+            // WhatsApp-friendly message
+            $text = "Halo! 👋\n\n"
+                . "Berikut adalah rekap penjualan *Raki Coffee* untuk hari ini:\n\n"
+                . "*Total Penjualan:* Rp " . number_format($total_amount, 0, ',', '.') . "\n"
+                . "*Jumlah Cup:* " . $total_cups . " cup\n\n"
+                . "Detail lengkap dapat dilihat melalui *Dashboard Raki*.\n"
+                . "Terima kasih dan semangat selalu! ☕😊";
+
+            $result = sendWhatsAppText($chatId, $text);
+
+            if (!$result['success']) {
+                echo('Gagal kirim WhatsApp: ' . $result['raw']);
+            }
+        }
 
         jsonResponse(201, 'Transaction created', [
             'transaction_id' => $transaction_id,
