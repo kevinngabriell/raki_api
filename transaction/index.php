@@ -88,10 +88,14 @@ function createTransaction($conn, $input, $username){
             ];
         }
 
-        // compute total cups
+        // compute total cups (exclude certain menu IDs, e.g. non-cup items)
         $total_cups = 0;
+        $excluded_menu_ids = ['menu69112f46968b3']; // tidak dihitung sebagai cup
+
         foreach ($prepared_items as $pi) {
-            $total_cups += $pi['quantity'];
+            if (!in_array($pi['menu_id'], $excluded_menu_ids, true)) {
+                $total_cups += $pi['quantity'];
+            }
         }
 
         // Commit
