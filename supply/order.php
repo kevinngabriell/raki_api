@@ -380,9 +380,15 @@ try {
             createOrderTransaction($conn, $input, $token_username);
             break;
         case 'GET':
+            $company_id = $_GET['company_id'] ?? null;
+
             if (isset($_GET['supply_order_id']) && $_GET['supply_order_id'] !== '') {
                 getSupplyOrderDetail($conn, $_GET['supply_order_id']);
             } else {
+                // jika ada company_id dari FE, jadikan filter to_company_id
+                if ($company_id) {
+                    $_GET['to_company_id'] = $company_id;
+                }
                 getSupplyOrders($conn);
             }
             break;
