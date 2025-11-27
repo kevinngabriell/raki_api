@@ -21,6 +21,7 @@ function createOrderTransaction($conn, $input, $username){
     $from_company_id = $input['from_company_id'];
     $to_company_id   = $input['to_company_id'];
     $notes           = isset($input['notes']) ? $input['notes'] : null;
+    $total_amount   = $input['total_amount'];
     $now             = getCurrentDateTimeJakarta();
 
     $items = $input['items'];
@@ -28,13 +29,14 @@ function createOrderTransaction($conn, $input, $username){
     // Validate and normalize items
     $prepared_items = [];
     foreach ($items as $idx => $it) {
-        if (!isset($it['ingredient_id']) || !isset($it['qty']) || !isset($it['unit_price'])) {
-            jsonResponse(400, "Invalid item at index $idx. Require ingredient_id, qty, unit_price.");
+        if (!isset($it['ingredient_id']) || !isset($it['qty']) || !isset($it['unit_price']) || !isset($it['subtotal'])) {
+            jsonResponse(400, "Invalid item at index $idx. Require ingredient_id, qty, unit_price, subtotal");
         }
 
         $ingredient_id = trim($it['ingredient_id']);
         $qty           = $it['qty'];
         $unit_price    = $it['unit_price'];
+        $subtotal    = $it['subtotal'];
 
         if (!is_numeric($qty) || $qty <= 0) {
             jsonResponse(400, "Invalid qty at index $idx. Must be numeric and > 0.");
@@ -42,11 +44,15 @@ function createOrderTransaction($conn, $input, $username){
         if (!is_numeric($unit_price) || $unit_price < 0) {
             jsonResponse(400, "Invalid unit_price at index $idx. Must be numeric and >= 0.");
         }
+        if (!is_numeric($subtotal) || $subtotal < 0) {
+            jsonResponse(400, "Invalid subtotal at index $idx. Must be numeric and >= 0.");
+        }
 
         $prepared_items[] = [
             'ingredient_id' => $ingredient_id,
             'qty'           => (float)$qty,
             'unit_price'    => (float)$unit_price,
+            'subtotal'    => (float)$subtotal,
         ];
     }
 
@@ -84,7 +90,8 @@ function createOrderTransaction($conn, $input, $username){
                 created_by,
                 updated_by,
                 created_at,
-                updated_at
+                updated_at,
+                total_amount
             ) VALUES (
                 '$supply_order_id',
                 '$order_code_esc',
@@ -96,7 +103,8 @@ function createOrderTransaction($conn, $input, $username){
                 '$created_by_esc',
                 '$created_by_esc',
                 '$now_esc',
-                '$now_esc'
+                '$now_esc',
+                $total_amount
             )
         ";
 
@@ -110,6 +118,7 @@ function createOrderTransaction($conn, $input, $username){
             $ing_esc    = mysqli_real_escape_string($conn, $item['ingredient_id']);
             $qty_val    = (float)$item['qty'];
             $price_val  = (float)$item['unit_price'];
+            $subtotal_val  = (float)$item['subtotal'];
 
             $insertDetailSql = "
                 INSERT INTO raki_dev.supply_order_detail (
@@ -118,6 +127,7 @@ function createOrderTransaction($conn, $input, $username){
                     ingredient_id,
                     qty,
                     unit_price,
+                    sub_total,
                     created_at,
                     updated_at,
                     updated_by
@@ -127,6 +137,7 @@ function createOrderTransaction($conn, $input, $username){
                     '$ing_esc',
                     $qty_val,
                     $price_val,
+                    $subtotal_val,
                     '$now_esc',
                     '$now_esc',
                     '$created_by_esc'
