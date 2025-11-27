@@ -12,9 +12,10 @@ function createIngredient($conn, $input, $username){
     $sku = $input['sku'];
     $company_id = $input['company_id'];
     $is_active = $input['is_active'];
+    $price = $input['price'];
 
-    if ($ingredient_name === null || $ingredient_name === "" || $ingredient_category === "" || $ingredient_category === null || $uom === "" || $uom === null || $company_id === "" || $company_id === null) {
-        jsonResponse(400, 'ingredient_name, ingredient_category , uom, company_id are required');
+    if ($ingredient_name === null || $ingredient_name === "" || $ingredient_category === "" || $ingredient_category === null || $uom === "" || $uom === null || $company_id === "" || $company_id === null || $price === "") {
+        jsonResponse(400, 'ingredient_name, ingredient_category , uom, company_id, price are required');
     }
 
     $ingredient_name = mysqli_real_escape_string($conn, $ingredient_name);
@@ -47,8 +48,8 @@ function createIngredient($conn, $input, $username){
         $ingredientsID = "ingredients" . uniqid();
         $now = getCurrentDateTimeJakarta();
 
-        $category_query = "INSERT INTO raki_dev.ingredient (ingredient_id, ingredient_name, ingredient_category, uom, sku, company_id, is_active, created_at, created_by) 
-        VALUES ('$ingredientsID', '$ingredient_name', '$ingredient_category', '$uom', '$sku', '$company_id', '$is_active', '$now', '$username')";
+        $category_query = "INSERT INTO raki_dev.ingredient (ingredient_id, ingredient_name, ingredient_category, uom, sku, company_id, is_active, created_at, created_by, price) 
+        VALUES ('$ingredientsID', '$ingredient_name', '$ingredient_category', '$uom', '$sku', '$company_id', '$is_active', '$now', '$username', '$price')";
 
         if (mysqli_query($conn, $category_query)) {
             jsonResponse(201, 'New ingredients has been created successfully', ['ingredients' => $ingredient_name]);
@@ -139,6 +140,9 @@ function updateIngredient($conn, $input){
     }
     if (isset($input['company_id'])) {
         $updates[] = "company_id = '" . mysqli_real_escape_string($conn, $input['company_id']) . "'";
+    }
+    if (isset($input['price'])) {
+        $updates[] = "price = '" . mysqli_real_escape_string($conn, $input['price']) . "'";
     }
 
     if (empty($updates)) {
