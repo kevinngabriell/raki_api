@@ -67,7 +67,7 @@ function getAllIngredient($conn, $params, $page = 1, $limit = 10){
     $totalRow = mysqli_fetch_assoc($countResult);
     $total = $totalRow['total'];
 
-    $query = "SELECT ingredient_id, ingredient_name, UOM.uom_name, IC.category_name
+    $query = "SELECT ingredient_id, ingredient_name, UOM.uom_name, IC.category_name, price
     FROM raki_dev.ingredient I
     LEFT JOIN raki_dev.unit_of_measurement UOM ON I.uom = UOM.uom_id
     LEFT JOIN raki_dev.ingredient_category IC ON I.ingredient_category = IC.category_id WHERE (ingredient_name LIKE '%$params%') LIMIT $limit OFFSET $offset";
@@ -91,7 +91,7 @@ function getAllIngredient($conn, $params, $page = 1, $limit = 10){
 }
 
 function getDetailIngredient($conn, $ingredient_id){
-    $query = "SELECT ingredient_id, ingredient_name, IC.category_id, IC.category_name, I.sku, UOM.uom_id, UOM.uom_name
+    $query = "SELECT ingredient_id, ingredient_name, IC.category_id, IC.category_name, I.sku, UOM.uom_id, UOM.uom_name, price
         FROM raki_dev.ingredient I
         LEFT JOIN raki_dev.ingredient_category IC ON I.ingredient_category = IC.category_id 
         LEFT JOIN raki_dev.unit_of_measurement UOM ON I.uom = UOM.uom_id 
