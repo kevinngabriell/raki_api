@@ -127,7 +127,7 @@ function createOrderTransaction($conn, $input, $username){
                     ingredient_id,
                     qty,
                     unit_price,
-                    sub_total,
+                    subtotal,
                     created_at,
                     updated_at,
                     updated_by
