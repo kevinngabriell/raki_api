@@ -69,7 +69,9 @@ function formatRupiah($angka) {
 }
 
 // --- Simple API endpoint ---
-if (php_sapi_name() !== 'cli') {
+if ( php_sapi_name() !== 'cli'
+    && isset($_SERVER['SCRIPT_FILENAME'])
+    && basename($_SERVER['SCRIPT_FILENAME']) === basename(__FILE__)) {
     header('Content-Type: application/json');
 
     if ($_SERVER['REQUEST_METHOD'] !== 'GET') {

@@ -223,7 +223,9 @@ function createOrderTransaction($conn, $input, $username){
 function getSupplyOrderDetail($conn, $order_id){
     $order_id_esc = mysqli_real_escape_string($conn, $order_id);
 
-    $orderSql = "SELECT * FROM raki_dev.supply_order WHERE supply_order_id = '$order_id_esc'";
+    $orderSql = "SELECT supply_order_id, order_code, from_company_id, AC.company_name, to_company_id, SO.status, notes, requested_at, approved_at, completed_at, created_by, updated_by, SO.created_at, SO.updated_at, total_amount
+FROM raki_dev.supply_order SO
+LEFT JOIN movira_core_dev.app_company AC ON  SO.from_company_id = AC.company_id WHERE supply_order_id = '$order_id_esc'";
     $orderRes = mysqli_query($conn, $orderSql);
     if (!$orderRes || mysqli_num_rows($orderRes) === 0) {
         jsonResponse(404, 'Supply order not found');
@@ -270,8 +272,9 @@ function getSupplyOrders($conn){
     }
 
     $sql = "
-        SELECT *
-        FROM raki_dev.supply_order
+        SELECT supply_order_id, order_code, from_company_id, AC.company_name, to_company_id, SO.status, notes, requested_at, approved_at, completed_at, created_by, updated_by, SO.created_at, SO.updated_at, total_amount
+        FROM raki_dev.supply_order SO
+        LEFT JOIN movira_core_dev.app_company AC ON  SO.from_company_id = AC.company_id
         $where
         ORDER BY requested_at DESC, created_at DESC
     ";
