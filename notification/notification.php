@@ -86,7 +86,10 @@ if (php_sapi_name() !== 'cli') {
     $dayOfWeek = (int) $now->format('N'); // 6 = Saturday
     $hour      = (int) $now->format('G'); // 24h format
 
-    if (!($dayOfWeek === 6 && $hour === 19)) {
+    // Debug mode: allow manual testing anytime with ?debug=1
+    $isDebug = isset($_GET['debug']) && $_GET['debug'] == '1';
+
+    if (!$isDebug && !($dayOfWeek === 6 && $hour === 19)) {
         http_response_code(403);
         echo json_encode([
             'status_code'    => 403,
