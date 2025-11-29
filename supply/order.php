@@ -231,9 +231,9 @@ function getSupplyOrderDetail($conn, $order_id){
     $order = mysqli_fetch_assoc($orderRes);
 
     $detailSql = "SELECT I.ingredient_id, I.ingredient_name, IC.category_name, qty, unit_price, subtotal
-FROM raki_dev.supply_order_detail SOD
-LEFT JOIN raki_dev.ingredient I ON SOD.ingredient_id = I.ingredient_id
-LEFT JOIN raki_dev.ingredient_category IC ON I.ingredient_category = IC.category_id WHERE supply_order_id = '$order_id_esc'";
+    FROM raki_dev.supply_order_detail SOD
+    LEFT JOIN raki_dev.ingredient I ON SOD.ingredient_id = I.ingredient_id
+    LEFT JOIN raki_dev.ingredient_category IC ON I.ingredient_category = IC.category_id WHERE supply_order_id = '$order_id_esc'";
     $detailRes = mysqli_query($conn, $detailSql);
     $details = [];
     if ($detailRes) {
