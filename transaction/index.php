@@ -222,6 +222,13 @@ function getAllTransaction($conn, $company_id, $page = 1, $limit = 10){
 
     $offset = ($page - 1) * $limit;
 
+    $countQuery = "SELECT COUNT(*) as total
+            FROM raki_dev.transaction t
+            WHERE t.company_id = '$company_id'";
+    $countResult = mysqli_query($conn, $countQuery);
+    $totalRow = mysqli_fetch_assoc($countResult);
+    $total = $totalRow['total'];
+
     $sql = "SELECT t.transaction_id, t.company_id, t.transaction_date, t.total_amount, t.created_at, t.created_by, t.updated_at, t.updated_by
             FROM raki_dev.transaction t
             WHERE t.company_id = ?
@@ -241,7 +248,19 @@ function getAllTransaction($conn, $company_id, $page = 1, $limit = 10){
     while ($row = $result->fetch_assoc()) {
         $transactions[] = $row;
     }
-    jsonResponse(200, 'Success', ['transactions' => $transactions]);
+
+    $response = [
+        'transactions' => $transactions,
+        'pagination' => [
+            'total' => (int)$total,
+            'page' => (int)$page,
+            'limit' => (int)$limit,
+            'total_pages' => ceil($total / $limit),
+        ]
+    ];
+
+    jsonResponse(200, 'Success', $response);
+    // jsonResponse(200, 'Success', ['transactions' => $transactions]);
 }
 
 function deleteTransaction ($conn, $transaction_id){
