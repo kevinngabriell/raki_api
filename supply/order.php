@@ -250,7 +250,17 @@ LEFT JOIN movira_core_dev.app_company AC ON  SO.from_company_id = AC.company_id 
     ]);
 }
 
-function getSupplyOrders($conn){
+function getSupplyOrders($conn, $page = 1, $limit = 10){
+
+    $offset = ($page - 1) * $limit;
+
+    $countQuery = "SELECT COUNT(*) as total
+        FROM raki_dev.supply_order SO
+        LEFT JOIN movira_core_dev.app_company AC ON SO.from_company_id = AC.company_id";
+    $countResult = mysqli_query($conn, $countQuery);
+    $totalRow = mysqli_fetch_assoc($countResult);
+    $total = $totalRow['total'];
+
     $conditions = [];
 
     if (isset($_GET['from_company_id']) && $_GET['from_company_id'] !== '') {
@@ -271,13 +281,11 @@ function getSupplyOrders($conn){
         $where = 'WHERE ' . implode(' AND ', $conditions);
     }
 
-    $sql = "
-        SELECT supply_order_id, order_code, from_company_id, AC.company_name, to_company_id, SO.status, notes, requested_at, approved_at, completed_at, created_by, updated_by, SO.created_at, SO.updated_at, total_amount
+    $sql = " SELECT supply_order_id, order_code, from_company_id, AC.company_name, to_company_id, SO.status, notes, requested_at, approved_at, completed_at, created_by, updated_by, SO.created_at, SO.updated_at, total_amount
         FROM raki_dev.supply_order SO
-        LEFT JOIN movira_core_dev.app_company AC ON  SO.from_company_id = AC.company_id
-        $where
-        ORDER BY requested_at DESC, created_at DESC
-    ";
+        LEFT JOIN movira_core_dev.app_company AC ON SO.from_company_id = AC.company_id 
+        $where 
+        ORDER BY requested_at DESC, created_at DESC LIMIT $limit OFFSET $offset";
 
     $res = mysqli_query($conn, $sql);
     if (!$res) {
@@ -289,7 +297,17 @@ function getSupplyOrders($conn){
         $rows[] = $row;
     }
 
-    jsonResponse(200, 'Success', $rows);
+    $response = [
+        'data' => $rows,
+        'pagination' => [
+            'total' => (int)$total,
+            'page' => (int)$page,
+            'limit' => (int)$limit,
+            'total_pages' => ceil($total / $limit),
+        ],
+    ];
+
+    jsonResponse(200, 'Success', $response);
 }
 
 function updateOrderStatus($conn, $input, $username){
@@ -308,6 +326,37 @@ function updateOrderStatus($conn, $input, $username){
     ];
 
     $status = $input['status'];
+
+    // Shipping cost validation and preparation
+    $shipping_cost_val = null;
+    $has_shipping_cost_input = array_key_exists('shipping_cost', $input);
+
+    // If status is shipped, shipping_cost is required
+    if ($status === 'shipped') {
+        if (!$has_shipping_cost_input || $input['shipping_cost'] === '') {
+            jsonResponse(400, 'Missing shipping_cost for shipped status');
+        }
+    }
+
+    if ($has_shipping_cost_input && $input['shipping_cost'] !== '') {
+        if (!is_numeric($input['shipping_cost']) || (float)$input['shipping_cost'] < 0) {
+            jsonResponse(400, 'Invalid shipping_cost. Must be numeric and >= 0.');
+        }
+        $shipping_cost_val = (int)$input['shipping_cost'];
+    }
+
+    // Optional shipping info (AWB & shipping company)
+    $shipping_awb_val = null;
+    $shipping_company_val = null;
+
+    if (isset($input['shipping_awb']) && $input['shipping_awb'] !== '') {
+        $shipping_awb_val = mysqli_real_escape_string($conn, $input['shipping_awb']);
+    }
+
+    if (isset($input['shipping']) && $input['shipping'] !== '') {
+        $shipping_company_val = mysqli_real_escape_string($conn, $input['shipping']);
+    }
+
     if (!in_array($status, $allowedStatuses, true)) {
         jsonResponse(400, 'Invalid status value');
     }
@@ -323,6 +372,17 @@ function updateOrderStatus($conn, $input, $username){
         "updated_by = '$user_esc'",
         "updated_at = '$now_esc'",
     ];
+
+    if (!is_null($shipping_cost_val)) {
+        $setParts[] = "shipping_cost = $shipping_cost_val";
+    }
+    if (!is_null($shipping_awb_val)) {
+        $setParts[] = "shipping_awb = '$shipping_awb_val'";
+    }
+
+    if (!is_null($shipping_company_val)) {
+        $setParts[] = "shipping = '$shipping_company_val'";
+    }
 
     // Auto set approved_at / completed_at based on status
     if ($status === 'approved') {
@@ -347,6 +407,9 @@ function updateOrderStatus($conn, $input, $username){
     jsonResponse(200, 'Status updated successfully', [
         'supply_order_id' => $input['supply_order_id'],
         'status'          => $status,
+        'shipping_cost'   => $shipping_cost_val,
+        'shipping_awb'    => $shipping_awb_val,
+        'shipping'        => $shipping_company_val,
     ]);
 }
 

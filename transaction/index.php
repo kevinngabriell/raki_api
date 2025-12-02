@@ -13,6 +13,7 @@ function createTransaction($conn, $input, $username){
     }
 
     $company_id = $input['company_id'];
+    $total_items = $input['total_items'];
     $transaction_date = isset($input['transaction_date']) && !empty($input['transaction_date'])
         ? $input['transaction_date']
         : date('Y-m-d H:i:s');
@@ -43,6 +44,44 @@ function createTransaction($conn, $input, $username){
         ];
     }
 
+        // --- Payment breakdown (cash / qris) ---
+    $payments = $input['payments'] ?? null;
+
+    if (!$payments || !is_array($payments) || count($payments) === 0) {
+        jsonResponse(400, 'Invalid payload. Require payments array with at least one item.');
+    }
+
+    $allowed_methods = ['cash', 'qris']; // kalau nanti ada transfer, qris_midtrans tinggal tambahin
+    $prepared_payments = [];
+    $total_paid = 0;
+
+    foreach ($payments as $idx => $p) {
+        if (!isset($p['payment_method']) || !isset($p['amount'])) {
+            jsonResponse(400, "Invalid payment at index $idx. Require payment_method and amount.");
+        }
+
+        $method = $p['payment_method'];
+        $amount = (int)$p['amount'];
+
+        if (!in_array($method, $allowed_methods, true)) {
+            jsonResponse(400, "Invalid payment_method at index $idx.");
+        }
+        if ($amount <= 0) {
+            jsonResponse(400, "Invalid payment amount at index $idx.");
+        }
+
+        $total_paid += $amount;
+        $prepared_payments[] = [
+            'payment_method' => $method,
+            'amount' => $amount,
+        ];
+    }
+
+    // pastikan total payment = total transaksi
+    if ($total_paid !== (int)$total_amount) {
+        jsonResponse(400, "Total payment (cash + qris) must equal total_amount. total_paid=$total_paid, total_amount=$total_amount");
+    }
+
     // Start transaction
     $conn->begin_transaction();
 
@@ -51,13 +90,13 @@ function createTransaction($conn, $input, $username){
         $transaction_id = 'trx' . uniqid();
 
         // Insert into `transaction` (header)
-        $sqlHeader = "INSERT INTO raki_dev.transaction (transaction_id, company_id, transaction_date, total_amount, created_at, created_by, updated_at, updated_by)
-                       VALUES (?, ?, ?, ?, NOW(), ?, NOW(), ?)";
+        $sqlHeader = "INSERT INTO raki_dev.transaction (transaction_id, company_id, transaction_date, total_amount, created_at, created_by, updated_at, updated_by, total_item)
+                       VALUES (?, ?, ?, ?, NOW(), ?, NOW(), ?, ?)";
         $stmtHeader = $conn->prepare($sqlHeader);
         if (!$stmtHeader) {
             throw new Exception('Prepare header failed: ' . $conn->error);
         }
-        $stmtHeader->bind_param('sssiss', $transaction_id, $company_id, $transaction_date, $total_amount, $username, $username);
+        $stmtHeader->bind_param('sssissi', $transaction_id, $company_id, $transaction_date, $total_amount, $username, $username, $total_items);
         if (!$stmtHeader->execute()) {
             throw new Exception('Execute header failed: ' . $stmtHeader->error);
         }
@@ -86,6 +125,26 @@ function createTransaction($conn, $input, $username){
                 'quantity' => $qty,
                 'subtotal' => $subtotal,
             ];
+        }
+
+        // Insert payment breakdown ke transaction_payment_daily
+        $sqlPayment = "INSERT INTO raki_dev.transaction_payment
+                       (payment_id, transaction_id, payment_method, amount, company_id, created_at)
+                       VALUES (?, ?, ?, ?, ?, NOW())";
+        $stmtPayment = $conn->prepare($sqlPayment);
+        if (!$stmtPayment) {
+            throw new Exception('Prepare payment failed: ' . $conn->error);
+        }
+
+        foreach ($prepared_payments as $pay) {
+            $payment_id = 'pay' . uniqid();
+            $method = $pay['payment_method'];
+            $amount = $pay['amount'];
+
+            $stmtPayment->bind_param('sssii', $payment_id, $transaction_id, $method, $amount, $company_id);
+            if (!$stmtPayment->execute()) {
+                throw new Exception('Execute payment failed: ' . $stmtPayment->error);
+            }
         }
 
         // compute total cups (exclude certain menu IDs, e.g. non-cup items)
@@ -163,10 +222,14 @@ function getDetailTransaction($conn, $trx_id){
                 td.menu_id,
                 m.menu_name,
                 td.quantity,
-                td.subtotal
+                td.subtotal,
+                t.total_item,
+                tp.payment_method,
+                tp.amount
             FROM raki_dev.transaction t
             JOIN raki_dev.transaction_detail td ON td.transaction_id = t.transaction_id
             LEFT JOIN raki_dev.menu m ON m.menu_id = td.menu_id
+            LEFT JOIN raki_dev.transaction_payment tp ON tp.transaction_id = t.transaction_id
             WHERE t.transaction_id = ?";
 
     $stmt = $conn->prepare($sql);
@@ -186,12 +249,20 @@ function getDetailTransaction($conn, $trx_id){
 
     $header = null;
     $items = [];
+    $payments = [];
+
+    // To avoid duplicated rows due to JOIN with transaction_payment,
+    // track which detail_ids and payments we've already added.
+    $seenDetailIds = [];
+    $seenPayments = [];
+
     while ($row = $result->fetch_assoc()) {
         if ($header === null) {
             $header = [
                 'transaction_id' => $row['transaction_id'],
                 'company_id' => $row['company_id'],
                 'transaction_date' => $row['transaction_date'],
+                'total_item' => $row['total_item'],
                 'total_amount' => (float)$row['total_amount'],
                 'created_at' => $row['created_at'],
                 'created_by' => $row['created_by'],
@@ -199,18 +270,34 @@ function getDetailTransaction($conn, $trx_id){
                 'updated_by' => $row['updated_by'],
             ];
         }
-        $items[] = [
-            'detail_id' => $row['detail_id'],
-            'menu_id' => $row['menu_id'],
-            'menu_name' => $row['menu_name'],
-            'quantity' => (int)$row['quantity'],
-            'subtotal' => (float)$row['subtotal'],
-        ];
+
+        // Add each item only once per detail_id
+        if (!isset($seenDetailIds[$row['detail_id']])) {
+            $items[] = [
+                'detail_id' => $row['detail_id'],
+                'menu_id' => $row['menu_id'],
+                'menu_name' => $row['menu_name'],
+                'quantity' => (int)$row['quantity'],
+                'subtotal' => (float)$row['subtotal'],
+            ];
+            $seenDetailIds[$row['detail_id']] = true;
+        }
+
+        // Add each payment only once per (payment_method, amount) combination
+        $paymentKey = $row['payment_method'] . '|' . $row['amount'];
+        if (!isset($seenPayments[$paymentKey])) {
+            $payments[] = [
+                'payment_method' => $row['payment_method'],
+                'amount' => $row['amount'],
+            ];
+            $seenPayments[$paymentKey] = true;
+        }
     }
 
     jsonResponse(200, 'Transaction detail fetched', [
         'transaction' => $header,
         'items' => $items,
+        'payments' => $payments
     ]);
 }
 
@@ -229,7 +316,7 @@ function getAllTransaction($conn, $company_id, $page = 1, $limit = 10){
     $totalRow = mysqli_fetch_assoc($countResult);
     $total = $totalRow['total'];
 
-    $sql = "SELECT t.transaction_id, t.company_id, t.transaction_date, t.total_amount, t.created_at, t.created_by, t.updated_at, t.updated_by
+    $sql = "SELECT t.transaction_id, t.company_id, t.transaction_date, t.total_amount, t.created_at, t.created_by, t.updated_at, t.updated_by, t.total_item
             FROM raki_dev.transaction t
             WHERE t.company_id = ?
             ORDER BY t.transaction_date DESC
