@@ -301,35 +301,91 @@ function getDetailTransaction($conn, $trx_id){
     ]);
 }
 
-function getAllTransaction($conn, $company_id, $page = 1, $limit = 10){
-    // company_id is now mandatory
-    if (!$company_id) {
-        jsonResponse(400, 'company_id is required');
-    }
+function getAllTransaction($conn, $company_id = null, $page = 1, $limit = 10){
+    $page = (int)$page;
+    $limit = (int)$limit;
+    if ($page < 1) { $page = 1; }
+    if ($limit < 1) { $limit = 10; }
 
     $offset = ($page - 1) * $limit;
 
-    $countQuery = "SELECT COUNT(*) as total
-            FROM raki_dev.transaction t
-            WHERE t.company_id = '$company_id'";
-    $countResult = mysqli_query($conn, $countQuery);
-    $totalRow = mysqli_fetch_assoc($countResult);
-    $total = $totalRow['total'];
+    // company yang ingin di-exclude ketika tidak ada filter company_id
+    $excludedCompanyId = 'company691b31b41ea7b';
 
-    $sql = "SELECT t.transaction_id, t.company_id, t.transaction_date, t.total_amount, t.created_at, t.created_by, t.updated_at, t.updated_by, t.total_item
-            FROM raki_dev.transaction t
-            WHERE t.company_id = ?
-            ORDER BY t.transaction_date DESC
-            LIMIT ?, ?";
+    // Apakah ada filter company_id?
+    $hasCompanyFilter = !empty($company_id);
+
+    // --- Hitung total data untuk pagination ---
+    if ($hasCompanyFilter) {
+        $countSql = "SELECT COUNT(*) as total
+                     FROM raki_dev.transaction t
+                     WHERE t.company_id = ?";
+        $stmtCount = $conn->prepare($countSql);
+        if (!$stmtCount) {
+            jsonResponse(500, 'Failed to prepare count statement', ['error' => $conn->error]);
+        }
+        $stmtCount->bind_param('s', $company_id);
+    } else {
+        $countSql = "SELECT COUNT(*) as total
+                     FROM raki_dev.transaction t
+                     WHERE t.company_id <> ?";
+        $stmtCount = $conn->prepare($countSql);
+        if (!$stmtCount) {
+            jsonResponse(500, 'Failed to prepare count statement', ['error' => $conn->error]);
+        }
+        $stmtCount->bind_param('s', $excludedCompanyId);
+    }
+
+    if (!$stmtCount->execute()) {
+        jsonResponse(500, 'Failed to execute count statement', ['error' => $stmtCount->error]);
+    }
+    $countResult = $stmtCount->get_result();
+    $totalRow = $countResult->fetch_assoc();
+    $total = (int)($totalRow['total'] ?? 0);
+
+    // --- Query data transaksi + nama company ---
+    $baseSelect = "SELECT 
+                        t.transaction_id,
+                        t.company_id,
+                        t.transaction_date,
+                        t.total_amount,
+                        t.created_at,
+                        t.created_by,
+                        t.updated_at,
+                        t.updated_by,
+                        t.total_item,
+                        ac.company_name
+                   FROM raki_dev.transaction t
+                   LEFT JOIN movira_core_dev.app_company ac 
+                        ON ac.company_id = t.company_id";
+
+    if ($hasCompanyFilter) {
+        $sql = $baseSelect . "
+                WHERE t.company_id = ?
+                ORDER BY t.transaction_date DESC
+                LIMIT ?, ?";
+    } else {
+        $sql = $baseSelect . "
+                WHERE t.company_id <> ?
+                ORDER BY t.transaction_date DESC
+                LIMIT ?, ?";
+    }
 
     $stmt = $conn->prepare($sql);
     if (!$stmt) {
-        jsonResponse(500, 'Failed to prepare statement');
+        jsonResponse(500, 'Failed to prepare statement', ['error' => $conn->error]);
     }
-    $stmt->bind_param('sii', $company_id, $offset, $limit);
+
+    if ($hasCompanyFilter) {
+        $stmt->bind_param('sii', $company_id, $offset, $limit);
+    } else {
+        $stmt->bind_param('sii', $excludedCompanyId, $offset, $limit);
+    }
+
     if (!$stmt->execute()) {
-        jsonResponse(500, 'Failed to execute statement');
+        jsonResponse(500, 'Failed to execute statement', ['error' => $stmt->error]);
     }
+
     $result = $stmt->get_result();
     $transactions = [];
     while ($row = $result->fetch_assoc()) {
@@ -342,12 +398,11 @@ function getAllTransaction($conn, $company_id, $page = 1, $limit = 10){
             'total' => (int)$total,
             'page' => (int)$page,
             'limit' => (int)$limit,
-            'total_pages' => ceil($total / $limit),
+            'total_pages' => $limit > 0 ? ceil($total / $limit) : 0,
         ]
     ];
 
     jsonResponse(200, 'Success', $response);
-    // jsonResponse(200, 'Success', ['transactions' => $transactions]);
 }
 
 function deleteTransaction ($conn, $transaction_id){
