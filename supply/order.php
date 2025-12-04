@@ -252,28 +252,26 @@ LEFT JOIN movira_core_dev.app_company AC ON  SO.from_company_id = AC.company_id 
 
 function getSupplyOrders($conn, $page = 1, $limit = 10){
 
-    $offset = ($page - 1) * $limit;
+    $excludedCompanyId = 'company691b31b41ea7b';
 
-    $countQuery = "SELECT COUNT(*) as total
-        FROM raki_dev.supply_order SO
-        LEFT JOIN movira_core_dev.app_company AC ON SO.from_company_id = AC.company_id";
-    $countResult = mysqli_query($conn, $countQuery);
-    $totalRow = mysqli_fetch_assoc($countResult);
-    $total = $totalRow['total'];
+    $offset = ($page - 1) * $limit;
 
     $conditions = [];
 
     if (isset($_GET['from_company_id']) && $_GET['from_company_id'] !== '') {
         $from_esc = mysqli_real_escape_string($conn, $_GET['from_company_id']);
-        $conditions[] = "from_company_id = '$from_esc'";
+        $conditions[] = "SO.from_company_id = '$from_esc'";
     }
     if (isset($_GET['to_company_id']) && $_GET['to_company_id'] !== '') {
         $to_esc = mysqli_real_escape_string($conn, $_GET['to_company_id']);
-        $conditions[] = "to_company_id = '$to_esc'";
+        $conditions[] = "SO.to_company_id = '$to_esc'";
+    } else {
+        // Kalau tidak ada filter to_company_id dari FE, exclude company dev dari hasil (prod-safe)
+        $conditions[] = "SO.to_company_id <> '$excludedCompanyId'";
     }
     if (isset($_GET['status']) && $_GET['status'] !== '') {
         $status_esc = mysqli_real_escape_string($conn, $_GET['status']);
-        $conditions[] = "status = '$status_esc'";
+        $conditions[] = "SO.status = '$status_esc'";
     }
 
     $where = '';
@@ -281,9 +279,17 @@ function getSupplyOrders($conn, $page = 1, $limit = 10){
         $where = 'WHERE ' . implode(' AND ', $conditions);
     }
 
+    $countQuery = "SELECT COUNT(*) as total
+        FROM raki_dev.supply_order SO
+        LEFT JOIN movira_core_dev.app_company AC ON SO.from_company_id = AC.company_id
+        $where";
+    $countResult = mysqli_query($conn, $countQuery);
+    $totalRow = mysqli_fetch_assoc($countResult);
+    $total = $totalRow['total'];
+
     $sql = " SELECT supply_order_id, order_code, from_company_id, AC.company_name, to_company_id, SO.status, notes, requested_at, approved_at, completed_at, created_by, updated_by, SO.created_at, SO.updated_at, total_amount
         FROM raki_dev.supply_order SO
-        LEFT JOIN movira_core_dev.app_company AC ON SO.from_company_id = AC.company_id 
+        LEFT JOIN movira_core_dev.app_company AC ON SO.to_company_id = AC.company_id 
         $where 
         ORDER BY requested_at DESC, created_at DESC LIMIT $limit OFFSET $offset";
 
