@@ -1,0 +1,41 @@
+name: Deploy Raki API
+
+on:
+  push:
+    branches:
+      - main   # ganti kalau branchnya beda
+
+jobs:
+  deploy-raki-api:
+    runs-on: self-hosted   # boleh pakai label tambahan kalau lu set
+
+    env:
+      APP_DIR: /home/ubuntu/apps/raki_api
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Sync files to server directory
+        run: |
+          mkdir -p "$APP_DIR"
+          rsync -a --delete \
+            --exclude=".git" \
+            --exclude=".github" \
+            ./ "$APP_DIR"/
+
+      # Start / restart PHP built-in server lewat PM2 di port 8082
+      - name: Start / Restart Raki API with PM2
+        run: |
+          cd "$APP_DIR"
+          export NODE_ENV=production
+
+          # kalau belum pernah di-start
+          if ! pm2 list | grep -q "raki_api"; then
+            pm2 start php --name raki_api -- \
+              -S 127.0.0.1:8082 -t "$APP_DIR"
+          else
+            pm2 restart raki_api
+          fi
+
+          pm2 save
