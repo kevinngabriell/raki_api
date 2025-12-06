@@ -173,7 +173,7 @@ function getDashboardStatistic($conn, $company_id = null)
         FROM raki_dev.`transaction` T
         $whereTrx
         GROUP BY DATE(T.transaction_date)
-        ORDER BY trx_date DESC
+        ORDER BY trx_date ASC
     ";
     $revDateRes = mysqli_query($conn, $sqlRevenueByDate);
     if (!$revDateRes) {

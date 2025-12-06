@@ -2,7 +2,7 @@
 class DB {
   private static ?mysqli $conn = null;
 
-  public static function conn(string $dbName = null): mysqli {
+  public static function conn(?string $dbName = null): mysqli {
     if (self::$conn instanceof mysqli) {
       if ($dbName) {
         self::$conn->select_db($dbName);
