@@ -10,7 +10,7 @@ class DB {
       return self::$conn;
     }
 
-    $host = '100.81.62.41';
+    $host = '127.0.0.1'; 
     $port = 3306;
     $user = 'movira_dev';
     $pass = 'devjayaA9&';
