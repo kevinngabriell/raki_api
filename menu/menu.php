@@ -225,20 +225,30 @@ function deleteMenu($conn, $menu_id){
 use Firebase\JWT\JWT;
 use Firebase\JWT\Key;
 
-$headers = function_exists('getallheaders') ? getallheaders() : [];
-$authHeader = $headers['Authorization'] ?? $headers['authorization'] ?? ($_SERVER['HTTP_AUTHORIZATION'] ?? null);
-if (!$authHeader) {
-    jsonResponse(401, 'Authorization header not found');
+$method = $_SERVER['REQUEST_METHOD'];
+$conn = DB::conn();
+
+$token_username = null;
+
+// ONLY REQUIRE TOKEN FOR NON-GET REQUESTS
+if ($method !== 'GET') {
+    $headers = function_exists('getallheaders') ? getallheaders() : [];
+    $authHeader = $headers['Authorization'] ?? $headers['authorization'] ?? ($_SERVER['HTTP_AUTHORIZATION'] ?? null);
+
+    if (!$authHeader) {
+        jsonResponse(401, 'Authorization header not found');
+    }
+
+    try {
+        $token = preg_replace('/^Bearer\s+/i', '', $authHeader);
+        $decoded = JWT::decode($token, new Key($_ENV['JWT_SECRET'], 'HS256'));
+        $token_username = $decoded->username;
+    } catch (Exception $e) {
+        jsonResponse(401, 'Invalid or expired token', ['error' => $e->getMessage()]);
+    }
 }
 
 try {
-    $token = preg_replace('/^Bearer\s+/i', '', $authHeader);
-    $decoded = JWT::decode($token, new Key($_ENV['JWT_SECRET'], 'HS256'));
-
-    $conn = DB::conn();
-
-    $token_username = $decoded->username;
-    $method = $_SERVER['REQUEST_METHOD'];
 
     switch($method){
         case 'POST':
