@@ -101,11 +101,11 @@ if ( php_sapi_name() !== 'cli'
     // Debug mode: allow manual testing anytime with ?debug=1
     $isDebug = isset($_GET['debug']) && $_GET['debug'] == '1';
 
-    if (!$isDebug && !($dayOfWeek === 6 && $hour === 19)) {
+    if (!$isDebug && !($dayOfWeek === 6 && $hour === 21)) {
         http_response_code(403);
         echo json_encode([
             'status_code'    => 403,
-            'status_message' => 'WhatsApp recap can only be sent on Saturday at 19:00 WIB.',
+            'status_message' => 'WhatsApp recap can only be sent on Saturday at 21:00 WIB.',
         ]);
         exit;
     }
