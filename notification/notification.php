@@ -6,6 +6,16 @@ require_once '../general.php';
 require_once '../config.php';
 
 function sendWhatsAppText($chatId, $text, $session = WAHA_SESSION) {
+    
+    if (!function_exists('curl_init')) {
+        return [
+            'error' => true,
+            'message' => 'curl_init MISSING',
+            'php' => PHP_VERSION,
+            'sapi' => php_sapi_name(),
+        ];
+    }
+
     $url = rtrim(WAHA_BASE_URL, '/') . '/api/sendText';
 
     $payload = [
