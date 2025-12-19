@@ -147,7 +147,7 @@ function handle_menu_image_upload(array $file, string $bucket='menu'): array {
     // build URL publik
     $base = ($_SERVER['HTTPS'] ? 'http' : 'http') . '://getmovira.com';
     // . $_SERVER['HTTP_HOST'];
-    return ["$base/uploads/$sub/$name", "$base/uploads/$sub/$thumb"];
+    return ["$base/raki-uploads/$sub/$name", "$base/raki-uploads/$sub/$thumb"];
 }
 
 function create_thumbnail(string $srcPath, string $dstPath, int $targetW = 600): void {

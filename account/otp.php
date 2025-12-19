@@ -8,14 +8,6 @@ require_once '../notification/notification.php';
 
 use Firebase\JWT\JWT;
 
-/**
- * CREATE OTP (Input: phone_number)
- * POST /account/otp.php
- * Body:
- * {
- *   "phone_number": "62812xxxxxxx"
- * }
- */
 function createOTP($conn, $input)
 {
     $conn = DB::conn();
@@ -40,7 +32,40 @@ function createOTP($conn, $input)
     }
 
     if (mysqli_num_rows($user_result) !== 1) {
-        jsonResponse(404, 'User not found');
+        // Auto-register user when phone number is not found
+        $app_id = '06660e87-37e7-491b-92c3-c772130eb57c';
+        $app_role_id = 'app_role690a9cda69b46';
+
+        $user_id = 'user' . uniqid();
+
+        // username uses phone number
+        $new_username = $phone_number;
+
+        // random password (hashed)
+        $plain_password = bin2hex(random_bytes(16));
+        $hashed_password = password_hash($plain_password, PASSWORD_DEFAULT);
+
+        $user_id_esc = mysqli_real_escape_string($conn, $user_id);
+        $username_esc = mysqli_real_escape_string($conn, $new_username);
+        $pass_esc = mysqli_real_escape_string($conn, $hashed_password);
+        $app_id_esc = mysqli_real_escape_string($conn, $app_id);
+        $app_role_id_esc = mysqli_real_escape_string($conn, $app_role_id);
+
+        $insertUserQuery = "INSERT INTO movira_core_dev.app_user 
+            (user_id, username, password, app_id, app_role_id, phone_number, created_at)
+            VALUES
+            ('$user_id_esc', '$username_esc', '$pass_esc', '$app_id_esc', '$app_role_id_esc', '$phone_number', NOW())
+        ";
+
+        if (!mysqli_query($conn, $insertUserQuery)) {
+            jsonResponse(500, 'Failed to auto-register user', ['error' => mysqli_error($conn)]);
+        }
+
+        // Re-fetch user after insert
+        $user_result = mysqli_query($conn, $user_query);
+        if (!$user_result || mysqli_num_rows($user_result) !== 1) {
+            jsonResponse(500, 'Failed to load user after auto-register');
+        }
     }
 
     $user = mysqli_fetch_assoc($user_result);
@@ -48,28 +73,27 @@ function createOTP($conn, $input)
     $picContact = $user['phone_number'];
 
     // === RATE LIMIT: WAIT 3 MINUTES BETWEEN OTP REQUESTS ===
-    $last_otp_query = "SELECT created_at 
-        FROM otp_codes 
+    $rate_limit_query = "SELECT TIMESTAMPDIFF(SECOND, created_at, NOW()) AS diff_seconds
+        FROM otp_codes
         WHERE identifier = '$username' AND purpose = 'login'
-        ORDER BY created_at DESC 
+        ORDER BY created_at DESC
         LIMIT 1
     ";
-    $last_otp_result = mysqli_query($conn, $last_otp_query);
 
-    if ($last_otp_result && mysqli_num_rows($last_otp_result) === 1) {
-        $lastOtp = mysqli_fetch_assoc($last_otp_result);
-        $lastTime = strtotime($lastOtp['created_at']);
-        $nowTime  = time();
+    $rate_limit_result = mysqli_query($conn, $rate_limit_query);
+
+    if ($rate_limit_result && mysqli_num_rows($rate_limit_result) === 1) {
+        $row = mysqli_fetch_assoc($rate_limit_result);
+        $diff = (int)$row['diff_seconds'];
 
         // 3 minutes = 180 seconds
-        if (($nowTime - $lastTime) < 180) {
+        if ($diff < 180) {
             jsonResponse(429, 'Please wait 2–3 minutes before requesting a new OTP');
         }
     }
 
     // === LOCK ACCOUNT AFTER 10 OTP REQUESTS IN 24 HOURS ===
-    $lock_check_query = "
-        SELECT COUNT(*) AS total_requests
+    $lock_check_query = "SELECT COUNT(*) AS total_requests
         FROM otp_codes
         WHERE identifier = '$username'
           AND purpose = 'login'
@@ -86,12 +110,9 @@ function createOTP($conn, $input)
     }
 
     // Matikan SEMUA OTP login sebelumnya untuk user ini (paling aman)
-    $kill_old = "
-        UPDATE otp_codes 
+    $kill_old = "UPDATE otp_codes 
         SET is_used = 1 
-        WHERE identifier = '$username' 
-          AND purpose = 'login'
-    ";
+        WHERE identifier = '$username' AND purpose = 'login'";
     mysqli_query($conn, $kill_old);
 
     // Generate OTP
