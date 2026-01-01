@@ -122,10 +122,19 @@ function startSession($conn, $input, $token_username, $decoded){
 use Firebase\JWT\JWT;
 use Firebase\JWT\Key;
 
-$headers = getallheaders();
-if (!isset($headers['Authorization'])) {
+$rawHeaders = getallheaders();
+// normalisasi semua key ke lowercase
+$headers = array_change_key_case($rawHeaders, CASE_LOWER);
+
+if (!isset($headers['authorization'])) {
+    // untuk debug sementara, bisa log semua header:
+    // error_log('HEADERS: ' . print_r($rawHeaders, true));
     jsonResponse(401, 'Authorization header not found');
 }
+
+$authHeader = $headers['authorization'];
+$token = str_replace('Bearer ', '', $authHeader);
+
 
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     header("Access-Control-Allow-Origin: *");
@@ -136,7 +145,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 }
 
 try {
-    $token = str_replace('Bearer ', '', $headers['Authorization']);
+    $authHeader = $headers['authorization'];
+    $token = str_replace('Bearer ', '', $authHeader);
     $decoded = JWT::decode($token, new Key($_ENV['JWT_SECRET'], 'HS256'));
 
     $conn = DB::conn();

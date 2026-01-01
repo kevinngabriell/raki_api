@@ -38,17 +38,80 @@ function checkActiveSession($conn, $company_id, $username)
     $session = mysqli_fetch_assoc($r);
     $sid = mysqli_real_escape_string($conn, $session['session_id']);
 
+    // --- Payment summary for this session ---
+    $qp = "
+      SELECT
+        SUM(CASE WHEN t.payment_method = 'cash' THEN t.total_amount ELSE 0 END) AS cash_amount,
+        SUM(CASE WHEN t.payment_method = 'qris' THEN t.total_amount ELSE 0 END) AS qris_amount,
+        SUM(CASE WHEN t.payment_method = 'transfer' THEN t.total_amount ELSE 0 END) AS transfer_amount,
+        SUM(CASE WHEN t.payment_method = 'qris_midtrans' THEN t.total_amount ELSE 0 END) AS qris_midtrans_amount,
+        COUNT(*) AS total_transactions,
+        SUM(t.total_amount) AS grand_total_amount
+      FROM raki_dev.`transaction` t
+      WHERE t.session_id = '$sid'
+    ";
+
+    $rp = mysqli_query($conn, $qp);
+    $paymentSummary = [
+        'cash_amount'          => 0,
+        'qris_amount'          => 0,
+        'transfer_amount'      => 0,
+        'qris_midtrans_amount' => 0,
+        'total_transactions'   => 0,
+        'grand_total_amount'   => 0,
+    ];
+    if ($rp && mysqli_num_rows($rp) === 1) {
+        $paymentSummary = mysqli_fetch_assoc($rp);
+        // normalize to int
+        foreach ($paymentSummary as $k => $v) {
+            $paymentSummary[$k] = (int)($v ?? 0);
+        }
+    }
+
+    $session['payment_summary'] = $paymentSummary;
+
     // Load stock snapshot (optional)
-    $qs = "SELECT s.menu_id, m.menu_name, s.qty_start, s.qty_end
+    $qs = "SELECT
+               s.menu_id,
+               m.menu_name,
+               m.image_url,
+               m.price,
+               s.qty_start,
+               s.qty_end,
+               COALESCE(SUM(td.quantity), 0) AS qty_sold
            FROM raki_dev.work_session_stock s
-           LEFT JOIN raki_dev.menu m ON m.menu_id = s.menu_id
-           WHERE s.session_id='$sid'
+           LEFT JOIN raki_dev.menu m
+             ON m.menu_id = s.menu_id
+           LEFT JOIN raki_dev.`transaction` t
+             ON t.session_id = s.session_id
+           LEFT JOIN raki_dev.transaction_detail td
+             ON td.transaction_id = t.transaction_id
+            AND td.menu_id = s.menu_id
+           WHERE s.session_id = '$sid'
+           GROUP BY
+             s.menu_id,
+             m.menu_name,
+             m.image_url,
+             m.price,
+             s.qty_start,
+             s.qty_end
            ORDER BY m.menu_name ASC";
 
     $rs = mysqli_query($conn, $qs);
     $stock = [];
     if ($rs) {
         while ($row = mysqli_fetch_assoc($rs)) {
+            $qtyStart = (int)($row['qty_start'] ?? 0);
+            $qtySold  = (int)($row['qty_sold'] ?? 0);
+            $qtyLeft  = $qtyStart - $qtySold;
+            if ($qtyLeft < 0) {
+                $qtyLeft = 0;
+            }
+
+            $row['qty_start'] = $qtyStart;
+            $row['qty_sold']  = $qtySold;
+            $row['qty_left']  = $qtyLeft;
+
             $stock[] = $row;
         }
     }
@@ -69,31 +132,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     exit();
 }
 
-$headers = function_exists('getallheaders') ? getallheaders() : [];
+$rawHeaders = getallheaders();
+// normalisasi semua key ke lowercase
+$headers = array_change_key_case($rawHeaders, CASE_LOWER);
 
-// Case-insensitive Authorization lookup (some servers return 'authorization')
-$authHeader = null;
-foreach ($headers as $k => $v) {
-    if (strtolower($k) === 'authorization') {
-        $authHeader = $v;
-        break;
-    }
-}
-
-// Fallbacks for different SAPIs / proxies
-if (!$authHeader) {
-    $authHeader = $_SERVER['HTTP_AUTHORIZATION'] ?? null;
-}
-if (!$authHeader) {
-    $authHeader = $_SERVER['REDIRECT_HTTP_AUTHORIZATION'] ?? null;
-}
-
-if (!$authHeader) {
+if (!isset($headers['authorization'])) {
+    // untuk debug sementara, bisa log semua header:
+    // error_log('HEADERS: ' . print_r($rawHeaders, true));
     jsonResponse(401, 'Authorization header not found');
 }
 
+$authHeader = $headers['authorization'];
+$token = str_replace('Bearer ', '', $authHeader);
+
 try {
-    $token = preg_replace('/^Bearer\s+/i', '', trim($authHeader));
+    $authHeader = $headers['authorization'];
+    $token = str_replace('Bearer ', '', $authHeader);
     $decoded = JWT::decode($token, new Key($_ENV['JWT_SECRET'], 'HS256'));
 
     $conn = DB::conn();

@@ -264,8 +264,26 @@ function createPOSTransacton($conn, $input, $username, $decoded){
 use Firebase\JWT\JWT;
 use Firebase\JWT\Key;
 
-$headers = getallheaders();
-if (!isset($headers['Authorization'])) {
+$headers = function_exists('getallheaders') ? getallheaders() : [];
+
+// Case-insensitive Authorization lookup (some servers return 'authorization')
+$authHeader = null;
+foreach ($headers as $k => $v) {
+    if (strtolower($k) === 'authorization') {
+        $authHeader = $v;
+        break;
+    }
+}
+
+// Fallbacks for different SAPIs / proxies
+if (!$authHeader) {
+    $authHeader = $_SERVER['HTTP_AUTHORIZATION'] ?? null;
+}
+if (!$authHeader) {
+    $authHeader = $_SERVER['REDIRECT_HTTP_AUTHORIZATION'] ?? null;
+}
+
+if (!$authHeader) {
     jsonResponse(401, 'Authorization header not found');
 }
 
@@ -278,7 +296,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 }
 
 try {
-    $token = str_replace('Bearer ', '', $headers['Authorization']);
+    $token = preg_replace('/^Bearer\s+/i', '', trim($authHeader));
     $decoded = JWT::decode($token, new Key($_ENV['JWT_SECRET'], 'HS256'));
 
     $conn = DB::conn();

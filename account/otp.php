@@ -121,8 +121,7 @@ function createOTP($conn, $input)
     $expire_at = date('Y-m-d H:i:s', time() + 5 * 60); // 5 menit
 
     // Simpan OTP baru
-    $insert_otp = "
-        INSERT INTO otp_codes (
+    $insert_otp = "INSERT INTO otp_codes (
             otp_id, identifier, otp_code, purpose, expire_at, is_used, attempt_count, created_at
         ) VALUES (
             '$otp_id', '$username', '$otp', 'login', '$expire_at', 0, 0, NOW()

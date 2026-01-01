@@ -12,9 +12,38 @@ function checkActiveDriverSpesific($conn, $company_id){
 
     $company_id_esc = mysqli_real_escape_string($conn, $company_id);
 
+    $qPay = "SELECT 
+            t.session_id,
+            tp.payment_method,
+            SUM(tp.amount) AS total_amount
+        FROM raki_dev.`transaction` t
+        JOIN raki_dev.transaction_payment tp ON tp.transaction_id = t.transaction_id
+        WHERE t.company_id = '$company_id_esc' 
+        GROUP BY t.session_id, tp.payment_method
+    ";
+
+    $rPay = mysqli_query($conn, $qPay);
+    if (!$rPay) {
+        jsonResponse(500, 'DB error payment', ['error' => mysqli_error($conn)]);
+    }
+
+    $paymentsBySession = [];
+
+    while ($row = mysqli_fetch_assoc($rPay)) {
+        $sid = $row['session_id'];
+
+        if (!isset($paymentsBySession[$sid])) {
+            $paymentsBySession[$sid] = [];
+        }
+
+        $paymentsBySession[$sid][] = [
+            'payment_method' => $row['payment_method'],
+            'total_amount'   => (int)$row['total_amount'],
+        ];
+    }
+
     // Aggregate per (session_id, menu_id) to be compatible with ONLY_FULL_GROUP_BY
-    $q = "
-        SELECT
+    $q = "SELECT
           ws.session_id,
           MAX(ws.company_id) AS company_id,
           MAX(ws.user_id) AS user_id,
@@ -30,9 +59,10 @@ function checkActiveDriverSpesific($conn, $company_id){
           m.menu_id,
           MAX(m.menu_name) AS menu_name,
           MAX(cm.category_name) AS category_name,
-          MAX(m.thumb_url) AS thumb_url,
+          MAX(m.image_url) AS image_url,
           MAX(wss.qty_start) AS qty_start,
-          COALESCE(SUM(td.quantity), 0) AS qty_sold
+          COALESCE(SUM(td.quantity), 0) AS qty_sold,
+          m.price
         FROM raki_dev.work_session ws
         LEFT JOIN movira_core_dev.app_user au
           ON au.username = ws.user_id
@@ -73,7 +103,8 @@ function checkActiveDriverSpesific($conn, $company_id){
                 'cash_start' => (int)($row['cash_start'] ?? 0),
                 'cash_end' => $row['cash_end'] !== null ? (int)$row['cash_end'] : null,
                 'status' => $row['status'],
-                'menus' => []
+                'menus' => [],
+                'payments' => []
             ];
         }
 
@@ -86,10 +117,11 @@ function checkActiveDriverSpesific($conn, $company_id){
             'menu_id' => $row['menu_id'],
             'menu_name' => $row['menu_name'],
             'category_name' => $row['category_name'],
-            'thumb_url' => $row['thumb_url'],
+            'image_url' => $row['image_url'],
             'qty_start' => $qtyStart,
             'qty_sold' => $qtySold,
             'qty_left' => $qtyLeft,
+            'price' => (int)($row['price'] ?? 0)
         ];
     }
 
@@ -99,11 +131,6 @@ function checkActiveDriverSpesific($conn, $company_id){
 use Firebase\JWT\JWT;
 use Firebase\JWT\Key;
 
-$headers = getallheaders();
-if (!isset($headers['Authorization'])) {
-    jsonResponse(401, 'Authorization header not found');
-}
-
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     header("Access-Control-Allow-Origin: *");
     header("Access-Control-Allow-Methods: POST, GET, OPTIONS, PUT, DELETE");
@@ -112,8 +139,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     exit();
 }
 
+
+$headers = function_exists('getallheaders') ? getallheaders() : [];
+
+// Case-insensitive Authorization lookup (some servers return 'authorization')
+$authHeader = null;
+foreach ($headers as $k => $v) {
+    if (strtolower($k) === 'authorization') {
+        $authHeader = $v;
+        break;
+    }
+}
+
+// Fallbacks for different SAPIs / proxies
+if (!$authHeader) {
+    $authHeader = $_SERVER['HTTP_AUTHORIZATION'] ?? null;
+}
+if (!$authHeader) {
+    $authHeader = $_SERVER['REDIRECT_HTTP_AUTHORIZATION'] ?? null;
+}
+
+if (!$authHeader) {
+    jsonResponse(401, 'Authorization header not found');
+}
+
 try {
-    $token = str_replace('Bearer ', '', $headers['Authorization']);
+    $token = preg_replace('/^Bearer\s+/i', '', trim($authHeader));
     $decoded = JWT::decode($token, new Key($_ENV['JWT_SECRET'], 'HS256'));
 
     $conn = DB::conn();
@@ -137,5 +188,5 @@ try {
     }
 
 } catch (Exception $e){
-    jsonResponse(500, 'Internal Server Error', ['error' => $e->getMessage()]);
+    jsonResponse(401, 'Unauthorized', ['error' => $e->getMessage()]);
 }
