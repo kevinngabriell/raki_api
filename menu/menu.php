@@ -90,7 +90,7 @@ function getAllMenu($conn, $params, $page = 1, $limit = 10){
 
     $params = mysqli_real_escape_string($conn, $params ?? '');
 
-    $countQuery = "SELECT COUNT(*) as total FROM raki_dev.menu WHERE ME.is_active = 1 AND menu_name LIKE '%$params%'";
+    $countQuery = "SELECT COUNT(*) as total FROM raki_dev.menu WHERE is_active = 1 AND menu_name LIKE '%$params%'";
     $countResult = mysqli_query($conn, $countQuery);
     $totalRow = mysqli_fetch_assoc($countResult);
     $total = $totalRow['total'];
@@ -98,7 +98,7 @@ function getAllMenu($conn, $params, $page = 1, $limit = 10){
     $query = "SELECT menu_id, menu_name, price, category_name, image_url, thumb_url
               FROM raki_dev.menu ME
               LEFT JOIN raki_dev.category_menu CM ON ME.category_id = CM.category_id 
-              WHERE ME.is_active = 1 AND menu_name LIKE '%$params%' LIMIT $limit OFFSET $offset";
+              WHERE is_active = 1 AND menu_name LIKE '%$params%' LIMIT $limit OFFSET $offset";
     $result = mysqli_query($conn, $query);
 
     if ($result && mysqli_num_rows($result) > 0) {
@@ -122,7 +122,7 @@ function getDetailMenu($conn, $menu_id){
     $query = "SELECT menu_id, menu_name, price, category_name, image_url, thumb_url, ME.company_id, is_active, ME.created_at, ME.created_by, ME.updated_at, ME.updated_by
     FROM raki_dev.menu ME
     LEFT JOIN raki_dev.category_menu CM ON ME.category_id = CM.category_id 
-    WHERE ME.is_active = 1 AND ME.menu_id = '$menu_id'";
+    WHERE is_active = 1 AND ME.menu_id = '$menu_id'";
     $result = mysqli_query($conn, $query);
 
     if ($result && mysqli_num_rows($result) > 0) {
