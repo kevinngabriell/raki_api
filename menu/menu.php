@@ -85,7 +85,7 @@ function createMenu($conn, $input, $username){
 
 }
 
-function getAllMenu($conn, $params, $page = 1, $limit = 10){
+function getAllMenu($conn, $params, $page = 1, $limit = 50){
     $offset = ($page - 1) * $limit;
 
     $params = mysqli_real_escape_string($conn, $params ?? '');
@@ -271,7 +271,7 @@ try {
         case 'GET':
             $params = $_GET['params'] ?? null;
             $page = $_GET['page'] ?? 1;
-            $limit = $_GET['limit'] ?? 10;
+            $limit = $_GET['limit'] ?? 50;
             $menu_id = $_GET['menu_id'] ?? null;
             if($menu_id != null){
                 getDetailMenu($conn, $menu_id);
