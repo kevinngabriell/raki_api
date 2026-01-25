@@ -41,15 +41,16 @@ function checkActiveSession($conn, $company_id, $username)
     // --- Payment summary for this session ---
     $qp = "
       SELECT 
-        SUM(CASE WHEN transaction_payment.payment_method = 'cash' THEN transaction.total_amount ELSE 0 END) AS cash_amount,
-        SUM(CASE WHEN transaction_payment.payment_method = 'qris' THEN transaction.total_amount ELSE 0 END) AS qris_amount,
-        SUM(CASE WHEN transaction_payment.payment_method = 'transfer' THEN transaction.total_amount ELSE 0 END) AS transfer_amount,
-        SUM(CASE WHEN transaction_payment.payment_method = 'qris_midtrans' THEN transaction.total_amount ELSE 0 END) AS qris_midtrans_amount,
-        COUNT(*) AS total_transactions,
-        SUM(transaction.total_amount) AS grand_total_amount
-    FROM `transaction_payment`
-    LEFT JOIN transaction ON transaction_payment.transaction_id = transaction.transaction_id
-      WHERE transaction.session_id = '$sid'
+            SUM(CASE WHEN tp.payment_method = 'cash' THEN t.total_amount ELSE 0 END) AS cash_amount,
+            SUM(CASE WHEN tp.payment_method = 'qris' THEN t.total_amount ELSE 0 END) AS qris_amount,
+            SUM(CASE WHEN tp.payment_method = 'transfer' THEN t.total_amount ELSE 0 END) AS transfer_amount,
+            SUM(CASE WHEN tp.payment_method = 'qris_midtrans' THEN t.total_amount ELSE 0 END) AS qris_midtrans_amount,
+            COUNT(t.transaction_id) AS total_transactions,
+            SUM(t.total_amount) AS grand_total_amount
+        FROM raki_dev.transaction_payment tp
+        LEFT JOIN raki_dev.`transaction` t 
+            ON tp.transaction_id = t.transaction_id
+        WHERE t.session_id = '$sid';
     ";
 
     $rp = mysqli_query($conn, $qp);
