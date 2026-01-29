@@ -21,6 +21,16 @@ function createPOSTransacton($conn, $input, $username, $decoded){
     $items = $input['items'];
     $payments = $input['payments'] ?? null;
 
+    $latitude  = $input['latitude']  ?? null;
+    $longitude = $input['longitude'] ?? null;
+
+    if ($latitude !== null && !is_numeric($latitude)) {
+        jsonResponse(400, 'Invalid latitude');
+    }
+    if ($longitude !== null && !is_numeric($longitude)) {
+        jsonResponse(400, 'Invalid longitude');
+    }
+
     if (!$payments || !is_array($payments) || count($payments) === 0) {
         jsonResponse(400, 'Invalid payload. Require payments array with at least one item.');
     }
@@ -163,9 +173,9 @@ function createPOSTransacton($conn, $input, $username, $decoded){
         $transaction_date = date('Y-m-d H:i:s');
 
         $sqlHeader = "INSERT INTO raki_dev.transaction
-            (transaction_id, session_id, company_id, transaction_date, total_amount, created_at, created_by, updated_at, updated_by, total_item)
+            (transaction_id, session_id, company_id, transaction_date, total_amount, latitude, longitude, created_at, created_by, updated_at, updated_by, total_item)
             VALUES
-            (?, ?, ?, ?, ?, NOW(), ?, NOW(), ?, ?)";
+            (?, ?, ?, ?, ?, ?, ?, NOW(), ?, NOW(), ?, ?)";
 
         $stmtHeader = $conn->prepare($sqlHeader);
         if (!$stmtHeader) {
@@ -173,12 +183,14 @@ function createPOSTransacton($conn, $input, $username, $decoded){
         }
 
         $stmtHeader->bind_param(
-            'ssssissi',
+            'ssssddissi',
             $transaction_id,
             $session_id,
             $company_id,
             $transaction_date,
             $total_amount,
+            $latitude,
+            $longitude,
             $username,
             $username,
             $total_items
@@ -250,6 +262,8 @@ function createPOSTransacton($conn, $input, $username, $decoded){
             'company_id' => $company_id,
             'transaction_date' => $transaction_date,
             'total_amount' => (int)$total_amount,
+            'latitude' => $latitude,
+            'longitude' => $longitude,
             'total_item' => (int)$total_items,
             'items' => $response_items,
             'payments' => $prepared_payments,
