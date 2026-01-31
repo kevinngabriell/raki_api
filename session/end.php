@@ -46,28 +46,7 @@ function endSession($conn, $input, $token_username, $decoded){
     }
 
     $company_id_esc = mysqli_real_escape_string($conn, $company_id);
-    // Normalize username: if token username looks like phone (starts with 62), resolve to app_user.username
-    $resolved_username = $token_username;
-
-    if (preg_match('/^62[0-9]+$/', $token_username)) {
-        $stmtUser = $conn->prepare("
-            SELECT username 
-            FROM movira_core_dev.app_user 
-            WHERE pic_contact = ?
-            LIMIT 1
-        ");
-        if ($stmtUser) {
-            $stmtUser->bind_param('s', $token_username);
-            if ($stmtUser->execute()) {
-                $resUser = $stmtUser->get_result();
-                if ($rowUser = $resUser->fetch_assoc()) {
-                    $resolved_username = $rowUser['username'];
-                }
-            }
-        }
-    }
-
-    $user_esc = mysqli_real_escape_string($conn, $resolved_username);
+    $user_esc = mysqli_real_escape_string($conn, $token_username);
 
     // Find active session
     $qSess = "SELECT session_id, started_at, cash_start
