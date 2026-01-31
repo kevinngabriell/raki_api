@@ -183,17 +183,17 @@ function createPOSTransacton($conn, $input, $username, $decoded){
         }
 
         $stmtHeader->bind_param(
-            'ssssddissi',
+            'ssssiddssi',
             $transaction_id,
             $session_id,
             $company_id,
             $transaction_date,
-            $total_amount,
-            $latitude,
-            $longitude,
+            $total_amount,   // i
+            $latitude,       // d
+            $longitude,      // d
             $username,
             $username,
-            $total_items
+            $total_items     // i
         );
 
         if (!$stmtHeader->execute()) {
