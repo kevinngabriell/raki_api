@@ -183,7 +183,7 @@ function createPOSTransacton($conn, $input, $username, $decoded){
         }
 
         $stmtHeader->bind_param(
-            'ssssdddssi',
+            'ssssddissi',
             $transaction_id,
             $session_id,
             $company_id,
