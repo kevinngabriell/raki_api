@@ -4,8 +4,10 @@ require_once '../connection/db.php';
 require_once '../vendor/autoload.php';
 require_once '../general.php';
 require_once '../config.php';
+require_once '../log.php';
 
 function startSession($conn, $input, $token_username, $decoded){
+
     // Use company_id from payload if provided, otherwise fallback to token
     $company_id = $input['company_id'] ?? ($decoded->company_id ?? null);
     $cash_start = $input['cash_start'] ?? null;
@@ -28,18 +30,37 @@ function startSession($conn, $input, $token_username, $decoded){
     $cash_start_int = (int)$cash_start;
 
     // 1) check active session first
-    $check = "SELECT session_id FROM raki_dev.work_session
-              WHERE company_id='$company_id_esc'
-                AND user_id='$user_id_esc'
-                AND status='active'
-              ORDER BY started_at DESC
-              LIMIT 1";
+    $check = "SELECT session_id FROM raki_dev.work_session WHERE company_id='$company_id_esc' AND user_id='$user_id_esc' AND status='active' ORDER BY started_at DESC LIMIT 1";
     $rc = mysqli_query($conn, $check);
+
     if (!$rc) {
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 500,
+            'endpoint'      => '/session/start.php',
+            'method'        => 'POST',
+            'error_message' => mysqli_error($conn),
+            'user_identifier' => $decoded->username ?? null,
+            'company_id'      => $decoded->company_id ?? null,
+        ]);
+
+
         jsonResponse(500, 'DB error', ['error' => mysqli_error($conn)]);
     }
+
     if (mysqli_num_rows($rc) === 1) {
         $row = mysqli_fetch_assoc($rc);
+
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 409,
+            'endpoint'      => '/session/start.php',
+            'method'        => 'POST',
+            'error_message' => 'You already have an active session',
+            'user_identifier' => $decoded->username ?? null,
+            'company_id'      => $decoded->company_id ?? null,
+        ]);
+
         jsonResponse(409, 'You already have an active session', ['session_id' => $row['session_id']]);
     }
 
@@ -55,6 +76,17 @@ function startSession($conn, $input, $token_username, $decoded){
                   ('$session_id', '$company_id_esc', '$user_id_esc', NOW(), $cash_start_int, 'active', NOW())";
 
         if (!mysqli_query($conn, $ins)) {
+            
+            logApiError($conn, [
+                'error_level'   => 'error',
+                'http_status'   => 400,
+                'endpoint'      => '/session/start.php',
+                'method'        => 'POST',
+                'error_message' => mysqli_error($conn),
+                'user_identifier' => $decoded->username ?? null,
+                'company_id'      => $decoded->company_id ?? null,
+            ]);
+
             throw new Exception('Failed to insert work_session: ' . mysqli_error($conn));
         }
 
@@ -74,12 +106,20 @@ function startSession($conn, $input, $token_username, $decoded){
 
             $ssid = 'wss_' . bin2hex(random_bytes(10));
 
-            $insS = "INSERT INTO raki_dev.work_session_stock
-                       (session_stock_id, session_id, menu_id, qty_start, created_at)
-                     VALUES
-                       ('$ssid', '$session_id', '$menu_id_esc', $qty_int, NOW())";
+            $insS = "INSERT INTO raki_dev.work_session_stock (session_stock_id, session_id, menu_id, qty_start, created_at) VALUES ('$ssid', '$session_id', '$menu_id_esc', $qty_int, NOW())";
 
             if (!mysqli_query($conn, $insS)) {
+                
+                logApiError($conn, [
+                    'error_level'   => 'error',
+                    'http_status'   => 400,
+                    'endpoint'      => '/session/start.php',
+                    'method'        => 'POST',
+                    'error_message' => mysqli_error($conn),
+                    'user_identifier' => $decoded->username ?? null,
+                    'company_id'      => $decoded->company_id ?? null,
+                ]);
+
                 throw new Exception('Failed to insert stock: ' . mysqli_error($conn));
             }
         }
@@ -115,7 +155,19 @@ function startSession($conn, $input, $token_username, $decoded){
 
     } catch (Exception $e) {
         mysqli_rollback($conn);
+
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 500,
+            'endpoint'      => '/session/start.php',
+            'method'        => 'POST',
+            'error_message' => $e->getMessage(),
+            'user_identifier' => $decoded->username ?? null,
+            'company_id'      => $decoded->company_id ?? null,
+        ]);
+
         jsonResponse(500, 'Failed to start session', ['error' => $e->getMessage()]);
+
     }
 }
 

@@ -4,6 +4,7 @@ require_once '../connection/db.php';
 require_once '../vendor/autoload.php';
 require_once '../general.php';
 require_once '../config.php';
+require_once '../log.php';
 
 // Ensure consistent timezone (WIB)
 date_default_timezone_set('Asia/Jakarta');
@@ -11,10 +12,7 @@ date_default_timezone_set('Asia/Jakarta');
 function formatIndoDateTime($datetimeStr) {
     if (!$datetimeStr) return $datetimeStr;
 
-    $months = [
-        1 => 'Januari', 2 => 'Februari', 3 => 'Maret', 4 => 'April', 5 => 'Mei', 6 => 'Juni',
-        7 => 'Juli', 8 => 'Agustus', 9 => 'September', 10 => 'Oktober', 11 => 'November', 12 => 'Desember'
-    ];
+    $months = [ 1 => 'Januari', 2 => 'Februari', 3 => 'Maret', 4 => 'April', 5 => 'Mei', 6 => 'Juni', 7 => 'Juli', 8 => 'Agustus', 9 => 'September', 10 => 'Oktober', 11 => 'November', 12 => 'Desember'];
 
     try {
         $dt = new DateTime($datetimeStr, new DateTimeZone('Asia/Jakarta'));
@@ -36,6 +34,7 @@ function endSession($conn, $input, $token_username, $decoded){
     }
 
     $cash_end = (int)$input['cash_end'];
+
     if ($cash_end < 0) {
         jsonResponse(400, 'cash_end must be >= 0');
     }
@@ -49,16 +48,20 @@ function endSession($conn, $input, $token_username, $decoded){
     $user_esc = mysqli_real_escape_string($conn, $token_username);
 
     // Find active session
-    $qSess = "SELECT session_id, started_at, cash_start
-              FROM raki_dev.work_session
-              WHERE company_id='$company_id_esc'
-                AND user_id='$user_esc'
-                AND status='active'
-              ORDER BY started_at DESC
-              LIMIT 1";
+    $qSess = "SELECT session_id, started_at, cash_start FROM raki_dev.work_session WHERE company_id='$company_id_esc' AND user_id='$user_esc' AND status='active' ORDER BY started_at DESC LIMIT 1";
 
     $rSess = mysqli_query($conn, $qSess);
     if (!$rSess) {
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 500,
+            'endpoint'      => '/session/end.php',
+            'method'        => 'POST',
+            'error_message' => mysqli_error($conn),
+            'user_identifier' => $decoded->username ?? null,
+            'company_id'      => $decoded->company_id ?? null,
+        ]);
+
         jsonResponse(500, 'DB error', ['error' => mysqli_error($conn)]);
     }
 
@@ -74,41 +77,32 @@ function endSession($conn, $input, $token_username, $decoded){
     // ---- Compute recap ----
 
     // Total cups brought
-    $qCupStart = "SELECT COALESCE(SUM(qty_start),0) AS total_cup_start
-                  FROM raki_dev.work_session_stock
-                  WHERE session_id='$session_id'";
+    $qCupStart = "SELECT COALESCE(SUM(qty_start),0) AS total_cup_start FROM raki_dev.work_session_stock WHERE session_id='$session_id'";
     $rCupStart = mysqli_query($conn, $qCupStart);
     $total_cup_start = (int)(mysqli_fetch_assoc($rCupStart)['total_cup_start'] ?? 0);
 
     // Total cups sold
-    $qCupSold = "SELECT COALESCE(SUM(td.quantity),0) AS total_cup_sold
-                 FROM raki_dev.transaction t
-                 JOIN raki_dev.transaction_detail td ON td.transaction_id=t.transaction_id
-                 WHERE t.session_id='$session_id'";
+    $qCupSold = "SELECT COALESCE(SUM(td.quantity),0) AS total_cup_sold FROM raki_dev.transaction t JOIN raki_dev.transaction_detail td ON td.transaction_id=t.transaction_id WHERE t.session_id='$session_id'";
     $rCupSold = mysqli_query($conn, $qCupSold);
     $total_cup_sold = (int)(mysqli_fetch_assoc($rCupSold)['total_cup_sold'] ?? 0);
 
     // Total transactions
-    $qTrx = "SELECT COUNT(*) AS total_trx
-             FROM raki_dev.transaction
-             WHERE session_id='$session_id'";
+    $qTrx = "SELECT COUNT(*) AS total_trx FROM raki_dev.transaction WHERE session_id='$session_id'";
     $rTrx = mysqli_query($conn, $qTrx);
     $total_trx = (int)(mysqli_fetch_assoc($rTrx)['total_trx'] ?? 0);
 
     // Payment breakdown
-    $qPay = "SELECT tp.payment_method, COALESCE(SUM(amount),0) AS total
-             FROM raki_dev.transaction_payment tp
-             JOIN raki_dev.transaction t ON t.transaction_id=tp.transaction_id
-             WHERE t.session_id='$session_id'
-             GROUP BY tp.payment_method";
+    $qPay = "SELECT tp.payment_method, COALESCE(SUM(amount),0) AS total FROM raki_dev.transaction_payment tp JOIN raki_dev.transaction t ON t.transaction_id=tp.transaction_id WHERE t.session_id='$session_id' GROUP BY tp.payment_method";
     $rPay = mysqli_query($conn, $qPay);
 
     $total_cash = 0;
     $total_qris = 0;
+
     while ($row = mysqli_fetch_assoc($rPay)) {
         if ($row['payment_method'] === 'cash') $total_cash = (int)$row['total'];
         if ($row['payment_method'] === 'qris') $total_qris = (int)$row['total'];
     }
+
     $total_sales = $total_cash + $total_qris;
 
     // Duration (use WIB timezone and guard against negative values)
@@ -124,16 +118,33 @@ function endSession($conn, $input, $token_username, $decoded){
     // ---- Close session ----
     $conn->begin_transaction();
     try {
-        $qEnd = "UPDATE raki_dev.work_session
-                 SET ended_at='$ended_at', cash_end=$cash_end, status='closed'
-                 WHERE session_id='$session_id'";
+        $qEnd = "UPDATE raki_dev.work_session SET ended_at='$ended_at', cash_end=$cash_end, status='closed' WHERE session_id='$session_id'";
+
         if (!mysqli_query($conn, $qEnd)) {
+            logApiError($conn, [
+                'error_level'   => 'error',
+                'http_status'   => 500,
+                'endpoint'      => '/session/end.php',
+                'method'        => 'POST',
+                'error_message' => mysqli_error($conn),
+                'user_identifier' => $decoded->username ?? null,
+                'company_id'      => $decoded->company_id ?? null,
+            ]);
             throw new Exception(mysqli_error($conn));
         }
 
         $conn->commit();
     } catch (Exception $e) {
         $conn->rollback();
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 500,
+            'endpoint'      => '/session/start.php',
+            'method'        => 'POST',
+            'error_message' => $e->getMessage(),
+            'user_identifier' => $decoded->username ?? null,
+            'company_id'      => $decoded->company_id ?? null,
+        ]);
         jsonResponse(500, 'Failed to close session', ['error' => $e->getMessage()]);
     }
 

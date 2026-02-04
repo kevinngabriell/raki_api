@@ -149,7 +149,7 @@ function createTransaction($conn, $input, $username){
 
         // compute total cups (exclude certain menu IDs, e.g. non-cup items)
         $total_cups = 0;
-        $excluded_menu_ids = ['menu69112f46968b3']; // tidak dihitung sebagai cup
+        $excluded_menu_ids = ['menu696797b22ff84', 'menu696797bda43f6']; // tidak dihitung sebagai cup
 
         foreach ($prepared_items as $pi) {
             if (!in_array($pi['menu_id'], $excluded_menu_ids, true)) {
@@ -178,7 +178,7 @@ function createTransaction($conn, $input, $username){
 
             // WhatsApp-friendly message
             $text = "Halo! 👋\n\n"
-                . "Berikut adalah rekap penjualan *Raki Coffee* untuk hari ini:\n\n"
+                . "Berikut adalah rekap penjualan *Raki Coffee* hari ini oleh *{$username}*:\n\n"
                 . "*Total Penjualan:* Rp " . number_format($total_amount, 0, ',', '.') . "\n"
                 . "*Jumlah Cup:* " . $total_cups . " cup\n\n"
                 . "Detail lengkap dapat dilihat melalui *Dashboard Raki*.\n"

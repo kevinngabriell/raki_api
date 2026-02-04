@@ -49,6 +49,15 @@ function createPOSTransacton($conn, $input, $username, $decoded){
 
     $rSess = mysqli_query($conn, $qSess);
     if (!$rSess) {
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 500,
+            'endpoint'      => '/pos/transaction.php',
+            'method'        => 'POST',
+            'error_message' => mysqli_error($conn),
+            'user_identifier' => $decoded->username ?? null,
+            'company_id'      => $decoded->company_id ?? null,
+        ]);
         jsonResponse(500, 'DB error', ['error' => mysqli_error($conn)]);
     }
 
@@ -141,6 +150,15 @@ function createPOSTransacton($conn, $input, $username, $decoded){
 
         $rLeft = mysqli_query($conn, $qLeft);
         if (!$rLeft) {
+            logApiError($conn, [
+                'error_level'   => 'error',
+                'http_status'   => 500,
+                'endpoint'      => '/pos/transaction.php',
+                'method'        => 'POST',
+                'error_message' => mysqli_error($conn),
+                'user_identifier' => $decoded->username ?? null,
+                'company_id'      => $decoded->company_id ?? null,
+            ]);
             jsonResponse(500, 'DB error', ['error' => mysqli_error($conn)]);
         }
 
@@ -197,6 +215,16 @@ function createPOSTransacton($conn, $input, $username, $decoded){
         );
 
         if (!$stmtHeader->execute()) {
+            logApiError($conn, [
+                'error_level'   => 'error',
+                'http_status'   => 500,
+                'endpoint'      => '/pos/transaction.php',
+                'method'        => 'POST',
+                'error_message' => 'Execute header failed: ' . $stmtHeader->error,
+                'user_identifier' => $decoded->username ?? null,
+                'company_id'      => $decoded->company_id ?? null,
+            ]);
+
             throw new Exception('Execute header failed: ' . $stmtHeader->error);
         }
 
@@ -208,6 +236,16 @@ function createPOSTransacton($conn, $input, $username, $decoded){
 
         $stmtDetail = $conn->prepare($sqlDetail);
         if (!$stmtDetail) {
+            logApiError($conn, [
+                'error_level'   => 'error',
+                'http_status'   => 500,
+                'endpoint'      => '/pos/transaction.php',
+                'method'        => 'POST',
+                'error_message' => 'Prepare detail failed: ' . $conn->error,
+                'user_identifier' => $decoded->username ?? null,
+                'company_id'      => $decoded->company_id ?? null,
+            ]);
+
             throw new Exception('Prepare detail failed: ' . $conn->error);
         }
 
@@ -220,6 +258,16 @@ function createPOSTransacton($conn, $input, $username, $decoded){
 
             $stmtDetail->bind_param('sssii', $detail_id, $transaction_id, $menu_id, $qty, $subtotal);
             if (!$stmtDetail->execute()) {
+                logApiError($conn, [
+                    'error_level'   => 'error',
+                    'http_status'   => 500,
+                    'endpoint'      => '/pos/transaction.php',
+                    'method'        => 'POST',
+                    'error_message' => 'Execute detail failed: ' . $stmtDetail->error,
+                    'user_identifier' => $decoded->username ?? null,
+                    'company_id'      => $decoded->company_id ?? null,
+                ]);
+
                 throw new Exception('Execute detail failed: ' . $stmtDetail->error);
             }
 
@@ -240,6 +288,15 @@ function createPOSTransacton($conn, $input, $username, $decoded){
 
         $stmtPayment = $conn->prepare($sqlPayment);
         if (!$stmtPayment) {
+            logApiError($conn, [
+                'error_level'   => 'error',
+                'http_status'   => 500,
+                'endpoint'      => '/pos/transaction.php',
+                'method'        => 'POST',
+                'error_message' => 'Prepare payment failed: ' . $conn->error,
+                'user_identifier' => $decoded->username ?? null,
+                'company_id'      => $decoded->company_id ?? null,
+            ]);
             throw new Exception('Prepare payment failed: ' . $conn->error);
         }
 
@@ -250,6 +307,15 @@ function createPOSTransacton($conn, $input, $username, $decoded){
 
             $stmtPayment->bind_param('sssii', $payment_id, $transaction_id, $method, $amount, $company_id);
             if (!$stmtPayment->execute()) {
+                logApiError($conn, [
+                    'error_level'   => 'error',
+                    'http_status'   => 500,
+                    'endpoint'      => '/pos/transaction.php',
+                    'method'        => 'POST',
+                    'error_message' => 'Execute payment failed: ' . $stmtPayment->error,
+                    'user_identifier' => $decoded->username ?? null,
+                    'company_id'      => $decoded->company_id ?? null,
+                ]);
                 throw new Exception('Execute payment failed: ' . $stmtPayment->error);
             }
         }
@@ -271,6 +337,16 @@ function createPOSTransacton($conn, $input, $username, $decoded){
 
     } catch (Exception $e) {
         $conn->rollback();
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 500,
+            'endpoint'      => '/pos/transaction.php',
+            'method'        => 'POST',
+            'error_message' => $e->getMessage(),
+            'user_identifier' => $decoded->username ?? null,
+            'company_id'      => $decoded->company_id ?? null,
+        ]);
+
         jsonResponse(500, 'Failed to create POS transaction', ['error' => $e->getMessage()]);
     }
 }
@@ -341,5 +417,15 @@ try {
     }
 
 } catch (Exception $e){
+    logApiError($conn, [
+        'error_level'   => 'error',
+        'http_status'   => 500,
+        'endpoint'      => '/pos/transaction.php',
+        'method'        => 'POST',
+        'error_message' => $e->getMessage(),
+        'user_identifier' => $decoded->username ?? null,
+        'company_id'      => $decoded->company_id ?? null,
+    ]);
+    
     jsonResponse(500, 'Internal Server Error', ['error' => $e->getMessage()]);
 }
