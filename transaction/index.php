@@ -301,7 +301,7 @@ function getDetailTransaction($conn, $trx_id){
     ]);
 }
 
-function getAllTransaction($conn, $company_id = null, $page = 1, $limit = 10){
+function getAllTransaction($conn, $company_id = null, $username = null, $page = 1, $limit = 10){
     $page = (int)$page;
     $limit = (int)$limit;
     if ($page < 1) { $page = 1; }
@@ -314,9 +314,22 @@ function getAllTransaction($conn, $company_id = null, $page = 1, $limit = 10){
 
     // Apakah ada filter company_id?
     $hasCompanyFilter = !empty($company_id);
+    $hasUsernameFilter = !empty($username);
 
     // --- Hitung total data untuk pagination ---
-    if ($hasCompanyFilter) {
+    if ($hasCompanyFilter && $hasUsernameFilter) {
+        $countSql = "SELECT COUNT(*) as total
+                     FROM raki_dev.transaction t
+                     WHERE t.company_id = ?
+                     AND t.created_by = ?";
+        $stmtCount = $conn->prepare($countSql);
+        if (!$stmtCount) {
+            jsonResponse(500, 'Failed to prepare count statement', ['error' => $conn->error]);
+        }
+        $stmtCount->bind_param('ss', $company_id, $username);
+
+    } else if ($hasCompanyFilter) {
+
         $countSql = "SELECT COUNT(*) as total
                      FROM raki_dev.transaction t
                      WHERE t.company_id = ?";
@@ -325,7 +338,20 @@ function getAllTransaction($conn, $company_id = null, $page = 1, $limit = 10){
             jsonResponse(500, 'Failed to prepare count statement', ['error' => $conn->error]);
         }
         $stmtCount->bind_param('s', $company_id);
+
+    } else if ($hasUsernameFilter) {
+
+        $countSql = "SELECT COUNT(*) as total
+                     FROM raki_dev.transaction t
+                     WHERE t.created_by = ?";
+        $stmtCount = $conn->prepare($countSql);
+        if (!$stmtCount) {
+            jsonResponse(500, 'Failed to prepare count statement', ['error' => $conn->error]);
+        }
+        $stmtCount->bind_param('s', $username);
+
     } else {
+
         $countSql = "SELECT COUNT(*) as total
                      FROM raki_dev.transaction t
                      WHERE t.company_id <> ?";
@@ -359,12 +385,30 @@ function getAllTransaction($conn, $company_id = null, $page = 1, $limit = 10){
                    LEFT JOIN movira_core_dev.app_company ac 
                         ON ac.company_id = t.company_id";
 
-    if ($hasCompanyFilter) {
+    if ($hasCompanyFilter && $hasUsernameFilter) {
+
+        $sql = $baseSelect . "
+                WHERE t.company_id = ?
+                AND t.created_by = ?
+                ORDER BY t.transaction_date DESC
+                LIMIT ?, ?";
+
+    } else if ($hasCompanyFilter) {
+
         $sql = $baseSelect . "
                 WHERE t.company_id = ?
                 ORDER BY t.transaction_date DESC
                 LIMIT ?, ?";
+
+    } else if ($hasUsernameFilter) {
+
+        $sql = $baseSelect . "
+                WHERE t.created_by = ?
+                ORDER BY t.transaction_date DESC
+                LIMIT ?, ?";
+
     } else {
+
         $sql = $baseSelect . "
                 WHERE t.company_id <> ?
                 ORDER BY t.transaction_date DESC
@@ -376,8 +420,15 @@ function getAllTransaction($conn, $company_id = null, $page = 1, $limit = 10){
         jsonResponse(500, 'Failed to prepare statement', ['error' => $conn->error]);
     }
 
-    if ($hasCompanyFilter) {
+    if ($hasCompanyFilter && $hasUsernameFilter) {
+        $stmt->bind_param('ssii', $company_id, $username, $offset, $limit);
+
+    } else if ($hasCompanyFilter) {
         $stmt->bind_param('sii', $company_id, $offset, $limit);
+
+    } else if ($hasUsernameFilter) {
+        $stmt->bind_param('sii', $username, $offset, $limit);
+
     } else {
         $stmt->bind_param('sii', $excludedCompanyId, $offset, $limit);
     }
@@ -479,7 +530,7 @@ try {
             if($trx_id != null){
                 getDetailTransaction($conn, $trx_id);
             } else {
-                getAllTransaction($conn, $company_id, $page, $limit);
+                getAllTransaction($conn, $company_id, $token_username, $page, $limit);
             }
             break;
         case 'PUT':
