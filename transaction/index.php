@@ -524,13 +524,14 @@ try {
             break;
         case 'GET':
             $company_id = $_GET['company_id'] ?? null;
+            $username = $_GET['username'] ?? null;
             $page = $_GET['page'] ?? 1;
             $limit = $_GET['limit'] ?? 10;
             $trx_id = $_GET['trx_id'] ?? null;
             if($trx_id != null){
                 getDetailTransaction($conn, $trx_id);
             } else {
-                getAllTransaction($conn, $company_id, $token_username, $page, $limit);
+                getAllTransaction($conn, $company_id, $username, $page, $limit);
             }
             break;
         case 'PUT':
