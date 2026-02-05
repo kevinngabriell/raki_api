@@ -4,6 +4,7 @@ require_once '../connection/db.php';
 require_once '../vendor/autoload.php';
 require_once '../general.php';
 require_once '../config.php';
+require_once '../log.php';
 
 use Firebase\JWT\JWT;
 use Firebase\JWT\Key;
@@ -16,8 +17,9 @@ use Firebase\JWT\Key;
  * - Jika $company_id kosong → statistik untuk semua company
  *   kecuali company dev: company691b31b41ea7b
  */
-function getDashboardStatistic($conn, $company_id = null)
-{
+
+function getDashboardStatistic($conn, $company_id = null, $username){
+    //excluded for development company
     $excludedCompanyId = 'company691b31b41ea7b';
     $excludedEsc = mysqli_real_escape_string($conn, $excludedCompanyId);
 
@@ -57,32 +59,22 @@ function getDashboardStatistic($conn, $company_id = null)
     $whereSoIngredient = $whereSo . " AND SO.to_company_id <> '$excludedEsc'";
 
     // 1) Payment method breakdown (amount + percentage)
-    $sqlPayment = "
-        SELECT 
-            TP.payment_method,
-            COALESCE(SUM(T.total_amount), 0) AS total_trx,
-            ROUND(
-                100 * COALESCE(SUM(T.total_amount), 0) /
-                NULLIF(
-                    (
-                        SELECT COALESCE(SUM(total_amount), 0)
-                        FROM raki_dev.`transaction`
-                        $whereTrxNoAlias
-                    ),
-                    0
-                ),
-                2
-            ) AS percentage
-        FROM raki_dev.`transaction` T
-        LEFT JOIN raki_dev.transaction_payment TP ON T.transaction_id = TP.transaction_id
-        $whereTrx
-        GROUP BY TP.payment_method
-    ";
-
+    $sqlPayment = "SELECT TP.payment_method, COALESCE(SUM(T.total_amount), 0) AS total_trx, ROUND( 100 * COALESCE(SUM(T.total_amount), 0) / NULLIF( ( SELECT COALESCE(SUM(total_amount), 0) FROM raki_dev.`transaction` $whereTrxNoAlias ), 0 ), 2 ) AS percentage FROM raki_dev.`transaction` T LEFT JOIN raki_dev.transaction_payment TP ON T.transaction_id = TP.transaction_id $whereTrx GROUP BY TP.payment_method";
     $paymentRes = mysqli_query($conn, $sqlPayment);
+
     if (!$paymentRes) {
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 500,
+            'endpoint'      => '/dashboard/statistics.php',
+            'method'        => 'GET',
+            'error_message' => mysqli_error($conn),
+            'user_identifier' => $username ?? null,
+            'company_id'      => $company_id ?? null,
+        ]);
         jsonResponse(500, 'Failed to fetch payment stats', ['error' => mysqli_error($conn)]);
     }
+
     $paymentStats = [];
     while ($row = mysqli_fetch_assoc($paymentRes)) {
         $paymentStats[] = [
@@ -93,21 +85,22 @@ function getDashboardStatistic($conn, $company_id = null)
     }
 
     // 2) Revenue per menu (best seller by revenue)
-    $sqlMenuRevenue = "
-        SELECT 
-            COALESCE(SUM(T.total_amount), 0) AS total_trx, 
-            M.menu_name
-        FROM raki_dev.`transaction` T
-        LEFT JOIN raki_dev.transaction_detail TD ON T.transaction_id = TD.transaction_id
-        LEFT JOIN raki_dev.menu M ON TD.menu_id = M.menu_id
-        $whereTrx
-        GROUP BY M.menu_id
-        ORDER BY total_trx DESC
-    ";
+    $sqlMenuRevenue = "SELECT COALESCE(SUM(T.total_amount), 0) AS total_trx, M.menu_name FROM raki_dev.`transaction` T LEFT JOIN raki_dev.transaction_detail TD ON T.transaction_id = TD.transaction_id LEFT JOIN raki_dev.menu M ON TD.menu_id = M.menu_id $whereTrx GROUP BY M.menu_id ORDER BY total_trx DESC";
     $menuRes = mysqli_query($conn, $sqlMenuRevenue);
+
     if (!$menuRes) {
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 500,
+            'endpoint'      => '/dashboard/statistics.php',
+            'method'        => 'GET',
+            'error_message' => mysqli_error($conn),
+            'user_identifier' => $username ?? null,
+            'company_id'      => $company_id ?? null,
+        ]);
         jsonResponse(500, 'Failed to fetch menu revenue stats', ['error' => mysqli_error($conn)]);
     }
+
     $menuStats = [];
     while ($row = mysqli_fetch_assoc($menuRes)) {
         $menuStats[] = [
@@ -117,19 +110,22 @@ function getDashboardStatistic($conn, $company_id = null)
     }
 
     // 3) Revenue per creator (created_by)
-    $sqlCreatedByRevenue = "
-        SELECT 
-            COALESCE(SUM(T.total_amount), 0) AS total_trx, 
-            T.created_by
-        FROM raki_dev.`transaction` T
-        $whereTrx
-        GROUP BY T.created_by
-        ORDER BY total_trx DESC
-    ";
+    $sqlCreatedByRevenue = " SELECT COALESCE(SUM(T.total_amount), 0) AS total_trx, T.created_by FROM raki_dev.`transaction` T $whereTrx GROUP BY T.created_by ORDER BY total_trx DESC";
     $createdRes = mysqli_query($conn, $sqlCreatedByRevenue);
+
     if (!$createdRes) {
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 500,
+            'endpoint'      => '/dashboard/statistics.php',
+            'method'        => 'GET',
+            'error_message' => mysqli_error($conn),
+            'user_identifier' => $username ?? null,
+            'company_id'      => $company_id ?? null,
+        ]);
         jsonResponse(500, 'Failed to fetch revenue by creator', ['error' => mysqli_error($conn)]);
     }
+
     $creatorStats = [];
     while ($row = mysqli_fetch_assoc($createdRes)) {
         $creatorStats[] = [
@@ -139,23 +135,22 @@ function getDashboardStatistic($conn, $company_id = null)
     }
 
     // 4) Total supply order amount per ingredient + company (from_company)
-    $sqlIngredientPurchase = "
-        SELECT 
-            COALESCE(SUM(SO.total_amount), 0) AS total_trx,
-            I.ingredient_name,
-            AC.company_name
-        FROM raki_dev.supply_order SO
-        LEFT JOIN raki_dev.supply_order_detail SOD ON SO.supply_order_id = SOD.supply_order_id
-        LEFT JOIN raki_dev.ingredient I ON SOD.ingredient_id = I.ingredient_id
-        LEFT JOIN movira_core_dev.app_company AC ON SO.from_company_id = AC.company_id
-        $whereSoIngredient
-        GROUP BY I.ingredient_name, AC.company_name
-        ORDER BY total_trx DESC
-    ";
+    $sqlIngredientPurchase = "SELECT COALESCE(SUM(SO.total_amount), 0) AS total_trx, I.ingredient_name, AC.company_name FROM raki_dev.supply_order SO LEFT JOIN raki_dev.supply_order_detail SOD ON SO.supply_order_id = SOD.supply_order_id LEFT JOIN raki_dev.ingredient I ON SOD.ingredient_id = I.ingredient_id LEFT JOIN movira_core_dev.app_company AC ON SO.from_company_id = AC.company_id $whereSoIngredient GROUP BY I.ingredient_name, AC.company_name ORDER BY total_trx DESC";
     $ingRes = mysqli_query($conn, $sqlIngredientPurchase);
+
     if (!$ingRes) {
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 500,
+            'endpoint'      => '/dashboard/statistics.php',
+            'method'        => 'GET',
+            'error_message' => mysqli_error($conn),
+            'user_identifier' => $username ?? null,
+            'company_id'      => $company_id ?? null,
+        ]);
         jsonResponse(500, 'Failed to fetch ingredient purchase stats', ['error' => mysqli_error($conn)]);
     }
+
     $ingredientStats = [];
     while ($row = mysqli_fetch_assoc($ingRes)) {
         $ingredientStats[] = [
@@ -166,19 +161,22 @@ function getDashboardStatistic($conn, $company_id = null)
     }
 
     // 5) Revenue by date
-    $sqlRevenueByDate = "
-        SELECT 
-            DATE(T.transaction_date) AS trx_date,
-            COALESCE(SUM(T.total_amount), 0) AS total_trx
-        FROM raki_dev.`transaction` T
-        $whereTrx
-        GROUP BY DATE(T.transaction_date)
-        ORDER BY trx_date ASC
-    ";
+    $sqlRevenueByDate = "SELECT DATE(T.transaction_date) AS trx_date, COALESCE(SUM(T.total_amount), 0) AS total_trx FROM raki_dev.`transaction` T $whereTrx GROUP BY DATE(T.transaction_date) ORDER BY trx_date ASC";
     $revDateRes = mysqli_query($conn, $sqlRevenueByDate);
+
     if (!$revDateRes) {
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 500,
+            'endpoint'      => '/dashboard/statistics.php',
+            'method'        => 'GET',
+            'error_message' => mysqli_error($conn),
+            'user_identifier' => $username ?? null,
+            'company_id'      => $company_id ?? null,
+        ]);
         jsonResponse(500, 'Failed to fetch revenue by date', ['error' => mysqli_error($conn)]);
     }
+
     $revenueByDate = [];
     while ($row = mysqli_fetch_assoc($revDateRes)) {
         $revenueByDate[] = [
@@ -188,18 +186,22 @@ function getDashboardStatistic($conn, $company_id = null)
     }
 
     // 6) Summary: avg_order_value, total_trx, total_revenue
-    $sqlSummary = "
-        SELECT 
-            COALESCE(AVG(T.total_amount), 0) AS avg_order_value,
-            COUNT(*) AS total_trx,
-            COALESCE(SUM(T.total_amount), 0) AS total_revenue
-        FROM raki_dev.`transaction` T
-        $whereTrx
-    ";
+    $sqlSummary = "SELECT COALESCE(AVG(T.total_amount), 0) AS avg_order_value, COUNT(*) AS total_trx, COALESCE(SUM(T.total_amount), 0) AS total_revenue FROM raki_dev.`transaction` T $whereTrx";
     $sumRes = mysqli_query($conn, $sqlSummary);
+
     if (!$sumRes) {
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 500,
+            'endpoint'      => '/dashboard/statistics.php',
+            'method'        => 'GET',
+            'error_message' => mysqli_error($conn),
+            'user_identifier' => $username ?? null,
+            'company_id'      => $company_id ?? null,
+        ]);
         jsonResponse(500, 'Failed to fetch summary stats', ['error' => mysqli_error($conn)]);
     }
+
     $sumRow = mysqli_fetch_assoc($sumRes) ?: [];
     $summary = [
         'avg_order_value' => (float) ($sumRow['avg_order_value'] ?? 0),
@@ -208,19 +210,22 @@ function getDashboardStatistic($conn, $company_id = null)
     ];
 
     // 7) Transaction count by date
-    $sqlTrxCountByDate = "
-        SELECT 
-            DATE(T.transaction_date) AS trx_date,
-            COUNT(*) AS trx_count
-        FROM raki_dev.`transaction` T
-        $whereTrx
-        GROUP BY DATE(T.transaction_date)
-        ORDER BY trx_date DESC
-    ";
+    $sqlTrxCountByDate = "SELECT DATE(T.transaction_date) AS trx_date, COUNT(*) AS trx_count FROM raki_dev.`transaction` T $whereTrx GROUP BY DATE(T.transaction_date) ORDER BY trx_date DESC";
     $trxCountRes = mysqli_query($conn, $sqlTrxCountByDate);
+
     if (!$trxCountRes) {
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 500,
+            'endpoint'      => '/dashboard/statistics.php',
+            'method'        => 'GET',
+            'error_message' => mysqli_error($conn),
+            'user_identifier' => $username ?? null,
+            'company_id'      => $company_id ?? null,
+        ]);
         jsonResponse(500, 'Failed to fetch transaction count by date', ['error' => mysqli_error($conn)]);
     }
+
     $trxCountByDate = [];
     while ($row = mysqli_fetch_assoc($trxCountRes)) {
         $trxCountByDate[] = [
@@ -230,20 +235,22 @@ function getDashboardStatistic($conn, $company_id = null)
     }
 
     // 8) Cashier performance: trx_count + total_trx per created_by
-    $sqlCashierPerformance = "
-        SELECT 
-            T.created_by,
-            COUNT(*) AS trx_count,
-            COALESCE(SUM(T.total_amount), 0) AS total_trx
-        FROM raki_dev.`transaction` T
-        $whereTrx
-        GROUP BY T.created_by
-        ORDER BY trx_count DESC
-    ";
+    $sqlCashierPerformance = "SELECT T.created_by, COUNT(*) AS trx_count, COALESCE(SUM(T.total_amount), 0) AS total_trx FROM raki_dev.`transaction` T $whereTrx GROUP BY T.created_by ORDER BY trx_count DESC";
     $cashierRes = mysqli_query($conn, $sqlCashierPerformance);
+
     if (!$cashierRes) {
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 500,
+            'endpoint'      => '/dashboard/statistics.php',
+            'method'        => 'GET',
+            'error_message' => mysqli_error($conn),
+            'user_identifier' => $username ?? null,
+            'company_id'      => $company_id ?? null,
+        ]);
         jsonResponse(500, 'Failed to fetch cashier performance', ['error' => mysqli_error($conn)]);
     }
+
     $cashierStats = [];
     while ($row = mysqli_fetch_assoc($cashierRes)) {
         $cashierStats[] = [
@@ -254,19 +261,22 @@ function getDashboardStatistic($conn, $company_id = null)
     }
 
     // 9) Purchase per date (supply_order)
-    $sqlPurchaseByDate = "
-        SELECT 
-            DATE(SO.requested_at) AS order_date,
-            COALESCE(SUM(SO.total_amount), 0) AS total_purchase
-        FROM raki_dev.supply_order SO
-        $whereSo
-        GROUP BY DATE(SO.requested_at)
-        ORDER BY order_date DESC
-    ";
+    $sqlPurchaseByDate = "SELECT DATE(SO.requested_at) AS order_date, COALESCE(SUM(SO.total_amount), 0) AS total_purchase FROM raki_dev.supply_order SO $whereSo GROUP BY DATE(SO.requested_at) ORDER BY order_date DESC";
     $purchaseRes = mysqli_query($conn, $sqlPurchaseByDate);
+
     if (!$purchaseRes) {
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 500,
+            'endpoint'      => '/dashboard/statistics.php',
+            'method'        => 'GET',
+            'error_message' => mysqli_error($conn),
+            'user_identifier' => $username ?? null,
+            'company_id'      => $company_id ?? null,
+        ]);
         jsonResponse(500, 'Failed to fetch purchase by date', ['error' => mysqli_error($conn)]);
     }
+
     $purchaseByDate = [];
     while ($row = mysqli_fetch_assoc($purchaseRes)) {
         $purchaseByDate[] = [
@@ -297,6 +307,15 @@ function getDashboardStatistic($conn, $company_id = null)
 
 $headers = getallheaders();
 if (!isset($headers['Authorization'])) {
+    logApiError($conn, [
+        'error_level'   => 'error',
+        'http_status'   => 401,
+        'endpoint'      => '/dashboard/statistics.php',
+        'method'        => 'GET',
+        'error_message' => 'Authorization header not found',
+        'user_identifier' => $username ?? null,
+        'company_id'      => $company_id ?? null,
+    ]);
     jsonResponse(401, 'Authorization header not found');
 }
 
@@ -321,18 +340,9 @@ try {
     $method = $_SERVER['REQUEST_METHOD'];
 
     switch($method){
-        case 'POST':
-            jsonResponse(500, 'Internal Server Error', ['message' => 'Under development']);
-            break;
         case 'GET':
             $company_id = $_GET['company_id'] ?? null;
             getDashboardStatistic($conn, $company_id);
-            break;
-        case 'PUT':
-            jsonResponse(500, 'Internal Server Error', ['message' => 'Under development']);
-            break;
-        case 'DELETE':
-            jsonResponse(500, 'Internal Server Error', ['message' => 'Under development']);
             break;
         default:
             jsonResponse(405, 'Method Not Allowed');
@@ -340,6 +350,15 @@ try {
     }
 
 } catch (Exception $e){
+    logApiError($conn, [
+        'error_level'   => 'error',
+        'http_status'   => 500,
+        'endpoint'      => '/dashboard/statistics.php',
+        'method'        => '',
+        'error_message' => $e->getMessage(),
+        'user_identifier' => $decoded->username ?? null,
+        'company_id'      => $decoded->company_id ?? null,
+    ]);
     jsonResponse(500, 'Internal Server Error', ['error' => $e->getMessage()]);
 }
 

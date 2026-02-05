@@ -3,6 +3,7 @@
 require_once '../connection/db.php';
 require_once '../vendor/autoload.php';
 require_once '../general.php';
+require_once '../log.php';
 
 function register($conn, $input){
     $conn = DB::conn();
@@ -46,6 +47,15 @@ function register($conn, $input){
         $userId = mysqli_insert_id($conn);
         jsonResponse(201, 'New user has been created successfully', ['username' => $userId]);
     } else {
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 500,
+            'endpoint'      => '/account/register.php',
+            'method'        => 'POST',
+            'error_message' => mysqli_error($conn),
+            'user_identifier' => $username ?? null,
+            'company_id'      => $decoded->company_id ?? null,
+        ]);
         jsonResponse(500, 'Failed to create a new user: ' . mysqli_error($conn));
     }
 }
@@ -66,18 +76,21 @@ try {
             $input = json_decode(file_get_contents('php://input'), true);
             register($conn, $input);   
             break;
-        case 'GET':
-            jsonResponse(500, 'Internal Server Error', ['message' => 'Under development']);
-            break;
-        case 'PUT':
-            jsonResponse(500, 'Internal Server Error', ['message' => 'Under development']);
-            break;
-        case 'DELETE':
-            jsonResponse(500, 'Internal Server Error', ['message' => 'Under development']);
+        default:
+            jsonResponse(405, 'Method Not Allowed');
             break;
     }
 
 } catch (Exception $e){
+    logApiError($conn, [
+        'error_level'   => 'error',
+        'http_status'   => 500,
+        'endpoint'      => '/account/register.php',
+        'method'        => '',
+        'error_message' => $e->getMessage(),
+        'user_identifier' => $decoded->username ?? null,
+        'company_id'      => $decoded->company_id ?? null,
+    ]);
     jsonResponse(500, 'Internal Server Error', ['error' => $e->getMessage()]);
 }
 

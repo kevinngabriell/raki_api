@@ -4,58 +4,95 @@ require_once '../connection/db.php';
 require_once '../vendor/autoload.php';
 require_once '../general.php';
 require_once '../config.php';
+require_once '../log.php';
 
-function getDashboard($conn, $company_id){
+function getDashboard($conn, $company_id, $username){
+    //Check is company id parameter exists or not
     if (!$company_id) {
-        jsonResponse(400, 'company_id is required');
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 400,
+            'endpoint'      => '/dashboard/index.php',
+            'method'        => 'GET',
+            'error_message' => 'company_id is required',
+            'user_identifier' => $username ?? null,
+            'company_id'      => $company_id ?? null,
+        ]);
+        jsonResponse(400, 'Company ID parameters is required');
     }
 
     // Period: current month [start_month, next_month)
     $start_month = date('Y-m-01');
     $next_month  = date('Y-m-01', strtotime('+1 month', strtotime($start_month)));
 
-    // 1) Revenue this month
-    $sql1 = "SELECT COALESCE(SUM(t.total_amount),0) AS revenue_this_month
-             FROM raki_dev.transaction t
-             WHERE t.company_id = ? AND t.transaction_date >= ? AND t.transaction_date < ?";
+    // 1. Revenue this month
+    $sql1 = "SELECT COALESCE(SUM(t.total_amount),0) AS revenue_this_month FROM raki_dev.transaction t WHERE t.company_id = ? AND t.transaction_date >= ? AND t.transaction_date < ?";
     $stmt1 = $conn->prepare($sql1);
-    if(!$stmt1){ jsonResponse(500, 'Failed to prepare statement', ['error'=>$conn->error]); }
+
+    if(!$stmt1){ 
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 500,
+            'endpoint'      => '/dashboard/index.php',
+            'method'        => 'GET',
+            'error_message' => 'Failed to prepare statement for revenue this month : ' + $conn-> error,
+            'user_identifier' => $username ?? null,
+            'company_id'      => $company_id ?? null,
+        ]);
+        jsonResponse(500, 'Failed to prepare statement', ['error'=>$conn->error]); 
+    }
+
     $stmt1->bind_param('sss', $company_id, $start_month, $next_month);
     $stmt1->execute();
     $rev = ($stmt1->get_result()->fetch_assoc()['revenue_this_month'] ?? 0) * 1;
 
-    // 2) Total cups this month
-    $sql2 = "SELECT COALESCE(SUM(td.quantity),0) AS cups_this_month
-             FROM raki_dev.transaction t
-             JOIN raki_dev.transaction_detail td ON td.transaction_id = t.transaction_id
-             WHERE t.company_id = ? AND t.transaction_date >= ? AND t.transaction_date < ?";
+    // 2. Total cups this month
+    $sql2 = "SELECT COALESCE(SUM(td.quantity),0) AS cups_this_month FROM raki_dev.transaction t JOIN raki_dev.transaction_detail td ON td.transaction_id = t.transaction_id WHERE t.company_id = ? AND t.transaction_date >= ? AND t.transaction_date < ?";
     $stmt2 = $conn->prepare($sql2);
-    if(!$stmt2){ jsonResponse(500, 'Failed to prepare statement', ['error'=>$conn->error]); }
+
+    if(!$stmt2){ 
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 500,
+            'endpoint'      => '/dashboard/index.php',
+            'method'        => 'GET',
+            'error_message' => 'Failed to prepare statement for total cups this month : ' + $conn-> error,
+            'user_identifier' => $username ?? null,
+            'company_id'      => $company_id ?? null,
+        ]);
+        jsonResponse(500, 'Failed to prepare statement', ['error'=>$conn->error]); 
+    }
     $stmt2->bind_param('sss', $company_id, $start_month, $next_month);
     $stmt2->execute();
     $cups = ($stmt2->get_result()->fetch_assoc()['cups_this_month'] ?? 0) * 1;
 
-    // 3) Average daily revenue (calendar days in the month)
+    // 3. Average daily revenue (calendar days in the month)
     $days_in_month = (int)date('t', strtotime($start_month));
     $avg_calendar = $days_in_month > 0 ? ($rev / $days_in_month) : 0;
 
-    // 4) Top 3 menus by cups this month
-    $sql4 = "SELECT m.menu_id, m.menu_name,
-                    COALESCE(SUM(td.quantity),0) AS total_cups,
-                    COALESCE(SUM(td.subtotal),0) AS total_revenue
-             FROM raki_dev.transaction t
-             JOIN raki_dev.transaction_detail td ON td.transaction_id = t.transaction_id
-             LEFT JOIN raki_dev.menu m ON m.menu_id = td.menu_id
-             WHERE t.company_id = ? AND t.transaction_date >= ? AND t.transaction_date < ?
-             GROUP BY m.menu_id, m.menu_name
-             ORDER BY total_cups DESC, total_revenue DESC
-             LIMIT 3";
+    // 4. Top 3 menus by cups this month
+    $sql4 = "SELECT m.menu_id, m.menu_name, COALESCE(SUM(td.quantity),0) AS total_cups, COALESCE(SUM(td.subtotal),0) AS total_revenue FROM raki_dev.transaction t JOIN raki_dev.transaction_detail td ON td.transaction_id = t.transaction_id LEFT JOIN raki_dev.menu m ON m.menu_id = td.menu_id WHERE t.company_id = ? AND t.transaction_date >= ? AND t.transaction_date < ? GROUP BY m.menu_id, m.menu_name ORDER BY total_cups DESC, total_revenue DESC LIMIT 3";
     $stmt4 = $conn->prepare($sql4);
-    if(!$stmt4){ jsonResponse(500, 'Failed to prepare statement', ['error'=>$conn->error]); }
+
+    if(!$stmt4){ 
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 500,
+            'endpoint'      => '/dashboard/index.php',
+            'method'        => 'GET',
+            'error_message' => 'Failed to prepare statement for top 3 menus : ' + $conn-> error,
+            'user_identifier' => $username ?? null,
+            'company_id'      => $company_id ?? null,
+        ]);
+        jsonResponse(500, 'Failed to prepare statement', ['error'=>$conn->error]); 
+    }
+
     $stmt4->bind_param('sss', $company_id, $start_month, $next_month);
     $stmt4->execute();
+
     $top = [];
     $r4 = $stmt4->get_result();
+
     while($row = $r4->fetch_assoc()){
         $top[] = [
             'menu_id' => $row['menu_id'],
@@ -66,17 +103,22 @@ function getDashboard($conn, $company_id){
     }
 
     // 5) Performance per menu (full list)
-    $sql5 = "SELECT m.menu_id, m.menu_name,
-                    COALESCE(SUM(td.quantity),0) AS total_cups,
-                    COALESCE(SUM(td.subtotal),0) AS total_revenue
-             FROM raki_dev.transaction t
-             JOIN raki_dev.transaction_detail td ON td.transaction_id = t.transaction_id
-             LEFT JOIN raki_dev.menu m ON m.menu_id = td.menu_id
-             WHERE t.company_id = ? AND t.transaction_date >= ? AND t.transaction_date < ?
-             GROUP BY m.menu_id, m.menu_name
-             ORDER BY total_revenue DESC";
+    $sql5 = "SELECT m.menu_id, m.menu_name, COALESCE(SUM(td.quantity),0) AS total_cups, COALESCE(SUM(td.subtotal),0) AS total_revenue FROM raki_dev.transaction t JOIN raki_dev.transaction_detail td ON td.transaction_id = t.transaction_id LEFT JOIN raki_dev.menu m ON m.menu_id = td.menu_id WHERE t.company_id = ? AND t.transaction_date >= ? AND t.transaction_date < ? GROUP BY m.menu_id, m.menu_name ORDER BY total_revenue DESC";
     $stmt5 = $conn->prepare($sql5);
-    if(!$stmt5){ jsonResponse(500, 'Failed to prepare statement', ['error'=>$conn->error]); }
+
+    if(!$stmt5){ 
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 500,
+            'endpoint'      => '/dashboard/index.php',
+            'method'        => 'GET',
+            'error_message' => 'Failed to prepare statement for performance per menus : ' + $conn-> error,
+            'user_identifier' => $username ?? null,
+            'company_id'      => $company_id ?? null,
+        ]);
+        jsonResponse(500, 'Failed to prepare statement', ['error'=>$conn->error]); 
+    }
+
     $stmt5->bind_param('sss', $company_id, $start_month, $next_month);
     $stmt5->execute();
     $per_menu = [];
@@ -105,6 +147,15 @@ use Firebase\JWT\Key;
 
 $headers = getallheaders();
 if (!isset($headers['Authorization'])) {
+    logApiError($conn, [
+        'error_level'   => 'error',
+        'http_status'   => 401,
+        'endpoint'      => '/dashboard/index.php',
+        'method'        => 'GET',
+        'error_message' => 'Authorization header not found',
+        'user_identifier' => $decoded->username ?? null,
+        'company_id'      => $decoded->company_id ?? null,
+    ]);
     jsonResponse(401, 'Authorization header not found');
 }
 
@@ -126,22 +177,25 @@ try {
     $method = $_SERVER['REQUEST_METHOD'];
 
     switch($method){
-        case 'POST':
-            jsonResponse(500, 'Internal Server Error', ['message' => 'Under development']);
-            break;
         case 'GET':
             $company_id = $_GET['company_id'] ?? null;
-            getDashboard($conn, $company_id);
+            getDashboard($conn, $company_id, $token_username);
             break;
-        case 'PUT':
-            jsonResponse(500, 'Internal Server Error', ['message' => 'Under development']);
-            break;
-        case 'DELETE':
-            jsonResponse(500, 'Internal Server Error', ['message' => 'Under development']);
+        default:
+            jsonResponse(405, 'Method Not Allowed');
             break;
     }
 
 } catch (Exception $e){
+    logApiError($conn, [
+        'error_level'   => 'error',
+        'http_status'   => 500,
+        'endpoint'      => '/dashboard/index.php',
+        'method'        => '',
+        'error_message' => $e->getMessage(),
+        'user_identifier' => $decoded->username ?? null,
+        'company_id'      => $decoded->company_id ?? null,
+    ]);
     jsonResponse(500, 'Internal Server Error', ['error' => $e->getMessage()]);
 }
 

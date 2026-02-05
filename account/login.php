@@ -4,6 +4,7 @@ require_once '../connection/db.php';
 require_once '../vendor/autoload.php';
 require_once '../general.php';
 require_once '../config.php';
+require_once '../log.php';
 
 use Firebase\JWT\JWT;
 
@@ -19,10 +20,28 @@ function login($conn, $input){
     $user_result = mysqli_query($conn, $user_query);
 
     if (!$user_result) {
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 500,
+            'endpoint'      => '/account/login.php',
+            'method'        => 'POST',
+            'error_message' => mysqli_error($conn),
+            'user_identifier' => $username ?? null,
+            'company_id'      => $decoded->company_id ?? null,
+        ]);
         jsonResponse(500, 'DB error', ['error' => mysqli_error($conn)]);
     }
 
     if (mysqli_num_rows($user_result) !== 1) {
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 401,
+            'endpoint'      => '/account/login.php',
+            'method'        => 'POST',
+            'error_message' => 'Invalid credentials',
+            'user_identifier' => $username ?? null,
+            'company_id'      => $decoded->company_id ?? null,
+        ]);
         jsonResponse(401, 'Invalid credentials');
     }
 
@@ -30,6 +49,15 @@ function login($conn, $input){
 
     // verifikasi password
     if (!password_verify($password, $row['password'])) {
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 401,
+            'endpoint'      => '/account/login.php',
+            'method'        => 'POST',
+            'error_message' => 'Invalid credentials',
+            'user_identifier' => $username ?? null,
+            'company_id'      => $decoded->company_id ?? null,
+        ]);
         jsonResponse(401, 'Invalid credentials');
     }
 
@@ -71,24 +99,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 
 try {
     $method = $_SERVER['REQUEST_METHOD'];
+    $conn = DB::conn();
 
     switch($method){
         case 'POST':   
             $input = json_decode(file_get_contents('php://input'), true);
             login($conn, $input);
             break;
-        case 'GET':
-            jsonResponse(500, 'Internal Server Error', ['message' => 'Under development']);
-            break;
-        case 'PUT':
-            jsonResponse(500, 'Internal Server Error', ['message' => 'Under development']);
-            break;
-        case 'DELETE':
-            jsonResponse(500, 'Internal Server Error', ['message' => 'Under development']);
+        default:
+            jsonResponse(405, 'Method Not Allowed');
             break;
     }
 
 } catch (Exception $e){
+    logApiError($conn, [
+        'error_level'   => 'error',
+        'http_status'   => 500,
+        'endpoint'      => '/account/login.php',
+        'method'        => '',
+        'error_message' => $e->getMessage(),
+        'user_identifier' => $decoded->username ?? null,
+        'company_id'      => $decoded->company_id ?? null,
+    ]);
     jsonResponse(500, 'Internal Server Error', ['error' => $e->getMessage()]);
 }
 

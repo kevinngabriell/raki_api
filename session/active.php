@@ -4,6 +4,7 @@ require_once '../connection/db.php';
 require_once '../vendor/autoload.php';
 require_once '../general.php';
 require_once '../config.php';
+require_once '../log.php';
 
 function checkActiveSession($conn, $company_id, $username)
 {
@@ -39,8 +40,7 @@ function checkActiveSession($conn, $company_id, $username)
     $sid = mysqli_real_escape_string($conn, $session['session_id']);
 
     // --- Payment summary for this session ---
-    $qp = "
-      SELECT 
+    $qp = "SELECT 
             SUM(CASE WHEN tp.payment_method = 'cash' THEN t.total_amount ELSE 0 END) AS cash_amount,
             SUM(CASE WHEN tp.payment_method = 'qris' THEN t.total_amount ELSE 0 END) AS qris_amount,
             SUM(CASE WHEN tp.payment_method = 'transfer' THEN t.total_amount ELSE 0 END) AS transfer_amount,
@@ -158,17 +158,14 @@ try {
     $method = $_SERVER['REQUEST_METHOD'];
 
     switch($method){
-        case 'POST':
-            break;
         case 'GET':
             // Prefer token values to prevent user spoofing
             $company_id = $_GET['company_id'];
             $username = $_GET['username'];
             checkActiveSession($conn, $company_id, $username);
             break;
-        case 'PUT':
-            break;
-        case 'DELETE':
+        default:
+            jsonResponse(405, 'Method Not Allowed');
             break;
     }
 

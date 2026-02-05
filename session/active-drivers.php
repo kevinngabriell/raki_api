@@ -12,15 +12,7 @@ function checkActiveDriverSpesific($conn, $company_id){
 
     $company_id_esc = mysqli_real_escape_string($conn, $company_id);
 
-    $qPay = "SELECT 
-            t.session_id,
-            tp.payment_method,
-            SUM(tp.amount) AS total_amount
-        FROM raki_dev.`transaction` t
-        JOIN raki_dev.transaction_payment tp ON tp.transaction_id = t.transaction_id
-        WHERE t.company_id = '$company_id_esc' 
-        GROUP BY t.session_id, tp.payment_method
-    ";
+    $qPay = "SELECT t.session_id, tp.payment_method, SUM(tp.amount) AS total_amount FROM raki_dev.`transaction` t JOIN raki_dev.transaction_payment tp ON tp.transaction_id = t.transaction_id WHERE t.company_id = '$company_id_esc'  GROUP BY t.session_id, tp.payment_method";
 
     $rPay = mysqli_query($conn, $qPay);
     if (!$rPay) {

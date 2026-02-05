@@ -42,7 +42,8 @@ function logApiError(
     $ip_address = $_SERVER['REMOTE_ADDR'] ?? null;
     $user_agent = $_SERVER['HTTP_USER_AGENT'] ?? null;
 
-    $sql = "INSERT INTO raki_dev.api_error_log (error_id, error_level, http_status, endpoint, method, error_message, file, line, user_identifier, company_id, request_id, ip_address, user_agent, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW()";
+    $sql = "INSERT INTO raki_dev.api_error_log (error_id, error_level, http_status, endpoint, method, error_message, file, line, user_identifier, company_id, request_id, ip_address, user_agent, created_at) 
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())";
 
     $stmt = $conn->prepare($sql);
     if (!$stmt) {

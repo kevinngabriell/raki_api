@@ -4,8 +4,9 @@ require_once '../connection/db.php';
 require_once '../vendor/autoload.php';
 require_once '../general.php';
 require_once '../config.php';
+require_once '../log.php';
 
-function getCompanyDetails ($conn, $company_id){
+function getCompanyDetails ($conn, $company_id, $username){
     $query = "SELECT * FROM app_company WHERE company_id = '$company_id'";
     $result = mysqli_query($conn, $query);
 
@@ -20,9 +21,18 @@ function getCompanyDetails ($conn, $company_id){
                 'total_pages' => 1,
             ]
         ];
-        jsonResponse(200, 'Category found', $response);
+        jsonResponse(200, 'Company found', $response);
     } else {
-        jsonResponse(404, 'Category not found');
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 404,
+            'endpoint'      => '/account/company.php',
+            'method'        => 'GET',
+            'error_message' => 'Company not found',
+            'user_identifier' => $username ?? null,
+            'company_id'      => $company_id ?? null,
+        ]);
+        jsonResponse(404, 'Company not found');
     }
 }
 
@@ -31,6 +41,15 @@ use Firebase\JWT\Key;
 
 $headers = getallheaders();
 if (!isset($headers['Authorization'])) {
+    logApiError($conn, [
+        'error_level'   => 'error',
+        'http_status'   => 401,
+        'endpoint'      => '/account/company.php',
+        'method'        => '',
+        'error_message' => 'Authorization header not found',
+        'user_identifier' => $username ?? null,
+        'company_id'      => $company_id ?? null,
+    ]);
     jsonResponse(401, 'Authorization header not found');
 }
 
@@ -56,7 +75,7 @@ try {
             break;
         case 'GET':
             $company_id = $_GET['company_id'];
-            getCompanyDetails($conn, $company_id);
+            getCompanyDetails($conn, $company_id, $token_username);
             break;
         case 'PUT':
             break;
@@ -65,6 +84,15 @@ try {
     }
 
 } catch (Exception $e){
+    logApiError($conn, [
+        'error_level'   => 'error',
+        'http_status'   => 500,
+        'endpoint'      => '/account/company.php',
+        'method'        => '',
+        'error_message' => $e->getMessage(),
+        'user_identifier' => $decoded->username ?? null,
+        'company_id'      => $decoded->company_id ?? null,
+    ]);
     jsonResponse(500, 'Internal Server Error', ['error' => $e->getMessage()]);
 }
 
