@@ -5,16 +5,35 @@ require_once '../vendor/autoload.php';
 require_once '../general.php';
 require_once '../config.php';
 require_once '../notification/notification.php';
+require_once '../log.php';
 
 function createPOSTransacton($conn, $input, $username, $decoded){
     // company_id from token
     $company_id = $decoded->company_id ?? null;
     if (!$company_id) {
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 400,
+            'endpoint'      => '/pos/transaction.php',
+            'method'        => 'POST',
+            'error_message' => 'company_id not found in token',
+            'user_identifier' => $username ?? null,
+            'company_id'      => $decoded->company_id ?? null,
+        ]);
         jsonResponse(400, 'company_id not found in token');
     }
 
     // Basic validation
     if (!$input || !isset($input['items']) || !is_array($input['items']) || count($input['items']) === 0) {
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 400,
+            'endpoint'      => '/pos/transaction.php',
+            'method'        => 'POST',
+            'error_message' => 'Invalid payload. Require non-empty items array.',
+            'user_identifier' => $username ?? null,
+            'company_id'      => $decoded->company_id ?? null,
+        ]);
         jsonResponse(400, 'Invalid payload. Require non-empty items array.');
     }
 
@@ -25,13 +44,40 @@ function createPOSTransacton($conn, $input, $username, $decoded){
     $longitude = $input['longitude'] ?? null;
 
     if ($latitude !== null && !is_numeric($latitude)) {
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 400,
+            'endpoint'      => '/pos/transaction.php',
+            'method'        => 'POST',
+            'error_message' => 'Invalid latitude',
+            'user_identifier' => $username ?? null,
+            'company_id'      => $decoded->company_id ?? null,
+        ]);
         jsonResponse(400, 'Invalid latitude');
     }
     if ($longitude !== null && !is_numeric($longitude)) {
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 400,
+            'endpoint'      => '/pos/transaction.php',
+            'method'        => 'POST',
+            'error_message' => 'Invalid longitude',
+            'user_identifier' => $username ?? null,
+            'company_id'      => $decoded->company_id ?? null,
+        ]);
         jsonResponse(400, 'Invalid longitude');
     }
 
     if (!$payments || !is_array($payments) || count($payments) === 0) {
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 400,
+            'endpoint'      => '/pos/transaction.php',
+            'method'        => 'POST',
+            'error_message' => 'Invalid payload. Require payments array with at least one item.',
+            'user_identifier' => $username ?? null,
+            'company_id'      => $decoded->company_id ?? null,
+        ]);
         jsonResponse(400, 'Invalid payload. Require payments array with at least one item.');
     }
 
@@ -39,13 +85,7 @@ function createPOSTransacton($conn, $input, $username, $decoded){
     $user_id_esc    = mysqli_real_escape_string($conn, $username);
 
     // 1) Find active session
-    $qSess = "SELECT session_id, started_at, cash_start
-              FROM raki_dev.work_session
-              WHERE company_id='$company_id_esc'
-                AND user_id='$user_id_esc'
-                AND status='active'
-              ORDER BY started_at DESC
-              LIMIT 1";
+    $qSess = "SELECT session_id, started_at, cash_start FROM raki_dev.work_session WHERE company_id='$company_id_esc' AND user_id='$user_id_esc' AND status='active' ORDER BY started_at DESC LIMIT 1";
 
     $rSess = mysqli_query($conn, $qSess);
     if (!$rSess) {
@@ -62,6 +102,15 @@ function createPOSTransacton($conn, $input, $username, $decoded){
     }
 
     if (mysqli_num_rows($rSess) !== 1) {
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 400,
+            'endpoint'      => '/pos/transaction.php',
+            'method'        => 'POST',
+            'error_message' => 'No active session. Please start session first.',
+            'user_identifier' => $username ?? null,
+            'company_id'      => $decoded->company_id ?? null,
+        ]);
         jsonResponse(400, 'No active session. Please start session first.');
     }
 
@@ -75,6 +124,15 @@ function createPOSTransacton($conn, $input, $username, $decoded){
 
     foreach ($items as $idx => $it) {
         if (!isset($it['menu_id']) || !isset($it['quantity']) || !isset($it['unit_price'])) {
+            logApiError($conn, [
+                'error_level'   => 'error',
+                'http_status'   => 400,
+                'endpoint'      => '/pos/transaction.php',
+                'method'        => 'POST',
+                'error_message' => "Invalid item at index $idx. Require menu_id, quantity, unit_price.",
+                'user_identifier' => $username ?? null,
+                'company_id'      => $decoded->company_id ?? null,
+            ]);
             jsonResponse(400, "Invalid item at index $idx. Require menu_id, quantity, unit_price.");
         }
         $menu_id = (string)$it['menu_id'];
@@ -82,6 +140,15 @@ function createPOSTransacton($conn, $input, $username, $decoded){
         $unit_price = (int)$it['unit_price'];
 
         if ($menu_id === '' || $quantity <= 0 || $unit_price < 0) {
+            logApiError($conn, [
+                'error_level'   => 'error',
+                'http_status'   => 400,
+                'endpoint'      => '/pos/transaction.php',
+                'method'        => 'POST',
+                'error_message' => "Invalid item values at index $idx.",
+                'user_identifier' => $username ?? null,
+                'company_id'      => $decoded->company_id ?? null,
+            ]);
             jsonResponse(400, "Invalid item values at index $idx.");
         }
 
@@ -104,26 +171,59 @@ function createPOSTransacton($conn, $input, $username, $decoded){
 
     foreach ($payments as $idx => $p) {
         if (!isset($p['payment_method']) || !isset($p['amount'])) {
+            logApiError($conn, [
+                'error_level'   => 'error',
+                'http_status'   => 400,
+                'endpoint'      => '/pos/transaction.php',
+                'method'        => 'POST',
+                'error_message' => "Invalid payment at index $idx. Require payment_method and amount.",
+                'user_identifier' => $username ?? null,
+                'company_id'      => $decoded->company_id ?? null,
+            ]);
             jsonResponse(400, "Invalid payment at index $idx. Require payment_method and amount.");
         }
         $method = (string)$p['payment_method'];
         $amount = (int)$p['amount'];
 
         if (!in_array($method, $allowed_methods, true)) {
+            logApiError($conn, [
+                'error_level'   => 'error',
+                'http_status'   => 400,
+                'endpoint'      => '/pos/transaction.php',
+                'method'        => 'POST',
+                'error_message' => "Invalid payment_method at index $idx.",
+                'user_identifier' => $username ?? null,
+                'company_id'      => $decoded->company_id ?? null,
+            ]);
             jsonResponse(400, "Invalid payment_method at index $idx.");
         }
         if ($amount <= 0) {
+            logApiError($conn, [
+                'error_level'   => 'error',
+                'http_status'   => 400,
+                'endpoint'      => '/pos/transaction.php',
+                'method'        => 'POST',
+                'error_message' => "Invalid payment amount at index $idx.",
+                'user_identifier' => $username ?? null,
+                'company_id'      => $decoded->company_id ?? null,
+            ]);
             jsonResponse(400, "Invalid payment amount at index $idx.");
         }
 
         $total_paid += $amount;
-        $prepared_payments[] = [
-            'payment_method' => $method,
-            'amount' => $amount,
-        ];
+        $prepared_payments[] = ['payment_method' => $method, 'amount' => $amount];
     }
 
     if ($total_paid !== (int)$total_amount) {
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 400,
+            'endpoint'      => '/pos/transaction.php',
+            'method'        => 'POST',
+            'error_message' => "Total payment (cash + qris) must equal total_amount. total_paid=$total_paid, total_amount=$total_amount",
+            'user_identifier' => $username ?? null,
+            'company_id'      => $decoded->company_id ?? null,
+        ]);
         jsonResponse(400, "Total payment (cash + qris) must equal total_amount. total_paid=$total_paid, total_amount=$total_amount");
     }
 
@@ -134,19 +234,7 @@ function createPOSTransacton($conn, $input, $username, $decoded){
         $menu_id = mysqli_real_escape_string($conn, $pi['menu_id']);
         $qtyReq  = (int)$pi['quantity'];
 
-        $qLeft = "SELECT
-              MAX(wss.qty_start) AS qty_start,
-              COALESCE(SUM(td.quantity), 0) AS qty_sold
-            FROM raki_dev.work_session_stock wss
-            LEFT JOIN raki_dev.`transaction` t ON t.session_id = wss.session_id
-            LEFT JOIN raki_dev.transaction_detail td
-              ON td.transaction_id = t.transaction_id
-             AND td.menu_id = wss.menu_id
-            WHERE wss.session_id = '$sid_esc'
-              AND wss.menu_id = '$menu_id'
-            GROUP BY wss.session_id, wss.menu_id
-            LIMIT 1
-        ";
+        $qLeft = "SELECT MAX(wss.qty_start) AS qty_start, COALESCE(SUM(td.quantity), 0) AS qty_sold FROM raki_dev.work_session_stock wss LEFT JOIN raki_dev.`transaction` t ON t.session_id = wss.session_id LEFT JOIN raki_dev.transaction_detail td ON td.transaction_id = t.transaction_id AND td.menu_id = wss.menu_id WHERE wss.session_id = '$sid_esc' AND wss.menu_id = '$menu_id' GROUP BY wss.session_id, wss.menu_id LIMIT 1";
 
         $rLeft = mysqli_query($conn, $qLeft);
         if (!$rLeft) {
@@ -163,6 +251,15 @@ function createPOSTransacton($conn, $input, $username, $decoded){
         }
 
         if (mysqli_num_rows($rLeft) !== 1) {
+            logApiError($conn, [
+                'error_level'   => 'error',
+                'http_status'   => 400,
+                'endpoint'      => '/pos/transaction.php',
+                'method'        => 'POST',
+                'error_message' => "Menu not found in session stock",
+                'user_identifier' => $decoded->username ?? null,
+                'company_id'      => $decoded->company_id ?? null,
+            ]);
             jsonResponse(400, 'Menu not found in session stock', [
                 'menu_id' => $pi['menu_id']
             ]);
@@ -175,6 +272,15 @@ function createPOSTransacton($conn, $input, $username, $decoded){
         if ($qtyLeft < 0) $qtyLeft = 0;
 
         if ($qtyReq > $qtyLeft) {
+            logApiError($conn, [
+                'error_level'   => 'error',
+                'http_status'   => 400,
+                'endpoint'      => '/pos/transaction.php',
+                'method'        => 'POST',
+                'error_message' => "Insufficient stock for this session",
+                'user_identifier' => $decoded->username ?? null,
+                'company_id'      => $decoded->company_id ?? null,
+            ]);
             jsonResponse(400, 'Insufficient stock for this session', [
                 'menu_id' => $pi['menu_id'],
                 'qty_left' => $qtyLeft,
@@ -190,10 +296,7 @@ function createPOSTransacton($conn, $input, $username, $decoded){
         $transaction_id = 'trx' . uniqid();
         $transaction_date = date('Y-m-d H:i:s');
 
-        $sqlHeader = "INSERT INTO raki_dev.transaction
-            (transaction_id, session_id, company_id, transaction_date, total_amount, latitude, longitude, created_at, created_by, updated_at, updated_by, total_item)
-            VALUES
-            (?, ?, ?, ?, ?, ?, ?, NOW(), ?, NOW(), ?, ?)";
+        $sqlHeader = "INSERT INTO raki_dev.transaction (transaction_id, session_id, company_id, transaction_date, total_amount, latitude, longitude, created_at, created_by, updated_at, updated_by, total_item) VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), ?, NOW(), ?, ?)";
 
         $stmtHeader = $conn->prepare($sqlHeader);
         if (!$stmtHeader) {
@@ -229,10 +332,7 @@ function createPOSTransacton($conn, $input, $username, $decoded){
         }
 
         // Insert details
-        $sqlDetail = "INSERT INTO raki_dev.transaction_detail
-            (detail_id, transaction_id, menu_id, quantity, subtotal, created_at)
-            VALUES
-            (?, ?, ?, ?, ?, NOW())";
+        $sqlDetail = "INSERT INTO raki_dev.transaction_detail (detail_id, transaction_id, menu_id, quantity, subtotal, created_at) VALUES (?, ?, ?, ?, ?, NOW())";
 
         $stmtDetail = $conn->prepare($sqlDetail);
         if (!$stmtDetail) {
@@ -281,10 +381,7 @@ function createPOSTransacton($conn, $input, $username, $decoded){
         }
 
         // Insert payments
-        $sqlPayment = "INSERT INTO raki_dev.transaction_payment
-            (payment_id, transaction_id, payment_method, amount, company_id, created_at)
-            VALUES
-            (?, ?, ?, ?, ?, NOW())";
+        $sqlPayment = "INSERT INTO raki_dev.transaction_payment (payment_id, transaction_id, payment_method, amount, company_id, created_at) VALUES (?, ?, ?, ?, ?, NOW())";
 
         $stmtPayment = $conn->prepare($sqlPayment);
         if (!$stmtPayment) {
@@ -374,6 +471,15 @@ if (!$authHeader) {
 }
 
 if (!$authHeader) {
+    logApiError($conn, [
+        'error_level'   => 'error',
+        'http_status'   => 401,
+        'endpoint'      => '/pos/transaction.php',
+        'method'        => 'POST',
+        'error_message' => 'Authorization header not found',
+        'user_identifier' => $decoded->username ?? null,
+        'company_id'      => $decoded->company_id ?? null,
+    ]);
     jsonResponse(401, 'Authorization header not found');
 }
 
@@ -406,13 +512,16 @@ try {
             }
             createPOSTransacton($conn, $input, $token_username, $decoded);
             break;
-        case 'GET':
-            break;
-        case 'PUT':
-            break;
-        case 'DELETE':
-            break;
         default:
+            logApiError($conn, [
+                'error_level'   => 'error',
+                'http_status'   => 405,
+                'endpoint'      => '/pos/transaction.php',
+                'method'        => 'POST',
+                'error_message' => 'Method Not Allowed',
+                'user_identifier' => $decoded->username ?? null,
+                'company_id'      => $decoded->company_id ?? null,
+            ]);
             jsonResponse(405, 'Method Not Allowed');
     }
 

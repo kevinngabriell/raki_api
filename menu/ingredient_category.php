@@ -4,9 +4,19 @@ require_once '../connection/db.php';
 require_once '../vendor/autoload.php';
 require_once '../general.php';
 require_once '../config.php';
+require_once '../log.php';
 
-function createIngredientCategory($conn, $input, $token_username){
+function createIngredientCategory($conn, $input, $username){
     if (!isset($input['category_name'])) {
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 400,
+            'endpoint'      => '/menu/ingredient_category.php',
+            'method'        => 'POST',
+            'error_message' => 'Missing required fields (category_name)',
+            'user_identifier' => $username ?? null,
+            'company_id'      => $decoded->company_id ?? null,
+        ]);
         jsonResponse(400, 'Missing required fields (category_name)');
     }
 
@@ -17,24 +27,40 @@ function createIngredientCategory($conn, $input, $token_username){
     $check_app_result = mysqli_query($conn, $check_app_query);
 
     if (mysqli_num_rows($check_app_result) > 0) {
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 400,
+            'endpoint'      => '/menu/ingredient_category.php',
+            'method'        => 'POST',
+            'error_message' => 'Ingredients category has already exists in database !',
+            'user_identifier' => $username ?? null,
+            'company_id'      => $decoded->company_id ?? null,
+        ]);
         jsonResponse(400, 'Ingredients category has already exists in database !!');    
     } else {
         $categoryID = "category" . uniqid();
         $now = getCurrentDateTimeJakarta();
 
-        $category_query = "INSERT INTO raki_dev.ingredient_category (category_id, category_name, created_by, created_at) 
-        VALUES ('$categoryID', '$category_name', '$token_username', '$now')";
+        $category_query = "INSERT INTO raki_dev.ingredient_category (category_id, category_name, created_by, created_at) VALUES ('$categoryID', '$category_name', '$username', '$now')";
 
         if (mysqli_query($conn, $category_query)) {
             jsonResponse(201, 'New ingredients category has been created successfully', ['category' => $category_name]);
         } else {
+            logApiError($conn, [
+                'error_level'   => 'error',
+                'http_status'   => 500,
+                'endpoint'      => '/menu/ingredient_category.php',
+                'method'        => 'POST',
+                'error_message' => 'Failed to create a new ingredients category: ' . mysqli_error($conn),
+                'user_identifier' => $username ?? null,
+                'company_id'      => $decoded->company_id ?? null,
+            ]);
             jsonResponse(500, 'Failed to create a new ingredients category: ' . mysqli_error($conn));
         }
     }
-
 }
 
-function getAllIngredientCategory($conn, $params, $page = 1, $limit = 10){
+function getAllIngredientCategory($conn, $params, $username, $page = 1, $limit = 10){
     $offset = ($page - 1) * $limit;
 
     $countQuery = "SELECT COUNT(*) as total FROM raki_dev.ingredient_category WHERE (category_name LIKE '%$params%')";
@@ -58,11 +84,20 @@ function getAllIngredientCategory($conn, $params, $page = 1, $limit = 10){
         ];
         jsonResponse(200, 'Category found', $response);
     } else {
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 404,
+            'endpoint'      => '/menu/ingredient_category.php',
+            'method'        => 'GET',
+            'error_message' => 'Category not found',
+            'user_identifier' => $username ?? null,
+            'company_id'      => $decoded->company_id ?? null,
+        ]);
         jsonResponse(404, 'Category not found');
     }
 }
 
-function getDetailIngredientCategory($conn, $category_id){
+function getDetailIngredientCategory($conn, $category_id, $username){
     $query = "SELECT * FROM raki_dev.ingredient_category WHERE category_id = '$category_id'";
     $result = mysqli_query($conn, $query);
 
@@ -79,12 +114,30 @@ function getDetailIngredientCategory($conn, $category_id){
         ];
         jsonResponse(200, 'Category found', $response);
     } else {
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 404,
+            'endpoint'      => '/menu/ingredient_category.php',
+            'method'        => 'GET',
+            'error_message' => 'Category not found',
+            'user_identifier' => $username ?? null,
+            'company_id'      => $decoded->company_id ?? null,
+        ]);
         jsonResponse(404, 'Category not found');
     }
 }
 
-function updateIngredientCategory($conn, $input){
+function updateIngredientCategory($conn, $input, $username){
     if (!isset($input['category_id']) || !isset($input['category_name'])) {
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 400,
+            'endpoint'      => '/menu/ingredient_category.php',
+            'method'        => 'PUT',
+            'error_message' => 'Missing required fields (category_id and category_name)',
+            'user_identifier' => $username ?? null,
+            'company_id'      => $decoded->company_id ?? null,
+        ]);
         jsonResponse(400, 'Missing required fields (category_id and category_name)');
     }
 
@@ -101,16 +154,43 @@ function updateIngredientCategory($conn, $input){
         if (mysqli_query($conn, $updateQuery)) {
             jsonResponse(200, 'Ingredients category menu updated successfully', ['category_id' => $category_id]);
         } else {
+            logApiError($conn, [
+                'error_level'   => 'error',
+                'http_status'   => 500,
+                'endpoint'      => '/menu/ingredient_category.php',
+                'method'        => 'PUT',
+                'error_message' => 'Failed to update ingredients category menu : ' . mysqli_error($conn),
+                'user_identifier' => $username ?? null,
+                'company_id'      => $decoded->company_id ?? null,
+            ]);
             jsonResponse(500, 'Failed to update ingredients category menu');
         }
 
     } else {
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 404,
+            'endpoint'      => '/menu/ingredient_category.php',
+            'method'        => 'PUT',
+            'error_message' => 'Ingredients category menu is not registered in systems',
+            'user_identifier' => $username ?? null,
+            'company_id'      => $decoded->company_id ?? null,
+        ]);
         jsonResponse(404, 'Ingredients category menu is not registered in systems');
     }
 }
 
-function deleteIngredientCategory($conn, $category_id){
+function deleteIngredientCategory($conn, $category_id, $username){
     if($category_id === null || $category_id === ''){
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 400,
+            'endpoint'      => '/menu/ingredient_category.php',
+            'method'        => 'DELETE',
+            'error_message' => 'Missing required fields (category_id)',
+            'user_identifier' => $username ?? null,
+            'company_id'      => $decoded->company_id ?? null,
+        ]);
         jsonResponse(400, 'Missing required fields (category_id)');
     }
 
@@ -123,6 +203,15 @@ function deleteIngredientCategory($conn, $category_id){
         if (mysqli_query($conn, $query)) {
             jsonResponse(200, 'Ingredient category menu deleted successfully');
         } else {
+            logApiError($conn, [
+                'error_level'   => 'error',
+                'http_status'   => 500,
+                'endpoint'      => '/menu/ingredient_category.php',
+                'method'        => 'DELETE',
+                'error_message' => 'Failed to delete ingredient category menu : ' . mysqli_error($conn),
+                'user_identifier' => $username ?? null,
+                'company_id'      => $decoded->company_id ?? null,
+            ]);
             jsonResponse(500, 'Failed to delete ingredient category menu');
         }
 
@@ -136,6 +225,15 @@ use Firebase\JWT\Key;
 
 $headers = getallheaders();
 if (!isset($headers['Authorization'])) {
+    logApiError($conn, [
+        'error_level'   => 'error',
+        'http_status'   => 401,
+        'endpoint'      => '/menu/ingredient_category.php',
+        'method'        => 'DELETE',
+        'error_message' => 'Authorization header not found',
+        'user_identifier' => $username ?? null,
+        'company_id'      => $decoded->company_id ?? null,
+    ]);
     jsonResponse(401, 'Authorization header not found');
 }
 
@@ -167,22 +265,31 @@ try {
             $limit = $_GET['limit'] ?? 10;
             $category_id = $_GET['category_id'] ?? null;
             if($category_id != null){
-                getDetailIngredientCategory($conn, $category_id);
+                getDetailIngredientCategory($conn, $category_id, $token_username);
             } else {
-                getAllIngredientCategory($conn, $params, $page, $limit);
+                getAllIngredientCategory($conn, $params, $token_username,$page, $limit);
             }
             break;
         case 'PUT':
             $input = json_decode(file_get_contents('php://input'), true);
-            updateIngredientCategory($conn, $input);
+            updateIngredientCategory($conn, $input, $token_username);
             break;
         case 'DELETE':
             $category_id = $_GET['category_id'] ?? null;
-            deleteIngredientCategory($conn, $category_id);
+            deleteIngredientCategory($conn, $category_id, $token_username);
             break;
     }
 
 } catch (Exception $e){
+    logApiError($conn, [
+        'error_level'   => 'error',
+        'http_status'   => 500,
+        'endpoint'      => '/menu/ingredient_category.php',
+        'method'        => '',
+        'error_message' => $e->getMessage(),
+        'user_identifier' => $username ?? null,
+        'company_id'      => $decoded->company_id ?? null,
+    ]);
     jsonResponse(500, 'Internal Server Error', ['error' => $e->getMessage()]);
 }
 

@@ -4,8 +4,10 @@ require_once '../connection/db.php';
 require_once '../vendor/autoload.php';
 require_once '../general.php';
 require_once '../config.php';
+require_once '../log.php';
 
 function sendWhatsAppText($chatId, $text, $session = WAHA_SESSION) {
+    $conn = DB::conn();
     
     if (!function_exists('curl_init')) {
         return [
@@ -26,14 +28,11 @@ function sendWhatsAppText($chatId, $text, $session = WAHA_SESSION) {
 
     $ch = curl_init($url);
 
-    $headers = [
-        'Content-Type: application/json',
-    ];
+    $headers = ['Content-Type: application/json',];
 
     // Kalau pakai API key / token, tambahin header di sini
     if (!empty(WAHA_API_KEY)) {
         $headers[] = 'X-Api-Key: ' . WAHA_API_KEY;
-        // atau 'Authorization: Bearer ' . WAHA_API_KEY;
     }
 
     curl_setopt_array($ch, [
@@ -42,9 +41,6 @@ function sendWhatsAppText($chatId, $text, $session = WAHA_SESSION) {
         CURLOPT_HTTPHEADER     => $headers,
         CURLOPT_POSTFIELDS     => json_encode($payload),
         CURLOPT_TIMEOUT        => 10,
-        // Kalau SSL-nya self-signed dan suka error, bisa sementara dimatikan:
-        // CURLOPT_SSL_VERIFYPEER => false,
-        // CURLOPT_SSL_VERIFYHOST => false,
     ]);
 
     $responseBody = curl_exec($ch);
@@ -56,6 +52,15 @@ function sendWhatsAppText($chatId, $text, $session = WAHA_SESSION) {
 
     if ($errno) {
         error_log('WAHA CURL error: ' . $error);
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 500,
+            'endpoint'      => '/notification/notification.php',
+            'method'        => '',
+            'error_message' => $error,
+            'user_identifier' => $username ?? null,
+            'company_id'      => $decoded->company_id ?? null,
+        ]);
         return [
             'success' => false,
             'httpCode' => $httpCode,
@@ -86,6 +91,15 @@ if ( php_sapi_name() !== 'cli'
 
     if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
         http_response_code(405);
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 405,
+            'endpoint'      => '/notification/notification.php',
+            'method'        => '',
+            'error_message' => 'Method not allowed. Use GET.',
+            'user_identifier' => $username ?? null,
+            'company_id'      => $decoded->company_id ?? null,
+        ]);
         echo json_encode([
             'status_code'    => 405,
             'status_message' => 'Method not allowed. Use GET.',
@@ -103,6 +117,15 @@ if ( php_sapi_name() !== 'cli'
 
     if (!$isDebug && !($dayOfWeek === 6 && $hour === 21)) {
         http_response_code(403);
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 403,
+            'endpoint'      => '/notification/notification.php',
+            'method'        => '',
+            'error_message' => 'WhatsApp recap can only be sent on Saturday at 21:00 WIB.',
+            'user_identifier' => $username ?? null,
+            'company_id'      => $decoded->company_id ?? null,
+        ]);
         echo json_encode([
             'status_code'    => 403,
             'status_message' => 'WhatsApp recap can only be sent on Saturday at 21:00 WIB.',
@@ -124,6 +147,15 @@ if ( php_sapi_name() !== 'cli'
         $stmtPhone = $conn->prepare($sqlPhone);
         if (!$stmtPhone) {
             http_response_code(500);
+            logApiError($conn, [
+                'error_level'   => 'error',
+                'http_status'   => 500,
+                'endpoint'      => '/notification/notification.php',
+                'method'        => '',
+                'error_message' => 'Database error: unable to prepare phone query.',
+                'user_identifier' => $username ?? null,
+                'company_id'      => $decoded->company_id ?? null,
+            ]);
             echo json_encode([
                 'status_code'    => 500,
                 'status_message' => 'Database error: unable to prepare phone query.',
@@ -138,6 +170,15 @@ if ( php_sapi_name() !== 'cli'
 
         if (!$rowPhone || empty($rowPhone['pic_contact'])) {
             http_response_code(404);
+            logApiError($conn, [
+                'error_level'   => 'error',
+                'http_status'   => 404,
+                'endpoint'      => '/notification/notification.php',
+                'method'        => '',
+                'error_message' => 'PIC WhatsApp number not found for this company_id.',
+                'user_identifier' => $username ?? null,
+                'company_id'      => $decoded->company_id ?? null,
+            ]);
             echo json_encode([
                 'status_code'    => 404,
                 'status_message' => 'PIC WhatsApp number not found for this company_id.',
@@ -156,6 +197,15 @@ if ( php_sapi_name() !== 'cli'
         $stmtCompanies = $conn->prepare($sqlCompanies);
         if (!$stmtCompanies) {
             http_response_code(500);
+            logApiError($conn, [
+                'error_level'   => 'error',
+                'http_status'   => 500,
+                'endpoint'      => '/notification/notification.php',
+                'method'        => '',
+                'error_message' => 'Database error: unable to prepare company list query.',
+                'user_identifier' => $username ?? null,
+                'company_id'      => $decoded->company_id ?? null,
+            ]);
             echo json_encode([
                 'status_code'    => 500,
                 'status_message' => 'Database error: unable to prepare company list query.',
@@ -179,6 +229,15 @@ if ( php_sapi_name() !== 'cli'
 
         if (empty($targets)) {
             http_response_code(404);
+            logApiError($conn, [
+                'error_level'   => 'error',
+                'http_status'   => 404,
+                'endpoint'      => '/notification/notification.php',
+                'method'        => '',
+                'error_message' => 'No companies with PIC contact found for this app_id.',
+                'user_identifier' => $username ?? null,
+                'company_id'      => $decoded->company_id ?? null,
+            ]);
             echo json_encode([
                 'status_code'    => 404,
                 'status_message' => 'No companies with PIC contact found for this app_id.',
@@ -196,25 +255,19 @@ if ( php_sapi_name() !== 'cli'
         $picContact  = $target['pic_contact'];
 
         // Weekly recap per driver for this company
-        $sqlRecap = "SELECT 
-                t.created_by,
-                SUM(td.quantity) AS total_cup,
-                SUM(DISTINCT t.total_amount) AS total_amount
-            FROM raki_dev.transaction t
-            JOIN raki_dev.transaction_detail td 
-                ON td.transaction_id = t.transaction_id
-            WHERE 
-                t.company_id = ?
-                AND td.menu_id <> 'menu69112f46968b3'
-                AND YEARWEEK(t.transaction_date, 1) = YEARWEEK(CURDATE(), 1)
-            GROUP BY 
-                t.created_by
-            ORDER BY 
-                t.created_by
-        ";
+        $sqlRecap = "SELECT t.created_by, SUM(td.quantity) AS total_cup, SUM(DISTINCT t.total_amount) AS total_amount FROM raki_dev.transaction t JOIN raki_dev.transaction_detail td ON td.transaction_id = t.transaction_id WHERE t.company_id = ? AND td.menu_id <> 'menu69112f46968b3' AND YEARWEEK(t.transaction_date, 1) = YEARWEEK(CURDATE(), 1) GROUP BY t.created_by ORDER BY t.created_by";
 
         $stmtRecap = $conn->prepare($sqlRecap);
         if (!$stmtRecap) {
+            logApiError($conn, [
+                'error_level'   => 'error',
+                'http_status'   => 500,
+                'endpoint'      => '/notification/notification.php',
+                'method'        => '',
+                'error_message' => 'Database error: unable to prepare recap query.',
+                'user_identifier' => $username ?? null,
+                'company_id'      => $decoded->company_id ?? null,
+            ]);
             $results[] = [
                 'company_id' => $companyId,
                 'success'    => false,
@@ -292,10 +345,9 @@ if ( php_sapi_name() !== 'cli'
         ];
     }
 
+    //Check if success then return 200, if failed then return 500
     $statusCode    = $anySuccess ? 200 : 500;
-    $statusMessage = $anySuccess
-        ? 'WhatsApp recap processed. Check per-company results.'
-        : 'Failed to send WhatsApp recap for all companies.';
+    $statusMessage = $anySuccess  ? 'WhatsApp recap processed. Check per-company results.' : 'Failed to send WhatsApp recap for all companies.';
 
     http_response_code($statusCode);
     echo json_encode([

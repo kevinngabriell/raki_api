@@ -4,43 +4,25 @@ require_once '../connection/db.php';
 require_once '../vendor/autoload.php';
 require_once '../general.php';
 require_once '../config.php';
+require_once '../log.php';
 
 function checkTransactionHistory($conn, $company_id, $username){
-    // Basic sanitization (you can switch to prepared statements if needed)
     $company_id_esc = mysqli_real_escape_string($conn, $company_id);
     $username_esc   = mysqli_real_escape_string($conn, $username);
 
-    // 1) Ambil header transaksi untuk user ini (per transaksi)q
-    //    - total_amount: dari tabel transaction
-    //    - total_cup: SUM(quantity) dari transaction_detail
-    //    Diurutkan dari transaksi terbaru
-    $qHeader = "SELECT 
-            t.transaction_id,
-            t.created_at,
-            t.total_amount,
-            t.total_item,
-            t.payment_method,
-            t.source_type,
-            COALESCE(SUM(td.quantity), 0) AS total_cup
-        FROM raki_dev.`transaction` t
-        LEFT JOIN raki_dev.transaction_detail td
-            ON td.transaction_id = t.transaction_id
-        WHERE t.company_id = '$company_id_esc'
-          AND t.created_by = '$username_esc'
-        GROUP BY 
-            t.transaction_id,
-            t.created_at,
-            t.total_amount,
-            t.total_item,
-            t.payment_method,
-            t.source_type
-        ORDER BY 
-            t.created_at DESC,
-            t.created_at DESC
-    ";
+    $qHeader = "SELECT t.transaction_id, t.created_at, t.total_amount, t.total_item, t.payment_method, t.source_type, COALESCE(SUM(td.quantity), 0) AS total_cup FROM raki_dev.`transaction` t LEFT JOIN raki_dev.transaction_detail td ON td.transaction_id = t.transaction_id WHERE t.company_id = '$company_id_esc' AND t.created_by = '$username_esc' GROUP BY t.transaction_id, t.created_at, t.total_amount, t.total_item, t.payment_method, t.source_type ORDER BY t.created_at DESC, t.created_at DESC";
 
     $rHeader = mysqli_query($conn, $qHeader);
     if (!$rHeader) {
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 500,
+            'endpoint'      => '/session/transaction-history.php',
+            'method'        => 'POST',
+            'error_message' => mysqli_error($conn),
+            'user_identifier' => $username ?? null,
+            'company_id'      => $decoded->company_id ?? null,
+        ]);
         jsonResponse(500, 'DB error (transaction header)', ['error' => mysqli_error($conn)]);
     }
 
@@ -61,6 +43,15 @@ function checkTransactionHistory($conn, $company_id, $username){
     }
 
     if (empty($transactions)) {
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 200,
+            'endpoint'      => '/session/transaction-history.php',
+            'method'        => 'POST',
+            'error_message' => 'No transactions found',
+            'user_identifier' => $username ?? null,
+            'company_id'      => $decoded->company_id ?? null,
+        ]);
         jsonResponse(200, 'No transactions found', []);
     }
 
@@ -68,16 +59,7 @@ function checkTransactionHistory($conn, $company_id, $username){
     $transaction_ids = array_keys($transactions);
     $inList = "'" . implode("','", array_map('mysqli_real_escape_string', array_fill(0, count($transaction_ids), $conn), $transaction_ids)) . "'";
 
-    $qPay = "SELECT 
-            tp.transaction_id,
-            tp.payment_method,
-            SUM(tp.amount) AS amount
-        FROM raki_dev.transaction_payment tp
-        WHERE tp.transaction_id IN ($inList)
-        GROUP BY 
-            tp.transaction_id,
-            tp.payment_method
-    ";
+    $qPay = "SELECT tp.transaction_id, tp.payment_method, SUM(tp.amount) AS amount FROM raki_dev.transaction_payment tp WHERE tp.transaction_id IN ($inList) GROUP BY  tp.transaction_id, tp.payment_method";
 
     $rPay = mysqli_query($conn, $qPay);
     if ($rPay) {
@@ -128,6 +110,15 @@ if (!$authHeader) {
 }
 
 if (!$authHeader) {
+    logApiError($conn, [
+        'error_level'   => 'error',
+        'http_status'   => 401,
+        'endpoint'      => '/session/transaction-history.php',
+        'method'        => 'POST',
+        'error_message' => 'Authorization header not found',
+        'user_identifier' => $username ?? null,
+        'company_id'      => $decoded->company_id ?? null,
+    ]);
     jsonResponse(401, 'Authorization header not found');
 }
 
@@ -141,8 +132,6 @@ try {
     $method = $_SERVER['REQUEST_METHOD'];
 
     switch($method){
-        case 'POST':
-            break;
         case 'GET':
             // Prefer token values to prevent user spoofing, but currently using params
             $company_id = $_GET['company_id'] ?? null;
@@ -153,14 +142,31 @@ try {
             }
 
             checkTransactionHistory($conn, $company_id, $username);
-            break;
-        case 'PUT':
-            break;
-        case 'DELETE':
+        break;
+        default:
+            logApiError($conn, [
+                'error_level'   => 'error',
+                'http_status'   => 405,
+                'endpoint'      => '/session/start.php',
+                'method'        => 'POST',
+                'error_message' => 'Method Not Allowed',
+                'user_identifier' => $decoded->username ?? null,
+                'company_id'      => $decoded->company_id ?? null,
+            ]);
+            jsonResponse(405, 'Method Not Allowed');
             break;
     }
 
 } catch (Exception $e){
+    logApiError($conn, [
+        'error_level'   => 'error',
+        'http_status'   => 401,
+        'endpoint'      => '/session/transaction-history.php',
+        'method'        => 'POST',
+        'error_message' => $e->getMessage(),
+        'user_identifier' => $username ?? null,
+        'company_id'      => $decoded->company_id ?? null,
+    ]);
     jsonResponse(401, 'Unauthorized', ['error' => $e->getMessage()]);
 }
 

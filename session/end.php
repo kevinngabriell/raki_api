@@ -30,17 +30,44 @@ function formatIndoDateTime($datetimeStr) {
 function endSession($conn, $input, $token_username, $decoded){
     // Validate input
     if (!$input || !isset($input['cash_end'])) {
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 400,
+            'endpoint'      => '/session/end.php',
+            'method'        => '',
+            'error_message' =>'cash_end is required',
+            'user_identifier' => $username ?? null,
+            'company_id'      => $decoded->company_id ?? null,
+        ]);
         jsonResponse(400, 'cash_end is required');
     }
 
     $cash_end = (int)$input['cash_end'];
 
     if ($cash_end < 0) {
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 400,
+            'endpoint'      => '/session/end.php',
+            'method'        => '',
+            'error_message' =>'cash_end must be >= 0',
+            'user_identifier' => $username ?? null,
+            'company_id'      => $decoded->company_id ?? null,
+        ]);
         jsonResponse(400, 'cash_end must be >= 0');
     }
 
     $company_id = $decoded->company_id ?? null;
     if (!$company_id) {
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 400,
+            'endpoint'      => '/session/end.php',
+            'method'        => '',
+            'error_message' =>'company_id not found in token',
+            'user_identifier' => $username ?? null,
+            'company_id'      => $decoded->company_id ?? null,
+        ]);
         jsonResponse(400, 'company_id not found in token');
     }
 
@@ -66,6 +93,16 @@ function endSession($conn, $input, $token_username, $decoded){
     }
 
     if (mysqli_num_rows($rSess) !== 1) {
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 400,
+            'endpoint'      => '/session/end.php',
+            'method'        => 'POST',
+            'error_message' => 'No active session found',
+            'user_identifier' => $decoded->username ?? null,
+            'company_id'      => $decoded->company_id ?? null,
+        ]);
+
         jsonResponse(400, 'No active session found');
     }
 
@@ -139,7 +176,7 @@ function endSession($conn, $input, $token_username, $decoded){
         logApiError($conn, [
             'error_level'   => 'error',
             'http_status'   => 500,
-            'endpoint'      => '/session/start.php',
+            'endpoint'      => '/session/end.php',
             'method'        => 'POST',
             'error_message' => $e->getMessage(),
             'user_identifier' => $decoded->username ?? null,
@@ -212,6 +249,15 @@ $headers = array_change_key_case($rawHeaders, CASE_LOWER);
 if (!isset($headers['authorization'])) {
     // untuk debug sementara, bisa log semua header:
     // error_log('HEADERS: ' . print_r($rawHeaders, true));
+    logApiError($conn, [
+        'error_level'   => 'error',
+        'http_status'   => 401,
+        'endpoint'      => '/session/end.php',
+        'method'        => 'POST',
+        'error_message' => 'Authorization header not found',
+        'user_identifier' => $decoded->username ?? null,
+        'company_id'      => $decoded->company_id ?? null,
+    ]);
     jsonResponse(401, 'Authorization header not found');
 }
 
@@ -243,9 +289,28 @@ try {
             endSession($conn, $input, $token_username, $decoded);
             break;
         default:
+            logApiError($conn, [
+                'error_level'   => 'error',
+                'http_status'   => 401,
+                'endpoint'      => '/session/end.php',
+                'method'        => 'POST',
+                'error_message' => 'Method Not Allowed',
+                'user_identifier' => $decoded->username ?? null,
+                'company_id'      => $decoded->company_id ?? null,
+            ]);
             jsonResponse(405, 'Method Not Allowed');
+            break;
     }
 
 } catch (Exception $e){
+    logApiError($conn, [
+        'error_level'   => 'error',
+        'http_status'   => 500,
+        'endpoint'      => '/session/end.php',
+        'method'        => 'POST',
+        'error_message' => $e->getMessage(),
+        'user_identifier' => $decoded->username ?? null,
+        'company_id'      => $decoded->company_id ?? null,
+    ]);    
     jsonResponse(500, 'Internal Server Error', ['error' => $e->getMessage()]);
 }

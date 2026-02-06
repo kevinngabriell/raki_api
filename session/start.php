@@ -14,14 +14,41 @@ function startSession($conn, $input, $token_username, $decoded){
     $stock      = $input['stock'] ?? null; // array of {menu_id, qty_start}
 
     if (!$company_id) {
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 400,
+            'endpoint'      => '/session/start.php',
+            'method'        => 'POST',
+            'error_message' => 'company_id is required',
+            'user_identifier' => $decoded->username ?? null,
+            'company_id'      => $decoded->company_id ?? null,
+        ]);
         jsonResponse(400, 'company_id is required');
     }
 
     if ($cash_start === null || $cash_start === '') {
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 400,
+            'endpoint'      => '/session/start.php',
+            'method'        => 'POST',
+            'error_message' => 'cash_start is required',
+            'user_identifier' => $decoded->username ?? null,
+            'company_id'      => $decoded->company_id ?? null,
+        ]);
         jsonResponse(400, 'cash_start is required');
     }
 
     if (!is_array($stock) || count($stock) === 0) {
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 400,
+            'endpoint'      => '/session/start.php',
+            'method'        => 'POST',
+            'error_message' => 'stock is required (array)',
+            'user_identifier' => $decoded->username ?? null,
+            'company_id'      => $decoded->company_id ?? null,
+        ]);
         jsonResponse(400, 'stock is required (array)');
     }
 
@@ -70,10 +97,7 @@ function startSession($conn, $input, $token_username, $decoded){
     try {
         $session_id = 'ses_' . bin2hex(random_bytes(10));
 
-        $ins = "INSERT INTO raki_dev.work_session
-                  (session_id, company_id, user_id, started_at, cash_start, status, created_at)
-                VALUES
-                  ('$session_id', '$company_id_esc', '$user_id_esc', NOW(), $cash_start_int, 'active', NOW())";
+        $ins = "INSERT INTO raki_dev.work_session (session_id, company_id, user_id, started_at, cash_start, status, created_at) VALUES ('$session_id', '$company_id_esc', '$user_id_esc', NOW(), $cash_start_int, 'active', NOW())";
 
         if (!mysqli_query($conn, $ins)) {
             
@@ -127,18 +151,11 @@ function startSession($conn, $input, $token_username, $decoded){
         mysqli_commit($conn);
 
         // Load back session + stock
-        $qsess = "SELECT session_id, company_id, user_id, started_at, ended_at, cash_start, cash_end, status
-                  FROM raki_dev.work_session
-                  WHERE session_id='$session_id'
-                  LIMIT 1";
+        $qsess = "SELECT session_id, company_id, user_id, started_at, ended_at, cash_start, cash_end, status FROM raki_dev.work_session WHERE session_id='$session_id' LIMIT 1";
         $rsess = mysqli_query($conn, $qsess);
         $session = $rsess ? mysqli_fetch_assoc($rsess) : null;
 
-        $qstock = "SELECT s.menu_id, m.menu_name, s.qty_start, s.qty_end
-                   FROM raki_dev.work_session_stock s
-                   LEFT JOIN raki_dev.menu m ON m.menu_id = s.menu_id
-                   WHERE s.session_id='$session_id'
-                   ORDER BY m.menu_name ASC";
+        $qstock = "SELECT s.menu_id, m.menu_name, s.qty_start, s.qty_end FROM raki_dev.work_session_stock s LEFT JOIN raki_dev.menu m ON m.menu_id = s.menu_id WHERE s.session_id='$session_id' ORDER BY m.menu_name ASC";
         $rstock = mysqli_query($conn, $qstock);
         $stockList = [];
         if ($rstock) {
@@ -179,8 +196,15 @@ $rawHeaders = getallheaders();
 $headers = array_change_key_case($rawHeaders, CASE_LOWER);
 
 if (!isset($headers['authorization'])) {
-    // untuk debug sementara, bisa log semua header:
-    // error_log('HEADERS: ' . print_r($rawHeaders, true));
+    logApiError($conn, [
+        'error_level'   => 'error',
+        'http_status'   => 400,
+        'endpoint'      => '/session/start.php',
+        'method'        => 'POST',
+        'error_message' => 'Authorization header not found',
+        'user_identifier' => $decoded->username ?? null,
+        'company_id'      => $decoded->company_id ?? null,
+    ]);
     jsonResponse(401, 'Authorization header not found');
 }
 
@@ -211,17 +235,30 @@ try {
             $input = json_decode(file_get_contents('php://input'), true);
             startSession($conn, $input, $token_username, $decoded);
             break;
-        case 'GET':
-            break;
-        case 'PUT':
-            break;
-        case 'DELETE':
-            break;
         default:
+            logApiError($conn, [
+                'error_level'   => 'error',
+                'http_status'   => 405,
+                'endpoint'      => '/session/start.php',
+                'method'        => 'POST',
+                'error_message' => 'Method Not Allowed',
+                'user_identifier' => $decoded->username ?? null,
+                'company_id'      => $decoded->company_id ?? null,
+            ]);
             jsonResponse(405, 'Method Not Allowed');
+            break;
     }
 
 } catch (Exception $e){
+    logApiError($conn, [
+        'error_level'   => 'error',
+        'http_status'   => 405,
+        'endpoint'      => '/session/start.php',
+        'method'        => 'POST',
+        'error_message' => $e->getMessage(),
+        'user_identifier' => $decoded->username ?? null,
+        'company_id'      => $decoded->company_id ?? null,
+    ]);
     jsonResponse(500, 'Internal Server Error', ['error' => $e->getMessage()]);
 }
 

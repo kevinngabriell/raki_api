@@ -4,6 +4,7 @@ require_once '../connection/db.php';
 require_once '../vendor/autoload.php';
 require_once '../general.php';
 require_once '../config.php';
+require_once '../log.php';
 
 function createIngredient($conn, $input, $username){
     $ingredient_name = $input['ingredient_name'];
@@ -15,6 +16,15 @@ function createIngredient($conn, $input, $username){
     $price = $input['price'];
 
     if ($ingredient_name === null || $ingredient_name === "" || $ingredient_category === "" || $ingredient_category === null || $uom === "" || $uom === null || $company_id === "" || $company_id === null || $price === "") {
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 400,
+            'endpoint'      => '/menu/ingredient.php',
+            'method'        => '',
+            'error_message' => 'ingredient_name, ingredient_category , uom, company_id, price are required',
+            'user_identifier' => $username ?? null,
+            'company_id'      => $decoded->company_id ?? null,
+        ]);
         jsonResponse(400, 'ingredient_name, ingredient_category , uom, company_id, price are required');
     }
 
@@ -35,25 +45,60 @@ function createIngredient($conn, $input, $username){
     $check_uom_result = mysqli_query($conn, $check_uom_query);
 
     if (mysqli_num_rows($check_app_result) > 0) {
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 400,
+            'endpoint'      => '/menu/ingredient.php',
+            'method'        => '',
+            'error_message' => 'Ingredient has already exists in database !!',
+            'user_identifier' => $username ?? null,
+            'company_id'      => $decoded->company_id ?? null,
+        ]);
         jsonResponse(400, 'Ingredient has already exists in database !!');    
     } else {
         if(mysqli_num_rows($check_category_result) < 1){
+            logApiError($conn, [
+                'error_level'   => 'error',
+                'http_status'   => 400,
+                'endpoint'      => '/menu/ingredient.php',
+                'method'        => '',
+                'error_message' => 'Ingredients category not exists in database !!',
+                'user_identifier' => $username ?? null,
+                'company_id'      => $decoded->company_id ?? null,
+            ]);
             jsonResponse(400, 'Ingredients category not exists in database !!');    
         }
 
         if(mysqli_num_rows($check_uom_result) < 1){
+            logApiError($conn, [
+                'error_level'   => 'error',
+                'http_status'   => 400,
+                'endpoint'      => '/menu/ingredient.php',
+                'method'        => '',
+                'error_message' => 'UOM not exists in database !!',
+                'user_identifier' => $username ?? null,
+                'company_id'      => $decoded->company_id ?? null,
+            ]);
             jsonResponse(400, 'UOM not exists in database !!');    
         }
 
         $ingredientsID = "ingredients" . uniqid();
         $now = getCurrentDateTimeJakarta();
 
-        $category_query = "INSERT INTO raki_dev.ingredient (ingredient_id, ingredient_name, ingredient_category, uom, sku, company_id, is_active, created_at, created_by, price) 
-        VALUES ('$ingredientsID', '$ingredient_name', '$ingredient_category', '$uom', '$sku', '$company_id', '$is_active', '$now', '$username', '$price')";
+        $category_query = "INSERT INTO raki_dev.ingredient (ingredient_id, ingredient_name, ingredient_category, uom, sku, company_id, is_active, created_at, created_by, price) VALUES ('$ingredientsID', '$ingredient_name', '$ingredient_category', '$uom', '$sku', '$company_id', '$is_active', '$now', '$username', '$price')";
 
         if (mysqli_query($conn, $category_query)) {
             jsonResponse(201, 'New ingredients has been created successfully', ['ingredients' => $ingredient_name]);
         } else {
+            logApiError($conn, [
+                'error_level'   => 'error',
+                'http_status'   => 500,
+                'endpoint'      => '/menu/ingredient.php',
+                'method'        => '',
+                'error_message' => 'Failed to create a new ingredients: ' . mysqli_error($conn),
+                'user_identifier' => $username ?? null,
+                'company_id'      => $decoded->company_id ?? null,
+            ]);
             jsonResponse(500, 'Failed to create a new ingredients: ' . mysqli_error($conn));
         }
     }
@@ -67,10 +112,7 @@ function getAllIngredient($conn, $params, $page = 1, $limit = 10){
     $totalRow = mysqli_fetch_assoc($countResult);
     $total = $totalRow['total'];
 
-    $query = "SELECT ingredient_id, ingredient_name, UOM.uom_name, IC.category_name, price
-    FROM raki_dev.ingredient I
-    LEFT JOIN raki_dev.unit_of_measurement UOM ON I.uom = UOM.uom_id
-    LEFT JOIN raki_dev.ingredient_category IC ON I.ingredient_category = IC.category_id WHERE (ingredient_name LIKE '%$params%') LIMIT $limit OFFSET $offset";
+    $query = "SELECT ingredient_id, ingredient_name, UOM.uom_name, IC.category_name, price FROM raki_dev.ingredient I LEFT JOIN raki_dev.unit_of_measurement UOM ON I.uom = UOM.uom_id LEFT JOIN raki_dev.ingredient_category IC ON I.ingredient_category = IC.category_id WHERE (ingredient_name LIKE '%$params%') LIMIT $limit OFFSET $offset";
     $result = mysqli_query($conn, $query);
 
     if ($result && mysqli_num_rows($result) > 0) {
@@ -86,16 +128,21 @@ function getAllIngredient($conn, $params, $page = 1, $limit = 10){
         ];
         jsonResponse(200, 'Ingredient found', $response);
     } else {
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 404,
+            'endpoint'      => '/menu/ingredient.php',
+            'method'        => '',
+            'error_message' => 'Ingredient not found: ' . mysqli_error($conn),
+            'user_identifier' => $username ?? null,
+            'company_id'      => $decoded->company_id ?? null,
+        ]);
         jsonResponse(404, 'Ingredient not found');
     }
 }
 
-function getDetailIngredient($conn, $ingredient_id){
-    $query = "SELECT ingredient_id, ingredient_name, IC.category_id, IC.category_name, I.sku, UOM.uom_id, UOM.uom_name, price
-        FROM raki_dev.ingredient I
-        LEFT JOIN raki_dev.ingredient_category IC ON I.ingredient_category = IC.category_id 
-        LEFT JOIN raki_dev.unit_of_measurement UOM ON I.uom = UOM.uom_id 
-        WHERE ingredient_id = '$ingredient_id'";
+function getDetailIngredient($conn, $ingredient_id, $username){
+    $query = "SELECT ingredient_id, ingredient_name, IC.category_id, IC.category_name, I.sku, UOM.uom_id, UOM.uom_name, price FROM raki_dev.ingredient I LEFT JOIN raki_dev.ingredient_category IC ON I.ingredient_category = IC.category_id  LEFT JOIN raki_dev.unit_of_measurement UOM ON I.uom = UOM.uom_id  WHERE ingredient_id = '$ingredient_id'";
     $result = mysqli_query($conn, $query);
 
     if ($result && mysqli_num_rows($result) > 0) {
@@ -111,12 +158,30 @@ function getDetailIngredient($conn, $ingredient_id){
         ];
         jsonResponse(200, 'Ingredient found', $response);
     } else {
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 404,
+            'endpoint'      => '/menu/ingredient.php',
+            'method'        => '',
+            'error_message' => 'Ingredient not found: ' . mysqli_error($conn),
+            'user_identifier' => $username ?? null,
+            'company_id'      => $decoded->company_id ?? null,
+        ]);
         jsonResponse(404, 'Ingredient not found');
     }
 }
 
-function updateIngredient($conn, $input){
+function updateIngredient($conn, $input, $username){
     if (!isset($input['ingredient_id'])) {
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 400,
+            'endpoint'      => '/menu/ingredient.php',
+            'method'        => '',
+            'error_message' => 'Missing required fields (ingredient_id)',
+            'user_identifier' => $username ?? null,
+            'company_id'      => $decoded->company_id ?? null,
+        ]);
         jsonResponse(400, 'Missing required fields (ingredient_id)');
     }
 
@@ -146,6 +211,15 @@ function updateIngredient($conn, $input){
     }
 
     if (empty($updates)) {
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 400,
+            'endpoint'      => '/menu/ingredient.php',
+            'method'        => '',
+            'error_message' => 'No fields provided for update',
+            'user_identifier' => $username ?? null,
+            'company_id'      => $decoded->company_id ?? null,
+        ]);
         jsonResponse(400, 'No fields provided for update');
     }
 
@@ -155,16 +229,43 @@ function updateIngredient($conn, $input){
         if (mysqli_query($conn, $updateQuery)) {
             jsonResponse(200, 'Ingredient updated successfully', ['ingredient_id' => $ingredient_id]);
         } else {
+            logApiError($conn, [
+                'error_level'   => 'error',
+                'http_status'   => 500,
+                'endpoint'      => '/menu/ingredient.php',
+                'method'        => '',
+                'error_message' => 'No fields provided for update',
+                'user_identifier' => $username ?? null,
+                'company_id'      => $decoded->company_id ?? null,
+            ]);
             jsonResponse(500, 'Failed to update ingredient');
         }
     } else {
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 404,
+            'endpoint'      => '/menu/ingredient.php',
+            'method'        => '',
+            'error_message' => 'Ingredient not registered in systems',
+            'user_identifier' => $username ?? null,
+            'company_id'      => $decoded->company_id ?? null,
+        ]);
         jsonResponse(404, message: 'Ingredient not registered in systems');
     }
 
 }
 
-function deleteIngredient($conn, $ingredient_id){
+function deleteIngredient($conn, $ingredient_id, $username){
     if($ingredient_id === null || $ingredient_id === ''){
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 400,
+            'endpoint'      => '/menu/ingredient.php',
+            'method'        => '',
+            'error_message' => 'Missing required fields (ingredient_id)',
+            'user_identifier' => $username ?? null,
+            'company_id'      => $decoded->company_id ?? null,
+        ]);
         jsonResponse(400, 'Missing required fields (ingredient_id)');
     }
 
@@ -177,10 +278,28 @@ function deleteIngredient($conn, $ingredient_id){
         if (mysqli_query($conn, $query)) {
             jsonResponse(200, 'Ingredient menu deleted successfully');
         } else {
+            logApiError($conn, [
+                'error_level'   => 'error',
+                'http_status'   => 500,
+                'endpoint'      => '/menu/ingredient.php',
+                'method'        => 'DELETE',
+                'error_message' => 'Failed to delete ingredient menu: ' . mysqli_error($conn),
+                'user_identifier' => $username ?? null,
+                'company_id'      => $decoded->company_id ?? null,
+            ]);
             jsonResponse(500, 'Failed to delete ingredient menu');
         }
 
     } else {
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 404,
+            'endpoint'      => '/menu/ingredient.php',
+            'method'        => 'DELETE',
+            'error_message' => 'Ingredient menu is not registered in systems',
+            'user_identifier' => $username ?? null,
+            'company_id'      => $decoded->company_id ?? null,
+        ]);
         jsonResponse(404, 'Ingredient menu is not registered in systems');
     }
 }
@@ -190,6 +309,15 @@ use Firebase\JWT\Key;
 
 $headers = getallheaders();
 if (!isset($headers['Authorization'])) {
+    logApiError($conn, [
+        'error_level'   => 'error',
+        'http_status'   => 401,
+        'endpoint'      => '/menu/ingredient.php',
+        'method'        => '',
+        'error_message' => 'Authorization header not found',
+        'user_identifier' => $username ?? null,
+        'company_id'      => $decoded->company_id ?? null,
+    ]);
     jsonResponse(401, 'Authorization header not found');
 }
 
@@ -221,23 +349,32 @@ try {
             $limit = $_GET['limit'] ?? 10;
             $ingredient_id = $_GET['ingredient_id'] ?? null;
             if($ingredient_id != null){
-                getDetailIngredient($conn, $ingredient_id);
+                getDetailIngredient($conn, $ingredient_id, $token_username);
             } else {
                 getAllIngredient($conn, $params, $page, $limit);
              }
             break;
         case 'PUT':
             $input = json_decode(file_get_contents('php://input'), true);
-            updateIngredient($conn, $input);
+            updateIngredient($conn, $input, $token_username);
             break;
         case 'DELETE':
             $ingredient_id = $_GET['ingredient_id'] ?? null;
-            deleteIngredient($conn, $ingredient_id);
+            deleteIngredient($conn, $ingredient_id, $token_username);
             break;
     }
 
 
 } catch (Exception $e){
+    logApiError($conn, [
+        'error_level'   => 'error',
+        'http_status'   => 500,
+        'endpoint'      => '/menu/ingredient.php',
+        'method'        => '',
+        'error_message' => $e->getMessage(),
+        'user_identifier' => $username ?? null,
+        'company_id'      => $decoded->company_id ?? null,
+    ]);
     jsonResponse(500, 'Internal Server Error', ['error' => $e->getMessage()]);
 }
 

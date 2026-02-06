@@ -4,6 +4,7 @@ require_once '../connection/db.php';
 require_once '../vendor/autoload.php';
 require_once '../general.php';
 require_once '../config.php';
+require_once '../log.php';
 
 function checkActiveDriverStocks($conn, $company_id){
     // company_id is optional for public endpoint; if provided, we filter.
@@ -13,37 +14,19 @@ function checkActiveDriverStocks($conn, $company_id){
         $whereCompany = " AND ws.company_id = '$company_id_esc' ";
     }
 
-    $q = "
-        SELECT
-          ws.session_id,
-          MAX(ws.started_at) AS started_at,
-          COALESCE(MAX(au.username), MAX(ws.user_id)) AS username,
-          m.menu_id,
-          MAX(m.menu_name) AS menu_name,
-          MAX(cm.category_name) AS category_name,
-          MAX(m.thumb_url) AS thumb_url,
-          MAX(wss.qty_start) AS qty_start,
-          COALESCE(SUM(td.quantity), 0) AS qty_sold
-        FROM raki_dev.work_session ws
-        LEFT JOIN movira_core_dev.app_user au
-          ON au.username = ws.user_id
-          OR au.phone_number = ws.user_id
-          OR au.user_id = ws.user_id
-        JOIN raki_dev.work_session_stock wss ON wss.session_id = ws.session_id
-        JOIN raki_dev.menu m ON m.menu_id = wss.menu_id
-        LEFT JOIN raki_dev.category_menu cm ON cm.category_id = m.category_id
-        LEFT JOIN raki_dev.`transaction` t ON t.session_id = ws.session_id
-        LEFT JOIN raki_dev.transaction_detail td
-          ON td.transaction_id = t.transaction_id
-         AND td.menu_id = m.menu_id
-        WHERE ws.status = 'active'
-          $whereCompany
-        GROUP BY ws.session_id, m.menu_id
-        ORDER BY ws.started_at ASC, m.menu_name ASC
-    ";
+    $q = "SELECT ws.session_id, MAX(ws.started_at) AS started_at, COALESCE(MAX(au.username), MAX(ws.user_id)) AS username, m.menu_id, MAX(m.menu_name) AS menu_name, MAX(cm.category_name) AS category_name, MAX(m.thumb_url) AS thumb_url, MAX(wss.qty_start) AS qty_start, COALESCE(SUM(td.quantity), 0) AS qty_sold FROM raki_dev.work_session ws LEFT JOIN movira_core_dev.app_user au ON au.username = ws.user_id OR au.phone_number = ws.user_id OR au.user_id = ws.user_id JOIN raki_dev.work_session_stock wss ON wss.session_id = ws.session_id JOIN raki_dev.menu m ON m.menu_id = wss.menu_id LEFT JOIN raki_dev.category_menu cm ON cm.category_id = m.category_id LEFT JOIN raki_dev.`transaction` t ON t.session_id = ws.session_id LEFT JOIN raki_dev.transaction_detail td ON td.transaction_id = t.transaction_id AND td.menu_id = m.menu_id WHERE ws.status = 'active' $whereCompany GROUP BY ws.session_id, m.menu_id ORDER BY ws.started_at ASC, m.menu_name ASC";
 
     $r = mysqli_query($conn, $q);
     if (!$r) {
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 500,
+            'endpoint'      => '/public/active-driver-stocks.php',
+            'method'        => '',
+            'error_message' => mysqli_error($conn),
+            'user_identifier' => $username ?? null,
+            'company_id'      => $decoded->company_id ?? null,
+        ]);
         jsonResponse(500, 'DB error', ['error' => mysqli_error($conn)]);
     }
 
@@ -100,21 +83,24 @@ try {
     $method = $_SERVER['REQUEST_METHOD'];
 
     switch($method){
-        case 'POST':
-            break;
         case 'GET':
             $company_id = $_GET['company_id'] ?? null;
             checkActiveDriverStocks($conn, $company_id);
-            break;
-        case 'PUT':
-            break;
-        case 'DELETE':
             break;
         default:
             jsonResponse(405, 'Method Not Allowed');
     }
 
 } catch (Exception $e){
+    logApiError($conn, [
+        'error_level'   => 'error',
+        'http_status'   => 400,
+        'endpoint'      => '/public/active-driver-stocks.php',
+        'method'        => '',
+        'error_message' => $e->getMessage(),
+        'user_identifier' => $username ?? null,
+        'company_id'      => $decoded->company_id ?? null,
+    ]);
     jsonResponse(500, 'Internal Server Error', ['error' => $e->getMessage()]);
 }
 

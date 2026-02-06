@@ -5,18 +5,26 @@ require_once '../vendor/autoload.php';
 require_once '../general.php';
 require_once '../config.php';
 require_once '../notification/notification.php';
+require_once '../log.php';
 
 function createTransaction($conn, $input, $username){
     // Basic validation
     if (!$input || !isset($input['company_id']) || !isset($input['items']) || !is_array($input['items']) || count($input['items']) === 0) {
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 400,
+            'endpoint'      => '/transaction/index.php',
+            'method'        => 'POST',
+            'error_message' => 'Invalid payload. Require company_id and non-empty items array.',
+            'user_identifier' => $username ?? null,
+            'company_id'      => $decoded->company_id ?? null,
+        ]);
         jsonResponse(400, 'Invalid payload. Require company_id and non-empty items array.');
     }
 
     $company_id = $input['company_id'];
     $total_items = $input['total_items'];
-    $transaction_date = isset($input['transaction_date']) && !empty($input['transaction_date'])
-        ? $input['transaction_date']
-        : date('Y-m-d H:i:s');
+    $transaction_date = isset($input['transaction_date']) && !empty($input['transaction_date']) ? $input['transaction_date'] : date('Y-m-d H:i:s');
 
     // Items structure: [{ menu_id, quantity, unit_price }]
     $items = $input['items'];
@@ -27,14 +35,35 @@ function createTransaction($conn, $input, $username){
 
     foreach ($items as $idx => $it) {
         if (!isset($it['menu_id']) || !isset($it['quantity']) || !isset($it['unit_price'])) {
+            logApiError($conn, [
+                'error_level'   => 'error',
+                'http_status'   => 400,
+                'endpoint'      => '/transaction/index.php',
+                'method'        => 'POST',
+                'error_message' => "Invalid item at index $idx. Require menu_id, quantity, unit_price.",
+                'user_identifier' => $username ?? null,
+                'company_id'      => $decoded->company_id ?? null,
+            ]);
             jsonResponse(400, "Invalid item at index $idx. Require menu_id, quantity, unit_price.");
         }
+
         $menu_id = $it['menu_id'];
         $quantity = (int)$it['quantity'];
         $unit_price = (float)$it['unit_price'];
+
         if ($quantity <= 0 || $unit_price < 0) {
+            logApiError($conn, [
+                'error_level'   => 'error',
+                'http_status'   => 400,
+                'endpoint'      => '/transaction/index.php',
+                'method'        => 'POST',
+                'error_message' => "Invalid item values at index $idx.",
+                'user_identifier' => $username ?? null,
+                'company_id'      => $decoded->company_id ?? null,
+            ]);
             jsonResponse(400, "Invalid item values at index $idx.");
         }
+
         $subtotal = $quantity * $unit_price;
         $total_amount += $subtotal;
         $prepared_items[] = [
@@ -48,6 +77,15 @@ function createTransaction($conn, $input, $username){
     $payments = $input['payments'] ?? null;
 
     if (!$payments || !is_array($payments) || count($payments) === 0) {
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 400,
+            'endpoint'      => '/transaction/index.php',
+            'method'        => 'POST',
+            'error_message' => "Invalid payload. Require payments array with at least one item.",
+            'user_identifier' => $username ?? null,
+            'company_id'      => $decoded->company_id ?? null,
+        ]);
         jsonResponse(400, 'Invalid payload. Require payments array with at least one item.');
     }
 
@@ -57,6 +95,15 @@ function createTransaction($conn, $input, $username){
 
     foreach ($payments as $idx => $p) {
         if (!isset($p['payment_method']) || !isset($p['amount'])) {
+            logApiError($conn, [
+                'error_level'   => 'error',
+                'http_status'   => 400,
+                'endpoint'      => '/transaction/index.php',
+                'method'        => 'POST',
+                'error_message' => "Invalid payment at index $idx. Require payment_method and amount.",
+                'user_identifier' => $username ?? null,
+                'company_id'      => $decoded->company_id ?? null,
+            ]);
             jsonResponse(400, "Invalid payment at index $idx. Require payment_method and amount.");
         }
 
@@ -64,9 +111,28 @@ function createTransaction($conn, $input, $username){
         $amount = (int)$p['amount'];
 
         if (!in_array($method, $allowed_methods, true)) {
+            logApiError($conn, [
+                'error_level'   => 'error',
+                'http_status'   => 400,
+                'endpoint'      => '/transaction/index.php',
+                'method'        => 'POST',
+                'error_message' => "Invalid payment_method at index $idx.",
+                'user_identifier' => $username ?? null,
+                'company_id'      => $decoded->company_id ?? null,
+            ]);
             jsonResponse(400, "Invalid payment_method at index $idx.");
         }
+
         if ($amount <= 0) {
+            logApiError($conn, [
+                'error_level'   => 'error',
+                'http_status'   => 400,
+                'endpoint'      => '/transaction/index.php',
+                'method'        => 'POST',
+                'error_message' => "Invalid payment amount at index $idx.",
+                'user_identifier' => $username ?? null,
+                'company_id'      => $decoded->company_id ?? null,
+            ]);
             jsonResponse(400, "Invalid payment amount at index $idx.");
         }
 
@@ -79,6 +145,15 @@ function createTransaction($conn, $input, $username){
 
     // pastikan total payment = total transaksi
     if ($total_paid !== (int)$total_amount) {
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 400,
+            'endpoint'      => '/transaction/index.php',
+            'method'        => 'POST',
+            'error_message' => "Total payment (cash + qris) must equal total_amount. total_paid=$total_paid, total_amount=$total_amount",
+            'user_identifier' => $username ?? null,
+            'company_id'      => $decoded->company_id ?? null,
+        ]);
         jsonResponse(400, "Total payment (cash + qris) must equal total_amount. total_paid=$total_paid, total_amount=$total_amount");
     }
 
@@ -90,22 +165,51 @@ function createTransaction($conn, $input, $username){
         $transaction_id = 'trx' . uniqid();
 
         // Insert into `transaction` (header)
-        $sqlHeader = "INSERT INTO raki_dev.transaction (transaction_id, company_id, transaction_date, total_amount, created_at, created_by, updated_at, updated_by, total_item)
-                       VALUES (?, ?, ?, ?, NOW(), ?, NOW(), ?, ?)";
+        $sqlHeader = "INSERT INTO raki_dev.transaction (transaction_id, company_id, transaction_date, total_amount, created_at, created_by, updated_at, updated_by, total_item) VALUES (?, ?, ?, ?, NOW(), ?, NOW(), ?, ?)";
         $stmtHeader = $conn->prepare($sqlHeader);
+
         if (!$stmtHeader) {
+            logApiError($conn, [
+                'error_level'   => 'error',
+                'http_status'   => 500,
+                'endpoint'      => '/transaction/index.php',
+                'method'        => 'POST',
+                'error_message' => 'Prepare header failed: ' . $conn->error,
+                'user_identifier' => $username ?? null,
+                'company_id'      => $decoded->company_id ?? null,
+            ]);
             throw new Exception('Prepare header failed: ' . $conn->error);
         }
+
         $stmtHeader->bind_param('sssissi', $transaction_id, $company_id, $transaction_date, $total_amount, $username, $username, $total_items);
+        
         if (!$stmtHeader->execute()) {
+            logApiError($conn, [
+                'error_level'   => 'error',
+                'http_status'   => 500,
+                'endpoint'      => '/transaction/index.php',
+                'method'        => 'POST',
+                'error_message' => 'Execute header failed: ' . $stmtHeader->error,
+                'user_identifier' => $username ?? null,
+                'company_id'      => $decoded->company_id ?? null,
+            ]);
             throw new Exception('Execute header failed: ' . $stmtHeader->error);
         }
 
         // Insert details
-        $sqlDetail = "INSERT INTO raki_dev.transaction_detail (detail_id, transaction_id, menu_id, quantity, subtotal, created_at)
-                      VALUES (?, ?, ?, ?, ?, NOW())";
+        $sqlDetail = "INSERT INTO raki_dev.transaction_detail (detail_id, transaction_id, menu_id, quantity, subtotal, created_at) VALUES (?, ?, ?, ?, ?, NOW())";
         $stmtDetail = $conn->prepare($sqlDetail);
+
         if (!$stmtDetail) {
+            logApiError($conn, [
+                'error_level'   => 'error',
+                'http_status'   => 500,
+                'endpoint'      => '/transaction/index.php',
+                'method'        => 'POST',
+                'error_message' => 'Prepare detail failed: ' . $conn->error,
+                'user_identifier' => $username ?? null,
+                'company_id'      => $decoded->company_id ?? null,
+            ]);
             throw new Exception('Prepare detail failed: ' . $conn->error);
         }
 
@@ -116,9 +220,20 @@ function createTransaction($conn, $input, $username){
             $qty = $pi['quantity'];
             $subtotal = $pi['subtotal'];
             $stmtDetail->bind_param('sssii', $detail_id, $transaction_id, $menu_id, $qty, $subtotal);
+
             if (!$stmtDetail->execute()) {
+                logApiError($conn, [
+                    'error_level'   => 'error',
+                    'http_status'   => 500,
+                    'endpoint'      => '/transaction/index.php',
+                    'method'        => 'POST',
+                    'error_message' => 'Execute detail failed: ' . $stmtDetail->error,
+                    'user_identifier' => $username ?? null,
+                    'company_id'      => $decoded->company_id ?? null,
+                ]);
                 throw new Exception('Execute detail failed: ' . $stmtDetail->error);
             }
+
             $response_items[] = [
                 'detail_id' => $detail_id,
                 'menu_id' => $menu_id,
@@ -128,11 +243,19 @@ function createTransaction($conn, $input, $username){
         }
 
         // Insert payment breakdown ke transaction_payment_daily
-        $sqlPayment = "INSERT INTO raki_dev.transaction_payment
-                       (payment_id, transaction_id, payment_method, amount, company_id, created_at)
-                       VALUES (?, ?, ?, ?, ?, NOW())";
+        $sqlPayment = "INSERT INTO raki_dev.transaction_payment (payment_id, transaction_id, payment_method, amount, company_id, created_at) VALUES (?, ?, ?, ?, ?, NOW())";
         $stmtPayment = $conn->prepare($sqlPayment);
+
         if (!$stmtPayment) {
+            logApiError($conn, [
+                'error_level'   => 'error',
+                'http_status'   => 500,
+                'endpoint'      => '/transaction/index.php',
+                'method'        => 'POST',
+                'error_message' => 'Prepare payment failed: ' . $conn->error,
+                'user_identifier' => $username ?? null,
+                'company_id'      => $decoded->company_id ?? null,
+            ]);
             throw new Exception('Prepare payment failed: ' . $conn->error);
         }
 
@@ -143,6 +266,15 @@ function createTransaction($conn, $input, $username){
 
             $stmtPayment->bind_param('sssii', $payment_id, $transaction_id, $method, $amount, $company_id);
             if (!$stmtPayment->execute()) {
+                logApiError($conn, [
+                    'error_level'   => 'error',
+                    'http_status'   => 500,
+                    'endpoint'      => '/transaction/index.php',
+                    'method'        => 'POST',
+                    'error_message' => 'Execute payment failed: ' . $stmtPayment->error,
+                    'user_identifier' => $username ?? null,
+                    'company_id'      => $decoded->company_id ?? null,
+                ]);
                 throw new Exception('Execute payment failed: ' . $stmtPayment->error);
             }
         }
@@ -163,6 +295,7 @@ function createTransaction($conn, $input, $username){
         // Fetch PIC contact from app_company
         $sqlPhone = "SELECT pic_contact FROM movira_core_dev.app_company WHERE company_id = ?";
         $stmtPhone = $conn->prepare($sqlPhone);
+
         if ($stmtPhone) {
             $stmtPhone->bind_param('s', $company_id);
             if ($stmtPhone->execute()) {
@@ -200,50 +333,65 @@ function createTransaction($conn, $input, $username){
         ]);
     } catch (Exception $e) {
         $conn->rollback();
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 500,
+            'endpoint'      => '/transaction/index.php',
+            'method'        => 'POST',
+            'error_message' =>  $e->getMessage(),
+            'user_identifier' => $username ?? null,
+            'company_id'      => $decoded->company_id ?? null,
+         ]);
         jsonResponse(500, 'Failed to create transaction', ['error' => $e->getMessage()]);
     }
 }
 
-function getDetailTransaction($conn, $trx_id){
+function getDetailTransaction($conn, $trx_id, $username){
     if (!$trx_id) {
         jsonResponse(400, 'trx_id is required');
     }
 
-    $sql = "SELECT 
-                t.transaction_id,
-                t.company_id,
-                t.transaction_date,
-                t.total_amount,
-                t.created_at,
-                t.created_by,
-                t.updated_at,
-                t.updated_by,
-                td.detail_id,
-                td.menu_id,
-                m.menu_name,
-                td.quantity,
-                td.subtotal,
-                t.total_item,
-                tp.payment_method,
-                tp.amount
-            FROM raki_dev.transaction t
-            JOIN raki_dev.transaction_detail td ON td.transaction_id = t.transaction_id
-            LEFT JOIN raki_dev.menu m ON m.menu_id = td.menu_id
-            LEFT JOIN raki_dev.transaction_payment tp ON tp.transaction_id = t.transaction_id
-            WHERE t.transaction_id = ?";
+    $sql = "SELECT t.transaction_id, t.company_id, t.transaction_date, t.total_amount, t.created_at, t.created_by, t.updated_at, t.updated_by, td.detail_id, td.menu_id, m.menu_name, td.quantity, td.subtotal, t.total_item, tp.payment_method, tp.amount FROM raki_dev.transaction t JOIN raki_dev.transaction_detail td ON td.transaction_id = t.transaction_id LEFT JOIN raki_dev.menu m ON m.menu_id = td.menu_id LEFT JOIN raki_dev.transaction_payment tp ON tp.transaction_id = t.transaction_id WHERE t.transaction_id = ?";
 
     $stmt = $conn->prepare($sql);
     if (!$stmt) {
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 500,
+            'endpoint'      => '/transaction/index.php',
+            'method'        => 'GET',
+            'error_message' =>  $conn->error,
+            'user_identifier' => $username ?? null,
+            'company_id'      => $decoded->company_id ?? null,
+         ]);
         jsonResponse(500, 'Failed to prepare statement', ['error' => $conn->error]);
     }
 
     $stmt->bind_param('s', $trx_id);
     if (!$stmt->execute()) {
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 500,
+            'endpoint'      => '/transaction/index.php',
+            'method'        => 'GET',
+            'error_message' =>  $stmt->error,
+            'user_identifier' => $username ?? null,
+            'company_id'      => $decoded->company_id ?? null,
+         ]);
         jsonResponse(500, 'Failed to execute statement', ['error' => $stmt->error]);
     }
 
     $result = $stmt->get_result();
     if ($result->num_rows === 0) {
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 404,
+            'endpoint'      => '/transaction/index.php',
+            'method'        => 'GET',
+            'error_message' =>  'Transaction not found',
+            'user_identifier' => $username ?? null,
+            'company_id'      => $decoded->company_id ?? null,
+         ]);
         jsonResponse(404, 'Transaction not found');
     }
 
@@ -318,105 +466,121 @@ function getAllTransaction($conn, $company_id = null, $username = null, $page = 
 
     // --- Hitung total data untuk pagination ---
     if ($hasCompanyFilter && $hasUsernameFilter) {
-        $countSql = "SELECT COUNT(*) as total
-                     FROM raki_dev.transaction t
-                     WHERE t.company_id = ?
-                     AND t.created_by = ?";
+        $countSql = "SELECT COUNT(*) as total FROM raki_dev.transaction t WHERE t.company_id = ?  AND t.created_by = ?";
         $stmtCount = $conn->prepare($countSql);
         if (!$stmtCount) {
+            logApiError($conn, [
+                'error_level'   => 'error',
+                'http_status'   => 500,
+                'endpoint'      => '/transaction/index.php',
+                'method'        => 'GET',
+                'error_message' =>  $conn->error,
+                'user_identifier' => $username ?? null,
+                'company_id'      => $decoded->company_id ?? null,
+            ]);
             jsonResponse(500, 'Failed to prepare count statement', ['error' => $conn->error]);
         }
         $stmtCount->bind_param('ss', $company_id, $username);
 
     } else if ($hasCompanyFilter) {
-
-        $countSql = "SELECT COUNT(*) as total
-                     FROM raki_dev.transaction t
-                     WHERE t.company_id = ?";
+        $countSql = "SELECT COUNT(*) as total FROM raki_dev.transaction t WHERE t.company_id = ?";
         $stmtCount = $conn->prepare($countSql);
+
         if (!$stmtCount) {
+            logApiError($conn, [
+                'error_level'   => 'error',
+                'http_status'   => 500,
+                'endpoint'      => '/transaction/index.php',
+                'method'        => 'GET',
+                'error_message' =>  $conn->error,
+                'user_identifier' => $username ?? null,
+                'company_id'      => $decoded->company_id ?? null,
+            ]);
             jsonResponse(500, 'Failed to prepare count statement', ['error' => $conn->error]);
         }
+
         $stmtCount->bind_param('s', $company_id);
 
     } else if ($hasUsernameFilter) {
-
-        $countSql = "SELECT COUNT(*) as total
-                     FROM raki_dev.transaction t
-                     WHERE t.created_by = ?";
+        $countSql = "SELECT COUNT(*) as total FROM raki_dev.transaction t WHERE t.created_by = ?";
         $stmtCount = $conn->prepare($countSql);
+
         if (!$stmtCount) {
+            logApiError($conn, [
+                'error_level'   => 'error',
+                'http_status'   => 500,
+                'endpoint'      => '/transaction/index.php',
+                'method'        => 'GET',
+                'error_message' =>  $conn->error,
+                'user_identifier' => $username ?? null,
+                'company_id'      => $decoded->company_id ?? null,
+            ]);
             jsonResponse(500, 'Failed to prepare count statement', ['error' => $conn->error]);
         }
+
         $stmtCount->bind_param('s', $username);
 
     } else {
-
-        $countSql = "SELECT COUNT(*) as total
-                     FROM raki_dev.transaction t
-                     WHERE t.company_id <> ?";
+        $countSql = "SELECT COUNT(*) as total FROM raki_dev.transaction t WHERE t.company_id <> ?";
         $stmtCount = $conn->prepare($countSql);
+
         if (!$stmtCount) {
+            logApiError($conn, [
+                'error_level'   => 'error',
+                'http_status'   => 500,
+                'endpoint'      => '/transaction/index.php',
+                'method'        => 'GET',
+                'error_message' =>  $conn->error,
+                'user_identifier' => $username ?? null,
+                'company_id'      => $decoded->company_id ?? null,
+            ]);
             jsonResponse(500, 'Failed to prepare count statement', ['error' => $conn->error]);
         }
+
         $stmtCount->bind_param('s', $excludedCompanyId);
     }
 
     if (!$stmtCount->execute()) {
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 500,
+            'endpoint'      => '/transaction/index.php',
+            'method'        => 'GET',
+            'error_message' =>  $stmtCount->error,
+            'user_identifier' => $username ?? null,
+            'company_id'      => $decoded->company_id ?? null,
+        ]);
         jsonResponse(500, 'Failed to execute count statement', ['error' => $stmtCount->error]);
     }
+
     $countResult = $stmtCount->get_result();
     $totalRow = $countResult->fetch_assoc();
     $total = (int)($totalRow['total'] ?? 0);
 
     // --- Query data transaksi + nama company ---
-    $baseSelect = "SELECT 
-                        t.transaction_id,
-                        t.company_id,
-                        t.transaction_date,
-                        t.total_amount,
-                        t.created_at,
-                        t.created_by,
-                        t.updated_at,
-                        t.updated_by,
-                        t.total_item,
-                        ac.company_name
-                   FROM raki_dev.transaction t
-                   LEFT JOIN movira_core_dev.app_company ac 
-                        ON ac.company_id = t.company_id";
+    $baseSelect = "SELECT t.transaction_id, t.company_id, t.transaction_date, t.total_amount, t.created_at, t.created_by, t.updated_at, t.updated_by, t.total_item, ac.company_name FROM raki_dev.transaction t LEFT JOIN movira_core_dev.app_company ac ON ac.company_id = t.company_id";
 
     if ($hasCompanyFilter && $hasUsernameFilter) {
-
-        $sql = $baseSelect . "
-                WHERE t.company_id = ?
-                AND t.created_by = ?
-                ORDER BY t.transaction_date DESC
-                LIMIT ?, ?";
-
+        $sql = $baseSelect . " WHERE t.company_id = ? AND t.created_by = ? ORDER BY t.transaction_date DESC LIMIT ?, ?";
     } else if ($hasCompanyFilter) {
-
-        $sql = $baseSelect . "
-                WHERE t.company_id = ?
-                ORDER BY t.transaction_date DESC
-                LIMIT ?, ?";
-
+        $sql = $baseSelect . " WHERE t.company_id = ? ORDER BY t.transaction_date DESC LIMIT ?, ?";
     } else if ($hasUsernameFilter) {
-
-        $sql = $baseSelect . "
-                WHERE t.created_by = ?
-                ORDER BY t.transaction_date DESC
-                LIMIT ?, ?";
-
+        $sql = $baseSelect . " WHERE t.created_by = ? ORDER BY t.transaction_date DESC LIMIT ?, ?";
     } else {
-
-        $sql = $baseSelect . "
-                WHERE t.company_id <> ?
-                ORDER BY t.transaction_date DESC
-                LIMIT ?, ?";
+        $sql = $baseSelect . " WHERE t.company_id <> ? ORDER BY t.transaction_date DESC LIMIT ?, ?";
     }
 
     $stmt = $conn->prepare($sql);
     if (!$stmt) {
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 500,
+            'endpoint'      => '/transaction/index.php',
+            'method'        => 'GET',
+            'error_message' =>  $conn->error,
+            'user_identifier' => $username ?? null,
+            'company_id'      => $decoded->company_id ?? null,
+        ]);
         jsonResponse(500, 'Failed to prepare statement', ['error' => $conn->error]);
     }
 
@@ -434,6 +598,15 @@ function getAllTransaction($conn, $company_id = null, $username = null, $page = 
     }
 
     if (!$stmt->execute()) {
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 500,
+            'endpoint'      => '/transaction/index.php',
+            'method'        => 'GET',
+            'error_message' =>  $stmt->error,
+            'user_identifier' => $username ?? null,
+            'company_id'      => $decoded->company_id ?? null,
+        ]);
         jsonResponse(500, 'Failed to execute statement', ['error' => $stmt->error]);
     }
 
@@ -458,6 +631,15 @@ function getAllTransaction($conn, $company_id = null, $username = null, $page = 
 
 function deleteTransaction ($conn, $transaction_id){
     if($transaction_id === null || $transaction_id === ''){
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 400,
+            'endpoint'      => '/transaction/index.php',
+            'method'        => 'DELETE',
+            'error_message' =>  'Missing required fields (transaction_id)',
+            'user_identifier' => $username ?? null,
+            'company_id'      => $decoded->company_id ?? null,
+        ]);
         jsonResponse(400, 'Missing required fields (transaction_id)');
     }
 
@@ -472,15 +654,39 @@ function deleteTransaction ($conn, $transaction_id){
             if (mysqli_query($conn, $query)) {
                 jsonResponse(200, 'Transaction deleted successfully');
             } else {
+                logApiError($conn, [
+                    'error_level'   => 'error',
+                    'http_status'   => 400,
+                    'endpoint'      => '/transaction/index.php',
+                    'method'        => 'DELETE',
+                    'error_message' =>  mysqli_error($conn),
+                    'user_identifier' => $username ?? null,
+                    'company_id'      => $decoded->company_id ?? null,
+                ]);
                 jsonResponse(500, 'Failed to delete transaction');
             }
         } else {
+            logApiError($conn, [
+                'error_level'   => 'error',
+                'http_status'   => 500,
+                'endpoint'      => '/transaction/index.php',
+                'method'        => 'DELETE',
+                'error_message' =>  'Failed to delete transaction detail',
+                'user_identifier' => $username ?? null,
+                'company_id'      => $decoded->company_id ?? null,
+            ]);
             jsonResponse(500, 'Failed to delete transaction detail');
         }
-
-        
-
     } else {
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 500,
+            'endpoint'      => '/transaction/index.php',
+            'method'        => 'DELETE',
+            'error_message' =>  'Transaction is not registered in systems',
+            'user_identifier' => $username ?? null,
+            'company_id'      => $decoded->company_id ?? null,
+        ]);
         jsonResponse(404, 'Transaction is not registered in systems');
     }
 }
@@ -490,6 +696,15 @@ use Firebase\JWT\Key;
 
 $headers = getallheaders();
 if (!isset($headers['Authorization'])) {
+    logApiError($conn, [
+        'error_level'   => 'error',
+        'http_status'   => 500,
+        'endpoint'      => '/transaction/index.php',
+        'method'        => '',
+        'error_message' =>  'Authorization header not found',
+        'user_identifier' => $username ?? null,
+        'company_id'      => $decoded->company_id ?? null,
+    ]);
     jsonResponse(401, 'Authorization header not found');
 }
 
@@ -529,20 +744,39 @@ try {
             $limit = $_GET['limit'] ?? 10;
             $trx_id = $_GET['trx_id'] ?? null;
             if($trx_id != null){
-                getDetailTransaction($conn, $trx_id);
+                getDetailTransaction($conn, $trx_id, $token_username);
             } else {
                 getAllTransaction($conn, $company_id, $username, $page, $limit);
             }
-            break;
-        case 'PUT':
             break;
         case 'DELETE':
             $transaction_id = $_GET['transaction_id'] ?? null;
             deleteTransaction($conn, $transaction_id);
             break;
+        default:
+            logApiError($conn, [
+                'error_level'   => 'error',
+                'http_status'   => 405,
+                'endpoint'      => '/transaction/index.php',
+                'method'        => 'POST',
+                'error_message' => 'Method Not Allowed',
+                'user_identifier' => $decoded->username ?? null,
+                'company_id'      => $decoded->company_id ?? null,
+            ]);
+            jsonResponse(405, 'Method Not Allowed');
+            break;
     }
 
 } catch (Exception $e){
+    logApiError($conn, [
+        'error_level'   => 'error',
+        'http_status'   => 401,
+        'endpoint'      => '/transaction/index.php',
+        'method'        => 'POST',
+        'error_message' => $e->getMessage(),
+        'user_identifier' => $username ?? null,
+        'company_id'      => $decoded->company_id ?? null,
+    ]);
     jsonResponse(500, 'Internal Server Error', ['error' => $e->getMessage()]);
 }
 
