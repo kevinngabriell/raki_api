@@ -342,7 +342,7 @@ try {
     switch($method){
         case 'GET':
             $company_id = $_GET['company_id'] ?? null;
-            getDashboardStatistic($conn, $company_id);
+            getDashboardStatistic($conn, $company_id, $token_username);
             break;
         default:
             jsonResponse(405, 'Method Not Allowed');
