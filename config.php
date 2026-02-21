@@ -10,3 +10,9 @@ function loadEnv($path) {
 }
 
 loadEnv(__DIR__ . '/.env');
+
+define('APP_ENV', $_ENV['APP_ENV'] ?? 'production');
+define('DB_SCHEMA', $_ENV['DB_SCHEMA'] ?? 'raki');
+
+$dotenv = Dotenv\Dotenv::createImmutable(__DIR__);
+$dotenv->load();

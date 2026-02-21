@@ -19,7 +19,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     exit();
 }
 
-function createMenu($conn, $input, $username){
+function createMenu($conn, $schema, $input, $username){
     $menu_name   = $input['menu_name']   ?? ($_POST['menu_name']   ?? null);
     $category_id = $input['category_id'] ?? ($_POST['category_id'] ?? null);
     $price       = $input['price']       ?? ($_POST['price']       ?? null);
@@ -60,7 +60,7 @@ function createMenu($conn, $input, $username){
         $price_sql = (string)(0 + $price); // numeric literal
     }
 
-    $check_app_query = "SELECT * FROM raki_dev.menu WHERE menu_name = '$menu_name'";
+    $check_app_query = "SELECT * FROM {$schema}.menu WHERE menu_name = '$menu_name'";
     $check_app_result = mysqli_query($conn, $check_app_query);
 
     if (mysqli_num_rows($check_app_result) > 0) {
@@ -106,7 +106,7 @@ function createMenu($conn, $input, $username){
         $img_sql   = $image_url ? "'" . mysqli_real_escape_string($conn, $image_url) . "'" : "NULL";
         $thumb_sql = $thumb_url ? "'" . mysqli_real_escape_string($conn, $thumb_url) . "'" : "NULL";
 
-        $menu_query = "INSERT INTO raki_dev.menu (menu_id, menu_name, category_id, price, image_url, thumb_url, created_by) VALUES ('$menuID', '$menu_name', '$category_id', $price_sql, $img_sql, $thumb_sql, '$username')";
+        $menu_query = "INSERT INTO {$schema}.menu (menu_id, menu_name, category_id, price, image_url, thumb_url, created_by) VALUES ('$menuID', '$menu_name', '$category_id', $price_sql, $img_sql, $thumb_sql, '$username')";
 
         if (mysqli_query($conn, $menu_query)) {
             jsonResponse(201, 'New menu has been created successfully', ['menu' => $menu_name]);
@@ -125,17 +125,17 @@ function createMenu($conn, $input, $username){
     }
 }
 
-function getAllMenu($conn, $params, $page = 1, $limit = 50){
+function getAllMenu($conn, $schema, $params, $page = 1, $limit = 50){
     $offset = ($page - 1) * $limit;
 
     $params = mysqli_real_escape_string($conn, $params ?? '');
 
-    $countQuery = "SELECT COUNT(*) as total FROM raki_dev.menu WHERE is_active = 1 AND menu_name LIKE '%$params%'";
+    $countQuery = "SELECT COUNT(*) as total FROM {$schema}.menu WHERE is_active = 1 AND menu_name LIKE '%$params%'";
     $countResult = mysqli_query($conn, $countQuery);
     $totalRow = mysqli_fetch_assoc($countResult);
     $total = $totalRow['total'];
 
-    $query = "SELECT menu_id, menu_name, price, category_name, image_url, thumb_url FROM raki_dev.menu ME LEFT JOIN raki_dev.category_menu CM ON ME.category_id = CM.category_id  WHERE is_active = 1 AND menu_name LIKE '%$params%' LIMIT $limit OFFSET $offset";
+    $query = "SELECT menu_id, menu_name, price, category_name, image_url, thumb_url FROM {$schema}.menu ME LEFT JOIN {$schema}.category_menu CM ON ME.category_id = CM.category_id  WHERE is_active = 1 AND menu_name LIKE '%$params%' LIMIT $limit OFFSET $offset";
     $result = mysqli_query($conn, $query);
 
     if ($result && mysqli_num_rows($result) > 0) {
@@ -164,8 +164,8 @@ function getAllMenu($conn, $params, $page = 1, $limit = 50){
     }
 }
 
-function getDetailMenu($conn, $menu_id){
-    $query = "SELECT menu_id, menu_name, price, category_name, image_url, thumb_url, ME.company_id, is_active, ME.created_at, ME.created_by, ME.updated_at, ME.updated_by FROM raki_dev.menu ME LEFT JOIN raki_dev.category_menu CM ON ME.category_id = CM.category_id WHERE is_active = 1 AND ME.menu_id = '$menu_id'";
+function getDetailMenu($conn, $schema, $menu_id){
+    $query = "SELECT menu_id, menu_name, price, category_name, image_url, thumb_url, ME.company_id, is_active, ME.created_at, ME.created_by, ME.updated_at, ME.updated_by FROM {$schema}.menu ME LEFT JOIN {$schema}.category_menu CM ON ME.category_id = CM.category_id WHERE is_active = 1 AND ME.menu_id = '$menu_id'";
     $result = mysqli_query($conn, $query);
 
     if ($result && mysqli_num_rows($result) > 0) {
@@ -194,7 +194,7 @@ function getDetailMenu($conn, $menu_id){
     }
 }
 
-function updateMenu($conn, $input, $username){
+function updateMenu($conn, $schema, $input, $username){
     if (!isset($input['menu_id'])) {
         logApiError($conn, [
             'error_level'   => 'error',
@@ -210,7 +210,7 @@ function updateMenu($conn, $input, $username){
 
     $menu_id = mysqli_real_escape_string($conn, $input['menu_id']);
 
-    $query = "SELECT * FROM raki_dev.menu WHERE menu_id = '$menu_id'";
+    $query = "SELECT * FROM {$schema}.menu WHERE menu_id = '$menu_id'";
     $result = mysqli_query($conn, $query);
 
     $now = getCurrentDateTimeJakarta();
@@ -267,7 +267,7 @@ function updateMenu($conn, $input, $username){
     }
 
     if(mysqli_num_rows($result) > 0) {
-        $updateQuery = "UPDATE raki_dev.menu SET " . implode(', ', $updates) . " WHERE menu_id = '$menu_id'";
+        $updateQuery = "UPDATE {$schema}.menu SET " . implode(', ', $updates) . " WHERE menu_id = '$menu_id'";
 
         if (mysqli_query($conn, $updateQuery)) {
             jsonResponse(200, 'Menu updated successfully', ['menu_id' => $menu_id]);
@@ -298,7 +298,7 @@ function updateMenu($conn, $input, $username){
 
 }
 
-function deleteMenu($conn, $menu_id, $username){
+function deleteMenu($conn, $schema, $menu_id, $username){
     if($menu_id === null || $menu_id === ''){
         logApiError($conn, [
             'error_level'   => 'error',
@@ -312,11 +312,11 @@ function deleteMenu($conn, $menu_id, $username){
         jsonResponse(400, 'Missing required fields (menu_id)');
     }
 
-    $query = "SELECT * FROM raki_dev.menu WHERE menu_id = '$menu_id'";
+    $query = "SELECT * FROM {$schema}.menu WHERE menu_id = '$menu_id'";
     $result = mysqli_query($conn, $query);
 
     if(mysqli_num_rows($result) > 0) {
-        $query = "DELETE FROM raki_dev.menu WHERE menu_id = '$menu_id'";
+        $query = "DELETE FROM {$schema}.menu WHERE menu_id = '$menu_id'";
 
         if (mysqli_query($conn, $query)) {
             jsonResponse(200, 'Menu deleted successfully');
@@ -393,6 +393,8 @@ if ($method !== 'GET') {
 
 try {
 
+    $schema = DB_SCHEMA;
+
     switch($method){
         case 'POST':
             $contentType = $_SERVER['CONTENT_TYPE'] ?? '';
@@ -404,10 +406,10 @@ try {
 
             if (!empty($input['menu_id'])) {
                 // UPDATE + boleh ada $_FILES['image']
-                updateMenu($conn, $input, $token_username);
+                updateMenu($conn, $schema, $input, $token_username);
             } else {
                 // CREATE
-                createMenu($conn, $input, $token_username);
+                createMenu($conn, $schema, $input, $token_username);
             }
             break;
         case 'GET':
@@ -416,9 +418,9 @@ try {
             $limit = $_GET['limit'] ?? 50;
             $menu_id = $_GET['menu_id'] ?? null;
             if($menu_id != null){
-                getDetailMenu($conn, $menu_id);
+                getDetailMenu($conn, $schema, $menu_id);
             } else {
-                getAllMenu($conn, $params, $page, $limit);
+                getAllMenu($conn, $schema, $params, $page, $limit);
              }
             break;
         case 'PUT':
@@ -428,17 +430,19 @@ try {
             } else {
                 $raw = file_get_contents('php://input');
                 $input = [];
-                parse_str($raw, $input); // x-www-form-urlencoded (tanpa file)
+                parse_str($raw, $input);
             }
-            updateMenu($conn, $input, $token_username);
+            updateMenu($conn, $schema, $input, $token_username);
             break;
         case 'DELETE':
             $menu_id = $_GET['menu_id'] ?? null;
-            deleteMenu($conn, $menu_id, $token_username);
+            deleteMenu($conn, $schema, $menu_id, $token_username);
             break;
     }
 
 } catch (Exception $e){
+    $conn = DB::conn();
+
     logApiError($conn, [
         'error_level'   => 'error',
         'http_status'   => 500,
@@ -448,6 +452,7 @@ try {
         'user_identifier' => $username ?? null,
         'company_id'      => $decoded->company_id ?? null,
     ]);
+    
     jsonResponse(500, 'Internal Server Error', ['error' => $e->getMessage()]);
 }
 
