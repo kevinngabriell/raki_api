@@ -5,7 +5,7 @@ require_once '../vendor/autoload.php';
 require_once '../general.php';
 require_once '../config.php';
 
-function createUOM($conn, $input, $token_username){
+function createUOM($conn, $schema, $input, $token_username){
     if (!isset($input['uom_name'])) {
         jsonResponse(400, 'Missing required fields (uom_name)');
     }
@@ -13,7 +13,7 @@ function createUOM($conn, $input, $token_username){
     $uom_name = mysqli_real_escape_string($conn, $input['uom_name']);
     $now = getCurrentDateTimeJakarta();
 
-    $check_app_query = "SELECT * FROM raki_dev.unit_of_measurement WHERE uom_name = '$uom_name'";
+    $check_app_query = "SELECT * FROM {$schema}.unit_of_measurement WHERE uom_name = '$uom_name'";
     $check_app_result = mysqli_query($conn, $check_app_query);
 
     if (mysqli_num_rows($check_app_result) > 0) {
@@ -22,7 +22,7 @@ function createUOM($conn, $input, $token_username){
         $uomID = "uom" . uniqid();
         $now = getCurrentDateTimeJakarta();
 
-        $category_query = "INSERT INTO raki_dev.unit_of_measurement (uom_id, uom_name, created_by, created_at) 
+        $category_query = "INSERT INTO {$schema}.unit_of_measurement (uom_id, uom_name, created_by, created_at) 
         VALUES ('$uomID', '$uom_name', '$token_username', '$now')";
 
         if (mysqli_query($conn, $category_query)) {
@@ -33,15 +33,15 @@ function createUOM($conn, $input, $token_username){
     }
 }
 
-function getAllUOM($conn, $params, $page = 1, $limit = 10){
+function getAllUOM($conn, $schema, $params, $page = 1, $limit = 10){
     $offset = ($page - 1) * $limit;
 
-    $countQuery = "SELECT COUNT(*) as total FROM raki_dev.unit_of_measurement WHERE (uom_name LIKE '%$params%')";
+    $countQuery = "SELECT COUNT(*) as total FROM {$schema}.unit_of_measurement WHERE (uom_name LIKE '%$params%')";
     $countResult = mysqli_query($conn, $countQuery);
     $totalRow = mysqli_fetch_assoc($countResult);
     $total = $totalRow['total'];
 
-    $query = "SELECT uom_id, uom_name FROM raki_dev.unit_of_measurement WHERE (uom_name LIKE '%$params%') LIMIT $limit OFFSET $offset";
+    $query = "SELECT uom_id, uom_name FROM {$schema}.unit_of_measurement WHERE (uom_name LIKE '%$params%') LIMIT $limit OFFSET $offset";
     $result = mysqli_query($conn, $query);
 
     if ($result && mysqli_num_rows($result) > 0) {
@@ -61,8 +61,8 @@ function getAllUOM($conn, $params, $page = 1, $limit = 10){
     }
 }
 
-function getDetailUOM($conn, $uom_id){
-    $query = "SELECT * FROM raki_dev.unit_of_measurement WHERE uom_id = '$uom_id'";
+function getDetailUOM($conn, $schema, $uom_id){
+    $query = "SELECT * FROM {$schema}.unit_of_measurement WHERE uom_id = '$uom_id'";
     $result = mysqli_query($conn, $query);
 
     if ($result && mysqli_num_rows($result) > 0) {
@@ -82,7 +82,7 @@ function getDetailUOM($conn, $uom_id){
     }
 }
 
-function updateUOM($conn, $input){
+function updateUOM($conn, $schema, $input){
     if (!isset($input['uom_id']) || !isset($input['uom_name'])) {
         jsonResponse(400, 'Missing required fields (uom_id and uom_name)');
     }
@@ -90,12 +90,12 @@ function updateUOM($conn, $input){
     $uom_id = mysqli_real_escape_string($conn, $input['uom_id']);
     $uom_name = mysqli_real_escape_string($conn, $input['uom_name']);
 
-    $query = "SELECT * FROM raki_dev.unit_of_measurement WHERE uom_id = '$uom_id'";
+    $query = "SELECT * FROM {$schema}.unit_of_measurement WHERE uom_id = '$uom_id'";
     $result = mysqli_query($conn, $query);
 
     if(mysqli_num_rows($result) > 0) {
 
-        $updateQuery = "UPDATE raki_dev.unit_of_measurement SET uom_name = '$uom_name' WHERE uom_id = '$uom_id'";
+        $updateQuery = "UPDATE {$schema}.unit_of_measurement SET uom_name = '$uom_name' WHERE uom_id = '$uom_id'";
 
         if (mysqli_query($conn, $updateQuery)) {
             jsonResponse(200, 'Unit of measurement updated successfully', ['uom_id' => $uom_id]);
@@ -109,16 +109,16 @@ function updateUOM($conn, $input){
 
 }
 
-function deleteUOM($conn, $uom_id){
+function deleteUOM($conn, $schema, $uom_id){
     if($uom_id === null || $uom_id === ''){
         jsonResponse(400, 'Missing required fields (uom_id)');
     }
 
-    $query = "SELECT * FROM raki_dev.unit_of_measurement WHERE uom_id = '$uom_id'";
+    $query = "SELECT * FROM {$schema}.unit_of_measurement WHERE uom_id = '$uom_id'";
     $result = mysqli_query($conn, $query);
 
     if(mysqli_num_rows($result) > 0) {
-        $query = "DELETE FROM raki_dev.unit_of_measurement WHERE uom_id = '$uom_id'";
+        $query = "DELETE FROM {$schema}.unit_of_measurement WHERE uom_id = '$uom_id'";
 
         if (mysqli_query($conn, $query)) {
             jsonResponse(200, 'Unit of measurement deleted successfully');
@@ -153,14 +153,15 @@ try {
     $decoded = JWT::decode($token, new Key($_ENV['JWT_SECRET'], 'HS256'));
 
     $conn = DB::conn();
-    
+    $schema = DB_SCHEMA;
+
     $token_username = $decoded->username;
     $method = $_SERVER['REQUEST_METHOD'];
 
     switch($method){
         case 'POST':
             $input = json_decode(file_get_contents('php://input'), true);
-            createUOM($conn, $input, $token_username);
+            createUOM($conn, $schema, $input, $token_username);
             break;
         case 'GET':
             $params = $_GET['params'] ?? null;
@@ -168,18 +169,18 @@ try {
             $limit = $_GET['limit'] ?? 10;
             $uom_id = $_GET['uom_id'] ?? null;
             if($uom_id != null){
-                getDetailUOM($conn, $uom_id);
+                getDetailUOM($conn, $schema, $uom_id);
             } else {
-                getAllUOM($conn, $params, $page, $limit);
+                getAllUOM($conn, $schema, $params, $page, $limit);
             }
             break;
         case 'PUT':
             $input = json_decode(file_get_contents('php://input'), true);
-            updateUOM($conn, $input);
+            updateUOM($conn, $schema, $input);
             break;
         case 'DELETE':
             $uom_id = $_GET['uom_id'] ?? null;
-            deleteUOM($conn, $uom_id);
+            deleteUOM($conn, $schema, $uom_id);
             break;
     }
 

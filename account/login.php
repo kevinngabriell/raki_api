@@ -10,6 +10,7 @@ use Firebase\JWT\JWT;
 
 function login($conn, $input){
     $conn = DB::conn();
+
     $username = $input['username'];
     $password = $input['password'];
 
@@ -107,6 +108,15 @@ try {
             login($conn, $input);
             break;
         default:
+            logApiError($conn, [
+                'error_level'   => 'error',
+                'http_status'   => 405,
+                'endpoint'      => '/account/login.php',
+                'method'        => $method,
+                'error_message' => 'Method Not Allowed',
+                'user_identifier' => $decoded->username ?? null,
+                'company_id'      => $decoded->company_id ?? null,
+            ]);
             jsonResponse(405, 'Method Not Allowed');
             break;
     }
@@ -123,6 +133,7 @@ try {
         'user_identifier' => null,
         'company_id'      => null,
     ]);
+
     jsonResponse(500, 'Internal Server Error', ['error' => $e->getMessage()]);
 }
 

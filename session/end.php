@@ -27,7 +27,7 @@ function formatIndoDateTime($datetimeStr) {
     }
 }
 
-function endSession($conn, $input, $token_username, $decoded){
+function endSession($conn, $schema, $input, $token_username, $decoded){
     // Validate input
     if (!$input || !isset($input['cash_end'])) {
         logApiError($conn, [
@@ -75,7 +75,7 @@ function endSession($conn, $input, $token_username, $decoded){
     $user_esc = mysqli_real_escape_string($conn, $token_username);
 
     // Find active session
-    $qSess = "SELECT session_id, started_at, cash_start FROM raki_dev.work_session WHERE company_id='$company_id_esc' AND user_id='$user_esc' AND status='active' ORDER BY started_at DESC LIMIT 1";
+    $qSess = "SELECT session_id, started_at, cash_start FROM {$schema}.work_session WHERE company_id='$company_id_esc' AND user_id='$user_esc' AND status='active' ORDER BY started_at DESC LIMIT 1";
 
     $rSess = mysqli_query($conn, $qSess);
     if (!$rSess) {
@@ -114,22 +114,22 @@ function endSession($conn, $input, $token_username, $decoded){
     // ---- Compute recap ----
 
     // Total cups brought
-    $qCupStart = "SELECT COALESCE(SUM(qty_start),0) AS total_cup_start FROM raki_dev.work_session_stock WHERE session_id='$session_id'";
+    $qCupStart = "SELECT COALESCE(SUM(qty_start),0) AS total_cup_start FROM {$schema}.work_session_stock WHERE session_id='$session_id'";
     $rCupStart = mysqli_query($conn, $qCupStart);
     $total_cup_start = (int)(mysqli_fetch_assoc($rCupStart)['total_cup_start'] ?? 0);
 
     // Total cups sold
-    $qCupSold = "SELECT COALESCE(SUM(td.quantity),0) AS total_cup_sold FROM raki_dev.transaction t JOIN raki_dev.transaction_detail td ON td.transaction_id=t.transaction_id WHERE t.session_id='$session_id'";
+    $qCupSold = "SELECT COALESCE(SUM(td.quantity),0) AS total_cup_sold FROM {$schema}.transaction t JOIN {$schema}.transaction_detail td ON td.transaction_id=t.transaction_id WHERE t.session_id='$session_id'";
     $rCupSold = mysqli_query($conn, $qCupSold);
     $total_cup_sold = (int)(mysqli_fetch_assoc($rCupSold)['total_cup_sold'] ?? 0);
 
     // Total transactions
-    $qTrx = "SELECT COUNT(*) AS total_trx FROM raki_dev.transaction WHERE session_id='$session_id'";
+    $qTrx = "SELECT COUNT(*) AS total_trx FROM {$schema}.transaction WHERE session_id='$session_id'";
     $rTrx = mysqli_query($conn, $qTrx);
     $total_trx = (int)(mysqli_fetch_assoc($rTrx)['total_trx'] ?? 0);
 
     // Payment breakdown
-    $qPay = "SELECT tp.payment_method, COALESCE(SUM(amount),0) AS total FROM raki_dev.transaction_payment tp JOIN raki_dev.transaction t ON t.transaction_id=tp.transaction_id WHERE t.session_id='$session_id' GROUP BY tp.payment_method";
+    $qPay = "SELECT tp.payment_method, COALESCE(SUM(amount),0) AS total FROM {$schema}.transaction_payment tp JOIN {$schema}.transaction t ON t.transaction_id=tp.transaction_id WHERE t.session_id='$session_id' GROUP BY tp.payment_method";
     $rPay = mysqli_query($conn, $qPay);
 
     $total_cash = 0;
@@ -155,7 +155,7 @@ function endSession($conn, $input, $token_username, $decoded){
     // ---- Close session ----
     $conn->begin_transaction();
     try {
-        $qEnd = "UPDATE raki_dev.work_session SET ended_at='$ended_at', cash_end=$cash_end, status='closed' WHERE session_id='$session_id'";
+        $qEnd = "UPDATE {$schema}.work_session SET ended_at='$ended_at', cash_end=$cash_end, status='closed' WHERE session_id='$session_id'";
 
         if (!mysqli_query($conn, $qEnd)) {
             logApiError($conn, [
@@ -279,16 +279,19 @@ try {
     $decoded = JWT::decode($token, new Key($_ENV['JWT_SECRET'], 'HS256'));
 
     $conn = DB::conn();
-    
+    $schema = DB_SCHEMA;
+
     $token_username = $decoded->username;
     $method = $_SERVER['REQUEST_METHOD'];
 
     switch($method){
         case 'POST':
             $input = json_decode(file_get_contents('php://input'), true);
-            endSession($conn, $input, $token_username, $decoded);
+            endSession($conn, $schema, $input, $token_username, $decoded);
             break;
         default:
+            $conn = DB::conn();
+
             logApiError($conn, [
                 'error_level'   => 'error',
                 'http_status'   => 401,
@@ -298,11 +301,15 @@ try {
                 'user_identifier' => $decoded->username ?? null,
                 'company_id'      => $decoded->company_id ?? null,
             ]);
+
             jsonResponse(405, 'Method Not Allowed');
+
             break;
     }
 
 } catch (Exception $e){
+    $conn = DB::conn();
+
     logApiError($conn, [
         'error_level'   => 'error',
         'http_status'   => 500,

@@ -6,7 +6,7 @@ require_once '../general.php';
 require_once '../config.php';
 require_once '../log.php';
 
-function createIngredientCategory($conn, $input, $username){
+function createIngredientCategory($conn, $schema, $input, $username){
     if (!isset($input['category_name'])) {
         logApiError($conn, [
             'error_level'   => 'error',
@@ -23,7 +23,7 @@ function createIngredientCategory($conn, $input, $username){
     $category_name = mysqli_real_escape_string($conn, $input['category_name']);
     $now = getCurrentDateTimeJakarta();
 
-    $check_app_query = "SELECT * FROM raki_dev.ingredient_category WHERE category_name = '$category_name'";
+    $check_app_query = "SELECT * FROM {$schema}.ingredient_category WHERE category_name = '$category_name'";
     $check_app_result = mysqli_query($conn, $check_app_query);
 
     if (mysqli_num_rows($check_app_result) > 0) {
@@ -41,7 +41,7 @@ function createIngredientCategory($conn, $input, $username){
         $categoryID = "category" . uniqid();
         $now = getCurrentDateTimeJakarta();
 
-        $category_query = "INSERT INTO raki_dev.ingredient_category (category_id, category_name, created_by, created_at) VALUES ('$categoryID', '$category_name', '$username', '$now')";
+        $category_query = "INSERT INTO {$schema}.ingredient_category (category_id, category_name, created_by, created_at) VALUES ('$categoryID', '$category_name', '$username', '$now')";
 
         if (mysqli_query($conn, $category_query)) {
             jsonResponse(201, 'New ingredients category has been created successfully', ['category' => $category_name]);
@@ -60,15 +60,15 @@ function createIngredientCategory($conn, $input, $username){
     }
 }
 
-function getAllIngredientCategory($conn, $params, $username, $page = 1, $limit = 10){
+function getAllIngredientCategory($conn, $schema, $params, $username, $page = 1, $limit = 10){
     $offset = ($page - 1) * $limit;
 
-    $countQuery = "SELECT COUNT(*) as total FROM raki_dev.ingredient_category WHERE (category_name LIKE '%$params%')";
+    $countQuery = "SELECT COUNT(*) as total FROM {$schema}.ingredient_category WHERE (category_name LIKE '%$params%')";
     $countResult = mysqli_query($conn, $countQuery);
     $totalRow = mysqli_fetch_assoc($countResult);
     $total = $totalRow['total'];
 
-    $query = "SELECT category_id, category_name FROM raki_dev.ingredient_category WHERE (category_name LIKE '%$params%') LIMIT $limit OFFSET $offset";
+    $query = "SELECT category_id, category_name FROM {$schema}.ingredient_category WHERE (category_name LIKE '%$params%') LIMIT $limit OFFSET $offset";
     $result = mysqli_query($conn, $query);
 
     if ($result && mysqli_num_rows($result) > 0) {
@@ -97,8 +97,8 @@ function getAllIngredientCategory($conn, $params, $username, $page = 1, $limit =
     }
 }
 
-function getDetailIngredientCategory($conn, $category_id, $username){
-    $query = "SELECT * FROM raki_dev.ingredient_category WHERE category_id = '$category_id'";
+function getDetailIngredientCategory($conn, $schema, $category_id, $username){
+    $query = "SELECT * FROM {$schema}.ingredient_category WHERE category_id = '$category_id'";
     $result = mysqli_query($conn, $query);
 
     if ($result && mysqli_num_rows($result) > 0) {
@@ -127,7 +127,7 @@ function getDetailIngredientCategory($conn, $category_id, $username){
     }
 }
 
-function updateIngredientCategory($conn, $input, $username){
+function updateIngredientCategory($conn, $schema, $input, $username){
     if (!isset($input['category_id']) || !isset($input['category_name'])) {
         logApiError($conn, [
             'error_level'   => 'error',
@@ -144,12 +144,12 @@ function updateIngredientCategory($conn, $input, $username){
     $category_id = mysqli_real_escape_string($conn, $input['category_id']);
     $category_name = mysqli_real_escape_string($conn, $input['category_name']);
 
-    $query = "SELECT * FROM raki_dev.ingredient_category WHERE category_id = '$category_id'";
+    $query = "SELECT * FROM {$schema}.ingredient_category WHERE category_id = '$category_id'";
     $result = mysqli_query($conn, $query);
 
     if(mysqli_num_rows($result) > 0) {
 
-        $updateQuery = "UPDATE raki_dev.ingredient_category SET category_name = '$category_name' WHERE category_id = '$category_id'";
+        $updateQuery = "UPDATE {$schema}.ingredient_category SET category_name = '$category_name' WHERE category_id = '$category_id'";
 
         if (mysqli_query($conn, $updateQuery)) {
             jsonResponse(200, 'Ingredients category menu updated successfully', ['category_id' => $category_id]);
@@ -180,7 +180,7 @@ function updateIngredientCategory($conn, $input, $username){
     }
 }
 
-function deleteIngredientCategory($conn, $category_id, $username){
+function deleteIngredientCategory($conn, $schema, $category_id, $username){
     if($category_id === null || $category_id === ''){
         logApiError($conn, [
             'error_level'   => 'error',
@@ -194,11 +194,11 @@ function deleteIngredientCategory($conn, $category_id, $username){
         jsonResponse(400, 'Missing required fields (category_id)');
     }
 
-    $query = "SELECT * FROM raki_dev.ingredient_category WHERE category_id = '$category_id'";
+    $query = "SELECT * FROM {$schema}.ingredient_category WHERE category_id = '$category_id'";
     $result = mysqli_query($conn, $query);
 
     if(mysqli_num_rows($result) > 0) {
-        $query = "DELETE FROM raki_dev.ingredient_category WHERE category_id = '$category_id'";
+        $query = "DELETE FROM {$schema}.ingredient_category WHERE category_id = '$category_id'";
 
         if (mysqli_query($conn, $query)) {
             jsonResponse(200, 'Ingredient category menu deleted successfully');
@@ -250,14 +250,15 @@ try {
     $decoded = JWT::decode($token, new Key($_ENV['JWT_SECRET'], 'HS256'));
 
     $conn = DB::conn();
-    
+    $schema = DB_SCHEMA;
+
     $token_username = $decoded->username;
     $method = $_SERVER['REQUEST_METHOD'];
 
     switch($method){
         case 'POST':
             $input = json_decode(file_get_contents('php://input'), true);
-            createIngredientCategory($conn, $input, $token_username);
+            createIngredientCategory($conn, $schema, $input, $token_username);
             break;
         case 'GET':
             $params = $_GET['params'] ?? null;
@@ -265,22 +266,24 @@ try {
             $limit = $_GET['limit'] ?? 10;
             $category_id = $_GET['category_id'] ?? null;
             if($category_id != null){
-                getDetailIngredientCategory($conn, $category_id, $token_username);
+                getDetailIngredientCategory($conn, $schema, $category_id, $token_username);
             } else {
-                getAllIngredientCategory($conn, $params, $token_username,$page, $limit);
+                getAllIngredientCategory($conn, $schema, $params, $token_username,$page, $limit);
             }
             break;
         case 'PUT':
             $input = json_decode(file_get_contents('php://input'), true);
-            updateIngredientCategory($conn, $input, $token_username);
+            updateIngredientCategory($conn, $schema, $input, $token_username);
             break;
         case 'DELETE':
             $category_id = $_GET['category_id'] ?? null;
-            deleteIngredientCategory($conn, $category_id, $token_username);
+            deleteIngredientCategory($conn, $schema, $category_id, $token_username);
             break;
     }
 
 } catch (Exception $e){
+    $conn = DB::conn();
+
     logApiError($conn, [
         'error_level'   => 'error',
         'http_status'   => 500,
@@ -290,6 +293,7 @@ try {
         'user_identifier' => $username ?? null,
         'company_id'      => $decoded->company_id ?? null,
     ]);
+
     jsonResponse(500, 'Internal Server Error', ['error' => $e->getMessage()]);
 }
 

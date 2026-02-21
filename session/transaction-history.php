@@ -6,7 +6,7 @@ require_once '../general.php';
 require_once '../config.php';
 require_once '../log.php';
 
-function checkTransactionHistory($conn, $company_id, $username){
+function checkTransactionHistory($conn, $schema, $company_id, $username){
     $company_id_esc = mysqli_real_escape_string($conn, $company_id);
     $username_esc   = mysqli_real_escape_string($conn, $username);
 
@@ -127,6 +127,7 @@ try {
     $decoded = JWT::decode($token, new Key($_ENV['JWT_SECRET'], 'HS256'));
 
     $conn = DB::conn();
+    $schema = DB_SCHEMA;
     
     $token_username = $decoded->username;
     $method = $_SERVER['REQUEST_METHOD'];
@@ -141,9 +142,10 @@ try {
                 jsonResponse(400, 'company_id and username are required');
             }
 
-            checkTransactionHistory($conn, $company_id, $username);
-        break;
+            checkTransactionHistory($conn, $schema, $company_id, $username);
+            break;
         default:
+        $conn = DB::conn();
             logApiError($conn, [
                 'error_level'   => 'error',
                 'http_status'   => 405,
@@ -158,6 +160,7 @@ try {
     }
 
 } catch (Exception $e){
+    $conn = DB::conn();
     logApiError($conn, [
         'error_level'   => 'error',
         'http_status'   => 401,

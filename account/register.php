@@ -7,6 +7,7 @@ require_once '../log.php';
 
 function register($conn, $input){
     $conn = DB::conn();
+
     $username = $input['username'];
     $password = $input['password'];
     $app_id = $input['app_id'];
@@ -21,21 +22,56 @@ function register($conn, $input){
     $checkAppResult = mysqli_query($conn, $checkAppQuery);
 
     if (mysqli_num_rows($checkAppResult) === 0) {
-        return ['success' => false, 'message' => 'App ID tidak valid.'];
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 500,
+            'endpoint'      => '/account/register.php',
+            'method'        => 'POST',
+            'error_message' => 'App ID is not valid !!!',
+            'user_identifier' => $username,
+            'company_id'      => null,
+        ]);
+
+        jsonResponse(500, 'Failed to create user', ['error' => 'App ID tidak valid.']);
+        return ['success' => false, 'message' => 'App ID is not valid.'];
     }
 
     $checkAppRoleQuery = "SELECT * FROM movira_core_dev.app_role WHERE app_role_id = '$app_role_id'";
     $checkAppRoleResult = mysqli_query($conn, $checkAppRoleQuery);
     
     if (mysqli_num_rows($checkAppRoleResult) === 0) {
-        return ['success' => false, 'message' => 'App role ID tidak valid.'];
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 500,
+            'endpoint'      => '/account/register.php',
+            'method'        => 'POST',
+            'error_message' => 'App role ID is not valid !!!',
+            'user_identifier' => $username,
+            'company_id'      => null,
+        ]);
+
+        jsonResponse(500, 'Failed to create user', ['error' => 'App role ID is not valid.']);
+        return ['success' => false, 'message' => 'App role ID is not valid.'];
     }
 
     // Cek apakah username sudah ada
     $checkUserQuery = "SELECT user_id FROM movira_core_dev.app_user WHERE username = '$username'";
     $checkUserResult = mysqli_query($conn, $checkUserQuery);
+
     if (mysqli_num_rows($checkUserResult) > 0) {
-        return ['success' => false, 'message' => 'Username sudah digunakan.'];
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 500,
+            'endpoint'      => '/account/register.php',
+            'method'        => 'POST',
+            'error_message' => 'Username has been used !!',
+            'user_identifier' => $username,
+            'company_id'      => null,
+        ]);
+
+        jsonResponse(500, 'Failed to create OTP', ['error' => 'Username has been used !!']);
+
+        return ['success' => false, 'message' => 'Username has been used !!'];
     }
 
     $hashedPassword = password_hash($password, PASSWORD_DEFAULT);
@@ -56,6 +92,7 @@ function register($conn, $input){
             'user_identifier' => $username ?? null,
             'company_id'      => $decoded->company_id ?? null,
         ]);
+
         jsonResponse(500, 'Failed to create a new user: ' . mysqli_error($conn));
     }
 }
@@ -77,11 +114,22 @@ try {
             register($conn, $input);   
             break;
         default:
+            logApiError($conn, [
+                'error_level'   => 'error',
+                'http_status'   => 405,
+                'endpoint'      => '/account/register.php',
+                'method'        => $method,
+                'error_message' => 'Method Not Allowed',
+                'user_identifier' => $decoded->username ?? null,
+                'company_id'      => $decoded->company_id ?? null,
+            ]);
             jsonResponse(405, 'Method Not Allowed');
             break;
     }
 
 } catch (Exception $e){
+    $conn = DB::conn();
+
     logApiError($conn, [
         'error_level'   => 'error',
         'http_status'   => 500,
@@ -91,6 +139,7 @@ try {
         'user_identifier' => $decoded->username ?? null,
         'company_id'      => $decoded->company_id ?? null,
     ]);
+    
     jsonResponse(500, 'Internal Server Error', ['error' => $e->getMessage()]);
 }
 

@@ -6,7 +6,7 @@ require_once '../general.php';
 require_once '../config.php';
 require_once '../log.php';
 
-function startSession($conn, $input, $token_username, $decoded){
+function startSession($conn, $schema, $input, $token_username, $decoded){
 
     // Use company_id from payload if provided, otherwise fallback to token
     $company_id = $input['company_id'] ?? ($decoded->company_id ?? null);
@@ -57,7 +57,7 @@ function startSession($conn, $input, $token_username, $decoded){
     $cash_start_int = (int)$cash_start;
 
     // 1) check active session first
-    $check = "SELECT session_id FROM raki_dev.work_session WHERE company_id='$company_id_esc' AND user_id='$user_id_esc' AND status='active' ORDER BY started_at DESC LIMIT 1";
+    $check = "SELECT session_id FROM {$schema}.work_session WHERE company_id='$company_id_esc' AND user_id='$user_id_esc' AND status='active' ORDER BY started_at DESC LIMIT 1";
     $rc = mysqli_query($conn, $check);
 
     if (!$rc) {
@@ -97,7 +97,7 @@ function startSession($conn, $input, $token_username, $decoded){
     try {
         $session_id = 'ses_' . bin2hex(random_bytes(10));
 
-        $ins = "INSERT INTO raki_dev.work_session (session_id, company_id, user_id, started_at, cash_start, status, created_at) VALUES ('$session_id', '$company_id_esc', '$user_id_esc', NOW(), $cash_start_int, 'active', NOW())";
+        $ins = "INSERT INTO {$schema}.work_session (session_id, company_id, user_id, started_at, cash_start, status, created_at) VALUES ('$session_id', '$company_id_esc', '$user_id_esc', NOW(), $cash_start_int, 'active', NOW())";
 
         if (!mysqli_query($conn, $ins)) {
             
@@ -130,7 +130,7 @@ function startSession($conn, $input, $token_username, $decoded){
 
             $ssid = 'wss_' . bin2hex(random_bytes(10));
 
-            $insS = "INSERT INTO raki_dev.work_session_stock (session_stock_id, session_id, menu_id, qty_start, created_at) VALUES ('$ssid', '$session_id', '$menu_id_esc', $qty_int, NOW())";
+            $insS = "INSERT INTO {$schema}.work_session_stock (session_stock_id, session_id, menu_id, qty_start, created_at) VALUES ('$ssid', '$session_id', '$menu_id_esc', $qty_int, NOW())";
 
             if (!mysqli_query($conn, $insS)) {
                 
@@ -151,11 +151,11 @@ function startSession($conn, $input, $token_username, $decoded){
         mysqli_commit($conn);
 
         // Load back session + stock
-        $qsess = "SELECT session_id, company_id, user_id, started_at, ended_at, cash_start, cash_end, status FROM raki_dev.work_session WHERE session_id='$session_id' LIMIT 1";
+        $qsess = "SELECT session_id, company_id, user_id, started_at, ended_at, cash_start, cash_end, status FROM {$schema}.work_session WHERE session_id='$session_id' LIMIT 1";
         $rsess = mysqli_query($conn, $qsess);
         $session = $rsess ? mysqli_fetch_assoc($rsess) : null;
 
-        $qstock = "SELECT s.menu_id, m.menu_name, s.qty_start, s.qty_end FROM raki_dev.work_session_stock s LEFT JOIN raki_dev.menu m ON m.menu_id = s.menu_id WHERE s.session_id='$session_id' ORDER BY m.menu_name ASC";
+        $qstock = "SELECT s.menu_id, m.menu_name, s.qty_start, s.qty_end FROM {$schema}.work_session_stock s LEFT JOIN {$schema}.menu m ON m.menu_id = s.menu_id WHERE s.session_id='$session_id' ORDER BY m.menu_name ASC";
         $rstock = mysqli_query($conn, $qstock);
         $stockList = [];
         if ($rstock) {
@@ -226,6 +226,7 @@ try {
     $decoded = JWT::decode($token, new Key($_ENV['JWT_SECRET'], 'HS256'));
 
     $conn = DB::conn();
+    $schema = DB_SCHEMA;
     
     $token_username = $decoded->username;
     $method = $_SERVER['REQUEST_METHOD'];
@@ -233,9 +234,11 @@ try {
     switch($method){
         case 'POST':
             $input = json_decode(file_get_contents('php://input'), true);
-            startSession($conn, $input, $token_username, $decoded);
+            startSession($conn, $schema, $input, $token_username, $decoded);
             break;
         default:
+            $conn = DB::conn();
+
             logApiError($conn, [
                 'error_level'   => 'error',
                 'http_status'   => 405,
@@ -245,11 +248,13 @@ try {
                 'user_identifier' => $decoded->username ?? null,
                 'company_id'      => $decoded->company_id ?? null,
             ]);
+
             jsonResponse(405, 'Method Not Allowed');
             break;
     }
 
 } catch (Exception $e){
+    $conn = DB::conn();
     logApiError($conn, [
         'error_level'   => 'error',
         'http_status'   => 405,

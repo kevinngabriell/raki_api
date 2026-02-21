@@ -249,13 +249,15 @@ if ( php_sapi_name() !== 'cli'
     $results = [];
     $anySuccess = false;
 
+    $schema = DB_SCHEMA;
+
     foreach ($targets as $target) {
         $companyId   = $target['company_id'];
         $companyName = $target['company_name'];
         $picContact  = $target['pic_contact'];
 
         // Weekly recap per driver for this company
-        $sqlRecap = "SELECT t.created_by, SUM(td.quantity) AS total_cup, SUM(DISTINCT t.total_amount) AS total_amount FROM raki_dev.transaction t JOIN raki_dev.transaction_detail td ON td.transaction_id = t.transaction_id WHERE t.company_id = ? AND td.menu_id <> 'menu69112f46968b3' AND YEARWEEK(t.transaction_date, 1) = YEARWEEK(CURDATE(), 1) GROUP BY t.created_by ORDER BY t.created_by";
+        $sqlRecap = "SELECT t.created_by, SUM(td.quantity) AS total_cup, SUM(DISTINCT t.total_amount) AS total_amount FROM {$schema}.transaction t JOIN {$schema}.transaction_detail td ON td.transaction_id = t.transaction_id WHERE t.company_id = ? AND td.menu_id <> 'menu69112f46968b3' AND YEARWEEK(t.transaction_date, 1) = YEARWEEK(CURDATE(), 1) GROUP BY t.created_by ORDER BY t.created_by";
 
         $stmtRecap = $conn->prepare($sqlRecap);
         if (!$stmtRecap) {

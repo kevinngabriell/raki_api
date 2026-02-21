@@ -71,19 +71,27 @@ try {
     $method = $_SERVER['REQUEST_METHOD'];
 
     switch($method){
-        case 'POST':
-            break;
         case 'GET':
             $company_id = $_GET['company_id'];
             getCompanyDetails($conn, $company_id, $token_username);
             break;
-        case 'PUT':
-            break;
-        case 'DELETE':
+        default: 
+            logApiError($conn, [
+                'error_level'   => 'error',
+                'http_status'   => 405,
+                'endpoint'      => '/account/company.php',
+                'method'        => $method,
+                'error_message' => 'Method Not Allowed',
+                'user_identifier' => $decoded->username ?? null,
+                'company_id'      => $decoded->company_id ?? null,
+            ]);
+            jsonResponse(405, 'Method Not Allowed');
             break;
     }
 
 } catch (Exception $e){
+    $conn = DB::conn();
+
     logApiError($conn, [
         'error_level'   => 'error',
         'http_status'   => 500,
@@ -93,6 +101,7 @@ try {
         'user_identifier' => $decoded->username ?? null,
         'company_id'      => $decoded->company_id ?? null,
     ]);
+
     jsonResponse(500, 'Internal Server Error', ['error' => $e->getMessage()]);
 }
 

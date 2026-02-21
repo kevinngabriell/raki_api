@@ -14,6 +14,8 @@ function createOTP($conn, $input)
     $conn = DB::conn();
 
     $phone_number = $input['phone_number'] ?? null;
+
+    //check if phone number is not exists
     if (!$phone_number) {
         logApiError($conn, [
             'error_level'   => 'error',
@@ -24,6 +26,7 @@ function createOTP($conn, $input)
             'user_identifier' => $phone_number ?? null,
             'company_id'      => $decoded->company_id ?? null,
         ]);
+
         jsonResponse(400, 'Phone number is required !!');
     }
 
@@ -79,6 +82,7 @@ function createOTP($conn, $input)
                 'user_identifier' => $username_esc,
                 'company_id'      => null,
             ]);
+
             jsonResponse(500, 'Failed to auto-register user', ['error' => mysqli_error($conn)]);
         }
 
@@ -95,6 +99,7 @@ function createOTP($conn, $input)
                 'user_identifier' => $username_esc,
                 'company_id'      => null,
             ]);
+
             jsonResponse(500, 'Failed to load user after auto-register');
         }
     }
@@ -122,6 +127,7 @@ function createOTP($conn, $input)
                 'user_identifier' => $username,
                 'company_id'      => null,
             ]);
+
             jsonResponse(429, 'Please wait 2–3 minutes before requesting a new OTP');
         }
     }
@@ -143,6 +149,7 @@ function createOTP($conn, $input)
                 'user_identifier' => $username,
                 'company_id'      => null,
             ]);
+
             jsonResponse(423, 'Your account is temporarily locked due to too many OTP requests');
         }
     }
@@ -169,6 +176,7 @@ function createOTP($conn, $input)
             'user_identifier' => $username,
             'company_id'      => null,
         ]);
+
         jsonResponse(500, 'Failed to create OTP', ['error' => mysqli_error($conn)]);
     }
 
@@ -200,6 +208,7 @@ function validateOTP($conn, $input)
             'user_identifier' => $phone_number,
             'company_id'      => null,
         ]);
+
         jsonResponse(400, 'Phone number and OTP are required');
     }
 
@@ -342,10 +351,21 @@ try {
             validateOTP($conn, $input);
             break;
         default:
+            logApiError($conn, [
+                'error_level'   => 'error',
+                'http_status'   => 405,
+                'endpoint'      => '/account/otp.php',
+                'method'        => $method,
+                'error_message' => 'Method Not Allowed',
+                'user_identifier' => $decoded->username ?? null,
+                'company_id'      => $decoded->company_id ?? null,
+            ]);
             jsonResponse(405, 'Method Not Allowed');
             break;
     }
 } catch (Exception $e) {
+    $conn = DB::conn();
+
     logApiError($conn, [
         'error_level'   => 'error',
         'http_status'   => 500,
@@ -355,6 +375,7 @@ try {
         'user_identifier' => $decoded->username ?? null,
         'company_id'      => $decoded->company_id ?? null,
     ]);
+    
     jsonResponse(500, 'Internal Server Error', ['error' => $e->getMessage()]);
 }
 

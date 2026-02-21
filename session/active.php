@@ -6,7 +6,7 @@ require_once '../general.php';
 require_once '../config.php';
 require_once '../log.php';
 
-function checkActiveSession($conn, $company_id, $username)
+function checkActiveSession($conn, $schema, $company_id, $username)
 {
     if (!$company_id) {
         logApiError($conn, [
@@ -37,7 +37,7 @@ function checkActiveSession($conn, $company_id, $username)
     $company_id_esc = mysqli_real_escape_string($conn, $company_id);
     $username_esc   = mysqli_real_escape_string($conn, $username);
 
-    $q = "SELECT session_id, company_id, user_id, started_at, ended_at, cash_start, cash_end, status FROM raki_dev.work_session WHERE company_id='$company_id_esc' AND user_id='$username_esc' AND status='active' ORDER BY started_at DESC LIMIT 1";
+    $q = "SELECT session_id, company_id, user_id, started_at, ended_at, cash_start, cash_end, status FROM {$schema}.work_session WHERE company_id='$company_id_esc' AND user_id='$username_esc' AND status='active' ORDER BY started_at DESC LIMIT 1";
 
     $r = mysqli_query($conn, $q);
     if (!$r) {
@@ -70,7 +70,7 @@ function checkActiveSession($conn, $company_id, $username)
     $sid = mysqli_real_escape_string($conn, $session['session_id']);
 
     // --- Payment summary for this session ---
-    $qp = "SELECT SUM(CASE WHEN tp.payment_method = 'cash' THEN t.total_amount ELSE 0 END) AS cash_amount, SUM(CASE WHEN tp.payment_method = 'qris' THEN t.total_amount ELSE 0 END) AS qris_amount, SUM(CASE WHEN tp.payment_method = 'transfer' THEN t.total_amount ELSE 0 END) AS transfer_amount, SUM(CASE WHEN tp.payment_method = 'qris_midtrans' THEN t.total_amount ELSE 0 END) AS qris_midtrans_amount, COUNT(t.transaction_id) AS total_transactions, SUM(t.total_amount) AS grand_total_amount FROM raki_dev.transaction_payment tp LEFT JOIN raki_dev.`transaction` t  ON tp.transaction_id = t.transaction_id WHERE t.session_id = '$sid';";
+    $qp = "SELECT SUM(CASE WHEN tp.payment_method = 'cash' THEN t.total_amount ELSE 0 END) AS cash_amount, SUM(CASE WHEN tp.payment_method = 'qris' THEN t.total_amount ELSE 0 END) AS qris_amount, SUM(CASE WHEN tp.payment_method = 'transfer' THEN t.total_amount ELSE 0 END) AS transfer_amount, SUM(CASE WHEN tp.payment_method = 'qris_midtrans' THEN t.total_amount ELSE 0 END) AS qris_midtrans_amount, COUNT(t.transaction_id) AS total_transactions, SUM(t.total_amount) AS grand_total_amount FROM {$schema}.transaction_payment tp LEFT JOIN {$schema}.`transaction` t  ON tp.transaction_id = t.transaction_id WHERE t.session_id = '$sid';";
 
     $rp = mysqli_query($conn, $qp);
     $paymentSummary = [
@@ -93,7 +93,7 @@ function checkActiveSession($conn, $company_id, $username)
     $session['payment_summary'] = $paymentSummary;
 
     // Load stock snapshot (optional)
-    $qs = "SELECT s.menu_id, m.menu_name, m.image_url, m.price, s.qty_start, s.qty_end, COALESCE(SUM(td.quantity), 0) AS qty_sold FROM raki_dev.work_session_stock s LEFT JOIN raki_dev.menu m ON m.menu_id = s.menu_id LEFT JOIN raki_dev.`transaction` t ON t.session_id = s.session_id LEFT JOIN raki_dev.transaction_detail td ON td.transaction_id = t.transaction_id AND td.menu_id = s.menu_id WHERE s.session_id = '$sid' GROUP BY s.menu_id, m.menu_name, m.image_url, m.price, s.qty_start, s.qty_end ORDER BY m.menu_name ASC";
+    $qs = "SELECT s.menu_id, m.menu_name, m.image_url, m.price, s.qty_start, s.qty_end, COALESCE(SUM(td.quantity), 0) AS qty_sold FROM {$schema}.work_session_stock s LEFT JOIN {$schema}.menu m ON m.menu_id = s.menu_id LEFT JOIN {$schema}.`transaction` t ON t.session_id = s.session_id LEFT JOIN {$schema}.transaction_detail td ON td.transaction_id = t.transaction_id AND td.menu_id = s.menu_id WHERE s.session_id = '$sid' GROUP BY s.menu_id, m.menu_name, m.image_url, m.price, s.qty_start, s.qty_end ORDER BY m.menu_name ASC";
 
     $rs = mysqli_query($conn, $qs);
     $stock = [];
@@ -156,7 +156,8 @@ try {
     $decoded = JWT::decode($token, new Key($_ENV['JWT_SECRET'], 'HS256'));
 
     $conn = DB::conn();
-    
+    $schema = DB_SCHEMA;
+
     $token_username = $decoded->username;
     $method = $_SERVER['REQUEST_METHOD'];
 
@@ -165,7 +166,7 @@ try {
             // Prefer token values to prevent user spoofing
             $company_id = $_GET['company_id'];
             $username = $_GET['username'];
-            checkActiveSession($conn, $company_id, $username);
+            checkActiveSession($conn, $schema, $company_id, $username);
             break;
         default:
             jsonResponse(405, 'Method Not Allowed');
@@ -173,6 +174,8 @@ try {
     }
 
 } catch (Exception $e){
+    $conn = DB::conn();
+
     logApiError($conn, [
         'error_level'   => 'error',
         'http_status'   => 401,
@@ -182,6 +185,7 @@ try {
         'user_identifier' => $username ?? null,
         'company_id'      => $decoded->company_id ?? null,
     ]);
+    
     jsonResponse(401, 'Unauthorized', ['error' => $e->getMessage()]);
 }
 

@@ -7,7 +7,7 @@ require_once '../config.php';
 require_once '../notification/notification.php';
 require_once '../log.php';
 
-function createTransaction($conn, $input, $username){
+function createTransaction($conn, $schema, $input, $username){
     // Basic validation
     if (!$input || !isset($input['company_id']) || !isset($input['items']) || !is_array($input['items']) || count($input['items']) === 0) {
         logApiError($conn, [
@@ -165,7 +165,7 @@ function createTransaction($conn, $input, $username){
         $transaction_id = 'trx' . uniqid();
 
         // Insert into `transaction` (header)
-        $sqlHeader = "INSERT INTO raki_dev.transaction (transaction_id, company_id, transaction_date, total_amount, created_at, created_by, updated_at, updated_by, total_item) VALUES (?, ?, ?, ?, NOW(), ?, NOW(), ?, ?)";
+        $sqlHeader = "INSERT INTO {$schema}.transaction (transaction_id, company_id, transaction_date, total_amount, created_at, created_by, updated_at, updated_by, total_item) VALUES (?, ?, ?, ?, NOW(), ?, NOW(), ?, ?)";
         $stmtHeader = $conn->prepare($sqlHeader);
 
         if (!$stmtHeader) {
@@ -197,7 +197,7 @@ function createTransaction($conn, $input, $username){
         }
 
         // Insert details
-        $sqlDetail = "INSERT INTO raki_dev.transaction_detail (detail_id, transaction_id, menu_id, quantity, subtotal, created_at) VALUES (?, ?, ?, ?, ?, NOW())";
+        $sqlDetail = "INSERT INTO {$schema}.transaction_detail (detail_id, transaction_id, menu_id, quantity, subtotal, created_at) VALUES (?, ?, ?, ?, ?, NOW())";
         $stmtDetail = $conn->prepare($sqlDetail);
 
         if (!$stmtDetail) {
@@ -243,7 +243,7 @@ function createTransaction($conn, $input, $username){
         }
 
         // Insert payment breakdown ke transaction_payment_daily
-        $sqlPayment = "INSERT INTO raki_dev.transaction_payment (payment_id, transaction_id, payment_method, amount, company_id, created_at) VALUES (?, ?, ?, ?, ?, NOW())";
+        $sqlPayment = "INSERT INTO {$schema}.transaction_payment (payment_id, transaction_id, payment_method, amount, company_id, created_at) VALUES (?, ?, ?, ?, ?, NOW())";
         $stmtPayment = $conn->prepare($sqlPayment);
 
         if (!$stmtPayment) {
@@ -346,12 +346,12 @@ function createTransaction($conn, $input, $username){
     }
 }
 
-function getDetailTransaction($conn, $trx_id, $username){
+function getDetailTransaction($conn, $schema, $trx_id, $username){
     if (!$trx_id) {
         jsonResponse(400, 'trx_id is required');
     }
 
-    $sql = "SELECT t.transaction_id, t.company_id, t.transaction_date, t.total_amount, t.created_at, t.created_by, t.updated_at, t.updated_by, td.detail_id, td.menu_id, m.menu_name, td.quantity, td.subtotal, t.total_item, tp.payment_method, tp.amount FROM raki_dev.transaction t JOIN raki_dev.transaction_detail td ON td.transaction_id = t.transaction_id LEFT JOIN raki_dev.menu m ON m.menu_id = td.menu_id LEFT JOIN raki_dev.transaction_payment tp ON tp.transaction_id = t.transaction_id WHERE t.transaction_id = ?";
+    $sql = "SELECT t.transaction_id, t.company_id, t.transaction_date, t.total_amount, t.created_at, t.created_by, t.updated_at, t.updated_by, td.detail_id, td.menu_id, m.menu_name, td.quantity, td.subtotal, t.total_item, tp.payment_method, tp.amount FROM {$schema}.transaction t JOIN {$schema}.transaction_detail td ON td.transaction_id = t.transaction_id LEFT JOIN {$schema}.menu m ON m.menu_id = td.menu_id LEFT JOIN {$schema}.transaction_payment tp ON tp.transaction_id = t.transaction_id WHERE t.transaction_id = ?";
 
     $stmt = $conn->prepare($sql);
     if (!$stmt) {
@@ -449,7 +449,7 @@ function getDetailTransaction($conn, $trx_id, $username){
     ]);
 }
 
-function getAllTransaction($conn, $company_id = null, $username = null, $page = 1, $limit = 10){
+function getAllTransaction($conn, $schema, $company_id = null, $username = null, $page = 1, $limit = 10){
     $page = (int)$page;
     $limit = (int)$limit;
     if ($page < 1) { $page = 1; }
@@ -466,7 +466,7 @@ function getAllTransaction($conn, $company_id = null, $username = null, $page = 
 
     // --- Hitung total data untuk pagination ---
     if ($hasCompanyFilter && $hasUsernameFilter) {
-        $countSql = "SELECT COUNT(*) as total FROM raki_dev.transaction t WHERE t.company_id = ?  AND t.created_by = ?";
+        $countSql = "SELECT COUNT(*) as total FROM {$schema}.transaction t WHERE t.company_id = ?  AND t.created_by = ?";
         $stmtCount = $conn->prepare($countSql);
         if (!$stmtCount) {
             logApiError($conn, [
@@ -483,7 +483,7 @@ function getAllTransaction($conn, $company_id = null, $username = null, $page = 
         $stmtCount->bind_param('ss', $company_id, $username);
 
     } else if ($hasCompanyFilter) {
-        $countSql = "SELECT COUNT(*) as total FROM raki_dev.transaction t WHERE t.company_id = ?";
+        $countSql = "SELECT COUNT(*) as total FROM {$schema}.transaction t WHERE t.company_id = ?";
         $stmtCount = $conn->prepare($countSql);
 
         if (!$stmtCount) {
@@ -502,7 +502,7 @@ function getAllTransaction($conn, $company_id = null, $username = null, $page = 
         $stmtCount->bind_param('s', $company_id);
 
     } else if ($hasUsernameFilter) {
-        $countSql = "SELECT COUNT(*) as total FROM raki_dev.transaction t WHERE t.created_by = ?";
+        $countSql = "SELECT COUNT(*) as total FROM {$schema}.transaction t WHERE t.created_by = ?";
         $stmtCount = $conn->prepare($countSql);
 
         if (!$stmtCount) {
@@ -521,7 +521,7 @@ function getAllTransaction($conn, $company_id = null, $username = null, $page = 
         $stmtCount->bind_param('s', $username);
 
     } else {
-        $countSql = "SELECT COUNT(*) as total FROM raki_dev.transaction t WHERE t.company_id <> ?";
+        $countSql = "SELECT COUNT(*) as total FROM {$schema}.transaction t WHERE t.company_id <> ?";
         $stmtCount = $conn->prepare($countSql);
 
         if (!$stmtCount) {
@@ -558,7 +558,7 @@ function getAllTransaction($conn, $company_id = null, $username = null, $page = 
     $total = (int)($totalRow['total'] ?? 0);
 
     // --- Query data transaksi + nama company ---
-    $baseSelect = "SELECT t.transaction_id, t.company_id, t.transaction_date, t.total_amount, t.created_at, t.created_by, t.updated_at, t.updated_by, t.total_item, ac.company_name FROM raki_dev.transaction t LEFT JOIN movira_core_dev.app_company ac ON ac.company_id = t.company_id";
+    $baseSelect = "SELECT t.transaction_id, t.company_id, t.transaction_date, t.total_amount, t.created_at, t.created_by, t.updated_at, t.updated_by, t.total_item, ac.company_name FROM {$schema}.transaction t LEFT JOIN movira_core_dev.app_company ac ON ac.company_id = t.company_id";
 
     if ($hasCompanyFilter && $hasUsernameFilter) {
         $sql = $baseSelect . " WHERE t.company_id = ? AND t.created_by = ? ORDER BY t.transaction_date DESC LIMIT ?, ?";
@@ -629,7 +629,7 @@ function getAllTransaction($conn, $company_id = null, $username = null, $page = 
     jsonResponse(200, 'Success', $response);
 }
 
-function deleteTransaction ($conn, $transaction_id){
+function deleteTransaction ($conn, $schema, $transaction_id){
     if($transaction_id === null || $transaction_id === ''){
         logApiError($conn, [
             'error_level'   => 'error',
@@ -643,12 +643,12 @@ function deleteTransaction ($conn, $transaction_id){
         jsonResponse(400, 'Missing required fields (transaction_id)');
     }
 
-    $query = "SELECT * FROM raki_dev.transaction WHERE transaction_id = '$transaction_id'";
+    $query = "SELECT * FROM {$schema}.transaction WHERE transaction_id = '$transaction_id'";
     $result = mysqli_query($conn, $query);
 
     if(mysqli_num_rows($result) > 0) {
-        $query_one =  "DELETE FROM raki_dev.transaction_detail WHERE transaction_id = '$transaction_id'";
-        $query = "DELETE FROM raki_dev.transaction WHERE transaction_id = '$transaction_id'";
+        $query_one =  "DELETE FROM {$schema}.transaction_detail WHERE transaction_id = '$transaction_id'";
+        $query = "DELETE FROM {$schema}.transaction WHERE transaction_id = '$transaction_id'";
 
         if (mysqli_query($conn, $query_one)) {
             if (mysqli_query($conn, $query)) {
@@ -721,6 +721,7 @@ try {
     $decoded = JWT::decode($token, new Key($_ENV['JWT_SECRET'], 'HS256'));
 
     $conn = DB::conn();
+    $schema = DB_SCHEMA;
 
     $token_username = $decoded->username;
     $method = $_SERVER['REQUEST_METHOD'];
@@ -735,7 +736,7 @@ try {
             if (json_last_error() !== JSON_ERROR_NONE) {
                 jsonResponse(400, 'Invalid JSON body');
             }
-            createTransaction($conn, $input, $token_username);
+            createTransaction($conn, $schema, $input, $token_username);
             break;
         case 'GET':
             $company_id = $_GET['company_id'] ?? null;
@@ -744,16 +745,18 @@ try {
             $limit = $_GET['limit'] ?? 10;
             $trx_id = $_GET['trx_id'] ?? null;
             if($trx_id != null){
-                getDetailTransaction($conn, $trx_id, $token_username);
+                getDetailTransaction($conn, $schema, $trx_id, $token_username);
             } else {
-                getAllTransaction($conn, $company_id, $username, $page, $limit);
+                getAllTransaction($conn, $schema, $company_id, $username, $page, $limit);
             }
             break;
         case 'DELETE':
             $transaction_id = $_GET['transaction_id'] ?? null;
-            deleteTransaction($conn, $transaction_id);
+            deleteTransaction($conn, $schema, $transaction_id);
             break;
         default:
+            $conn = DB::conn();
+
             logApiError($conn, [
                 'error_level'   => 'error',
                 'http_status'   => 405,
@@ -768,6 +771,8 @@ try {
     }
 
 } catch (Exception $e){
+    $conn = DB::conn();
+
     logApiError($conn, [
         'error_level'   => 'error',
         'http_status'   => 401,
@@ -777,6 +782,7 @@ try {
         'user_identifier' => $username ?? null,
         'company_id'      => $decoded->company_id ?? null,
     ]);
+
     jsonResponse(500, 'Internal Server Error', ['error' => $e->getMessage()]);
 }
 

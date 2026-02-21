@@ -6,7 +6,7 @@ require_once '../general.php';
 require_once '../config.php';
 require_once '../log.php';
 
-function getDashboard($conn, $company_id, $username){
+function getDashboard($conn, $schema, $company_id, $username){
     //Check is company id parameter exists or not
     if (!$company_id) {
         logApiError($conn, [
@@ -14,7 +14,7 @@ function getDashboard($conn, $company_id, $username){
             'http_status'   => 400,
             'endpoint'      => '/dashboard/index.php',
             'method'        => 'GET',
-            'error_message' => 'company_id is required',
+            'error_message' => 'Company ID parameters is required',
             'user_identifier' => $username ?? null,
             'company_id'      => $company_id ?? null,
         ]);
@@ -26,7 +26,7 @@ function getDashboard($conn, $company_id, $username){
     $next_month  = date('Y-m-01', strtotime('+1 month', strtotime($start_month)));
 
     // 1. Revenue this month
-    $sql1 = "SELECT COALESCE(SUM(t.total_amount),0) AS revenue_this_month FROM raki_dev.transaction t WHERE t.company_id = ? AND t.transaction_date >= ? AND t.transaction_date < ?";
+    $sql1 = "SELECT COALESCE(SUM(t.total_amount),0) AS revenue_this_month FROM {$schema}.transaction t WHERE t.company_id = ? AND t.transaction_date >= ? AND t.transaction_date < ?";
     $stmt1 = $conn->prepare($sql1);
 
     if(!$stmt1){ 
@@ -47,7 +47,7 @@ function getDashboard($conn, $company_id, $username){
     $rev = ($stmt1->get_result()->fetch_assoc()['revenue_this_month'] ?? 0) * 1;
 
     // 2. Total cups this month
-    $sql2 = "SELECT COALESCE(SUM(td.quantity),0) AS cups_this_month FROM raki_dev.transaction t JOIN raki_dev.transaction_detail td ON td.transaction_id = t.transaction_id WHERE t.company_id = ? AND t.transaction_date >= ? AND t.transaction_date < ?";
+    $sql2 = "SELECT COALESCE(SUM(td.quantity),0) AS cups_this_month FROM {$schema}.transaction t JOIN {$schema}.transaction_detail td ON td.transaction_id = t.transaction_id WHERE t.company_id = ? AND t.transaction_date >= ? AND t.transaction_date < ?";
     $stmt2 = $conn->prepare($sql2);
 
     if(!$stmt2){ 
@@ -71,7 +71,7 @@ function getDashboard($conn, $company_id, $username){
     $avg_calendar = $days_in_month > 0 ? ($rev / $days_in_month) : 0;
 
     // 4. Top 3 menus by cups this month
-    $sql4 = "SELECT m.menu_id, m.menu_name, COALESCE(SUM(td.quantity),0) AS total_cups, COALESCE(SUM(td.subtotal),0) AS total_revenue FROM raki_dev.transaction t JOIN raki_dev.transaction_detail td ON td.transaction_id = t.transaction_id LEFT JOIN raki_dev.menu m ON m.menu_id = td.menu_id WHERE t.company_id = ? AND t.transaction_date >= ? AND t.transaction_date < ? GROUP BY m.menu_id, m.menu_name ORDER BY total_cups DESC, total_revenue DESC LIMIT 3";
+    $sql4 = "SELECT m.menu_id, m.menu_name, COALESCE(SUM(td.quantity),0) AS total_cups, COALESCE(SUM(td.subtotal),0) AS total_revenue FROM {$schema}.transaction t JOIN {$schema}.transaction_detail td ON td.transaction_id = t.transaction_id LEFT JOIN {$schema}.menu m ON m.menu_id = td.menu_id WHERE t.company_id = ? AND t.transaction_date >= ? AND t.transaction_date < ? GROUP BY m.menu_id, m.menu_name ORDER BY total_cups DESC, total_revenue DESC LIMIT 3";
     $stmt4 = $conn->prepare($sql4);
 
     if(!$stmt4){ 
@@ -103,7 +103,7 @@ function getDashboard($conn, $company_id, $username){
     }
 
     // 5) Performance per menu (full list)
-    $sql5 = "SELECT m.menu_id, m.menu_name, COALESCE(SUM(td.quantity),0) AS total_cups, COALESCE(SUM(td.subtotal),0) AS total_revenue FROM raki_dev.transaction t JOIN raki_dev.transaction_detail td ON td.transaction_id = t.transaction_id LEFT JOIN raki_dev.menu m ON m.menu_id = td.menu_id WHERE t.company_id = ? AND t.transaction_date >= ? AND t.transaction_date < ? GROUP BY m.menu_id, m.menu_name ORDER BY total_revenue DESC";
+    $sql5 = "SELECT m.menu_id, m.menu_name, COALESCE(SUM(td.quantity),0) AS total_cups, COALESCE(SUM(td.subtotal),0) AS total_revenue FROM {$schema}.transaction t JOIN {$schema}.transaction_detail td ON td.transaction_id = t.transaction_id LEFT JOIN {$schema}.menu m ON m.menu_id = td.menu_id WHERE t.company_id = ? AND t.transaction_date >= ? AND t.transaction_date < ? GROUP BY m.menu_id, m.menu_name ORDER BY total_revenue DESC";
     $stmt5 = $conn->prepare($sql5);
 
     if(!$stmt5){ 
@@ -147,6 +147,8 @@ use Firebase\JWT\Key;
 
 $headers = getallheaders();
 if (!isset($headers['Authorization'])) {
+    $conn = DB::conn();
+
     logApiError($conn, [
         'error_level'   => 'error',
         'http_status'   => 401,
@@ -156,6 +158,7 @@ if (!isset($headers['Authorization'])) {
         'user_identifier' => $decoded->username ?? null,
         'company_id'      => $decoded->company_id ?? null,
     ]);
+
     jsonResponse(401, 'Authorization header not found');
 }
 
@@ -172,6 +175,7 @@ try {
     $decoded = JWT::decode($token, new Key($_ENV['JWT_SECRET'], 'HS256'));
 
     $conn = DB::conn();
+    $schema = DB_SCHEMA;
 
     $token_username = $decoded->username;
     $method = $_SERVER['REQUEST_METHOD'];
@@ -179,14 +183,25 @@ try {
     switch($method){
         case 'GET':
             $company_id = $_GET['company_id'] ?? null;
-            getDashboard($conn, $company_id, $token_username);
+            getDashboard($conn, $schema, $company_id, $token_username);
             break;
         default:
+            logApiError($conn, [
+                'error_level'   => 'error',
+                'http_status'   => 405,
+                'endpoint'      => '/dashboard/index.php',
+                'method'        => $method,
+                'error_message' => 'Method Not Allowed',
+                'user_identifier' => $decoded->username ?? null,
+                'company_id'      => $decoded->company_id ?? null,
+            ]);
             jsonResponse(405, 'Method Not Allowed');
             break;
     }
 
 } catch (Exception $e){
+    $conn = DB::conn();
+
     logApiError($conn, [
         'error_level'   => 'error',
         'http_status'   => 500,
@@ -196,6 +211,7 @@ try {
         'user_identifier' => $decoded->username ?? null,
         'company_id'      => $decoded->company_id ?? null,
     ]);
+    
     jsonResponse(500, 'Internal Server Error', ['error' => $e->getMessage()]);
 }
 

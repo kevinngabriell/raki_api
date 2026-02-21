@@ -5,7 +5,7 @@ require_once '../vendor/autoload.php';
 require_once '../general.php';
 require_once '../config.php';
 
-function createSupplier($conn, $input, $token_username){
+function createSupplier($conn, $schema, $input, $token_username){
     if (!isset($input['supplier_name']) || !isset($input['contact_person']) || !isset($input['company_id'])) {
         jsonResponse(400, 'Missing required fields (supplier_name, contact_person, and company_id)');
     }
@@ -26,7 +26,7 @@ function createSupplier($conn, $input, $token_username){
     $company_id = mysqli_real_escape_string($conn, $input['company_id']);
     $is_active = $is_active ? 1 : 0;
 
-    $check_app_query = "SELECT * FROM raki_dev.supplier WHERE supplier_name = '$supplier_name' AND company_id = '$company_id'";
+    $check_app_query = "SELECT * FROM {$schema}.supplier WHERE supplier_name = '$supplier_name' AND company_id = '$company_id'";
     $check_app_result = mysqli_query($conn, $check_app_query);
 
     if (mysqli_num_rows($check_app_result) > 0) {
@@ -35,7 +35,7 @@ function createSupplier($conn, $input, $token_username){
         $supplier_id = "supplier" . uniqid();
         $now = getCurrentDateTimeJakarta();
 
-        $category_query = "INSERT INTO raki_dev.supplier (supplier_id, supplier_name, contact_person, phone, email, address, company_id, is_active, created_at, created_by) 
+        $category_query = "INSERT INTO {$schema}.supplier (supplier_id, supplier_name, contact_person, phone, email, address, company_id, is_active, created_at, created_by) 
         VALUES ('$supplier_id', '$supplier_name', '$contact_person', '$phone', '$email', '$address', '$company_id', '$is_active', '$now','$token_username')";
 
         if (mysqli_query($conn, $category_query)) {
@@ -47,15 +47,15 @@ function createSupplier($conn, $input, $token_username){
     }
 }
 
-function getAllSupplier($conn, $params, $page = 1, $limit = 10){
+function getAllSupplier($conn, $schema, $params, $page = 1, $limit = 10){
     $offset = ($page - 1) * $limit;
 
-    $countQuery = "SELECT COUNT(*) as total FROM raki_dev.supplier WHERE (supplier_name LIKE '%$params%')";
+    $countQuery = "SELECT COUNT(*) as total FROM {$schema}.supplier WHERE (supplier_name LIKE '%$params%')";
     $countResult = mysqli_query($conn, $countQuery);
     $totalRow = mysqli_fetch_assoc($countResult);
     $total = $totalRow['total'];
 
-    $query = "SELECT supplier_id, supplier_name, contact_person, phone, is_active FROM raki_dev.supplier WHERE (supplier_name LIKE '%$params%') LIMIT $limit OFFSET $offset";
+    $query = "SELECT supplier_id, supplier_name, contact_person, phone, is_active FROM {$schema}.supplier WHERE (supplier_name LIKE '%$params%') LIMIT $limit OFFSET $offset";
     $result = mysqli_query($conn, $query);
 
     if ($result && mysqli_num_rows($result) > 0) {
@@ -75,9 +75,9 @@ function getAllSupplier($conn, $params, $page = 1, $limit = 10){
     }
 }
 
-function getDetailSupplier($conn, $supplier_id){
+function getDetailSupplier($conn, $schema, $supplier_id){
     $query = "SELECT supplier_id, supplier_name, contact_person, phone, email, address, is_active
-        FROM raki_dev.supplier 
+        FROM {$schema}.supplier 
         WHERE supplier_id = '$supplier_id'";
     $result = mysqli_query($conn, $query);
     
@@ -98,14 +98,14 @@ function getDetailSupplier($conn, $supplier_id){
     }
 }
 
-function updateSupplier($conn, $input){
+function updateSupplier($conn, $schema, $input){
     if (!isset($input['supplier_id'])) {
         jsonResponse(400, 'Missing required fields (supplier_id)');
     }
 
     $supplier_id = mysqli_real_escape_string($conn, $input['supplier_id']);
 
-    $query = "SELECT * FROM raki_dev.supplier WHERE supplier_id = '$supplier_id'";
+    $query = "SELECT * FROM {$schema}.supplier WHERE supplier_id = '$supplier_id'";
     $result = mysqli_query($conn, $query);
 
     $updates = [];
@@ -133,7 +133,7 @@ function updateSupplier($conn, $input){
     }
 
     if(mysqli_num_rows($result) > 0) {
-        $updateQuery = "UPDATE raki_dev.supplier SET " . implode(', ', $updates) . " WHERE supplier_id = '$supplier_id'";
+        $updateQuery = "UPDATE {$schema}.supplier SET " . implode(', ', $updates) . " WHERE supplier_id = '$supplier_id'";
 
         if (mysqli_query($conn, $updateQuery)) {
             jsonResponse(200, 'Supplier updated successfully', ['supplier_id' => $supplier_id]);
@@ -146,16 +146,16 @@ function updateSupplier($conn, $input){
 
 }
 
-function deleteSupplier($conn, $supplier_id){
+function deleteSupplier($conn, $schema, $supplier_id){
     if($supplier_id === null || $supplier_id === ''){
         jsonResponse(400, 'Missing required fields (supplier_id)');
     }
 
-    $query = "SELECT * FROM raki_dev.supplier WHERE supplier_id = '$supplier_id'";
+    $query = "SELECT * FROM {$schema}.supplier WHERE supplier_id = '$supplier_id'";
     $result = mysqli_query($conn, $query);
 
     if(mysqli_num_rows($result) > 0) {
-        $query = "DELETE FROM raki_dev.supplier WHERE supplier_id = '$supplier_id'";
+        $query = "DELETE FROM {$schema}.supplier WHERE supplier_id = '$supplier_id'";
 
         if (mysqli_query($conn, $query)) {
             jsonResponse(200, 'Supplier deleted successfully');
@@ -189,6 +189,7 @@ try {
     $decoded = JWT::decode($token, new Key($_ENV['JWT_SECRET'], 'HS256'));
 
     $conn = DB::conn();
+    $schema = DB_SCHEMA;
     
     $token_username = $decoded->username;
     $method = $_SERVER['REQUEST_METHOD'];
@@ -196,7 +197,7 @@ try {
     switch($method){
         case 'POST':
             $input = json_decode(file_get_contents('php://input'), true);
-            createSupplier($conn, $input, $token_username);
+            createSupplier($conn, $schema, $input, $token_username);
             break;
         case 'GET':
             $params = $_GET['params'] ?? null;
@@ -204,18 +205,18 @@ try {
             $limit = $_GET['limit'] ?? 10;
             $supplier_id = $_GET['supplier_id'] ?? null;
             if($supplier_id != null){
-                getDetailSupplier($conn, $supplier_id);
+                getDetailSupplier($conn, $schema, $supplier_id);
             } else {
-                getAllSupplier($conn, $params, $page, $limit);
+                getAllSupplier($conn, $schema, $params, $page, $limit);
             }
             break;
         case 'PUT':
             $input = json_decode(file_get_contents('php://input'), true);
-            updateSupplier($conn, $input);
+            updateSupplier($conn, $schema, $input);
             break;
         case 'DELETE':
             $supplier_id = $_GET['supplier_id'] ?? null;
-            deleteSupplier($conn, $supplier_id);
+            deleteSupplier($conn, $schema, $supplier_id);
             break;
     }
 

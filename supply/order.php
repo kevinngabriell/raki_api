@@ -6,7 +6,7 @@ require_once '../general.php';
 require_once '../config.php';
 require_once '../notification/notification.php';
 
-function createOrderTransaction($conn, $input, $username){
+function createOrderTransaction($conn, $schema, $input, $username){
     if (
         !$input ||
         !isset($input['from_company_id']) ||
@@ -74,7 +74,7 @@ function createOrderTransaction($conn, $input, $username){
     try {
         // Insert into supply_order
         $insertOrderSql = "
-            INSERT INTO raki_dev.supply_order (
+            INSERT INTO {$schema}.supply_order (
                 supply_order_id,
                 order_code,
                 from_company_id,
@@ -115,7 +115,7 @@ function createOrderTransaction($conn, $input, $username){
             $price_val  = (float)$item['unit_price'];
 
             $insertDetailSql = "
-                INSERT INTO raki_dev.supply_order_detail (
+                INSERT INTO {$schema}.supply_order_detail (
                     supply_order_detail_id,
                     supply_order_id,
                     ingredient_id,
@@ -220,11 +220,11 @@ function createOrderTransaction($conn, $input, $username){
     }
 }
 
-function getSupplyOrderDetail($conn, $order_id){
+function getSupplyOrderDetail($conn, $schema, $order_id){
     $order_id_esc = mysqli_real_escape_string($conn, $order_id);
 
     $orderSql = "SELECT supply_order_id, order_code, from_company_id, AC.company_name, to_company_id, SO.status, notes, requested_at, approved_at, completed_at, created_by, updated_by, SO.created_at, SO.updated_at, total_amount
-FROM raki_dev.supply_order SO
+FROM {$schema}.supply_order SO
 LEFT JOIN movira_core_dev.app_company AC ON  SO.from_company_id = AC.company_id WHERE supply_order_id = '$order_id_esc'";
     $orderRes = mysqli_query($conn, $orderSql);
     if (!$orderRes || mysqli_num_rows($orderRes) === 0) {
@@ -233,9 +233,9 @@ LEFT JOIN movira_core_dev.app_company AC ON  SO.from_company_id = AC.company_id 
     $order = mysqli_fetch_assoc($orderRes);
 
     $detailSql = "SELECT I.ingredient_id, I.ingredient_name, IC.category_name, qty, unit_price, subtotal
-    FROM raki_dev.supply_order_detail SOD
-    LEFT JOIN raki_dev.ingredient I ON SOD.ingredient_id = I.ingredient_id
-    LEFT JOIN raki_dev.ingredient_category IC ON I.ingredient_category = IC.category_id WHERE supply_order_id = '$order_id_esc'";
+    FROM {$schema}.supply_order_detail SOD
+    LEFT JOIN {$schema}.ingredient I ON SOD.ingredient_id = I.ingredient_id
+    LEFT JOIN {$schema}.ingredient_category IC ON I.ingredient_category = IC.category_id WHERE supply_order_id = '$order_id_esc'";
     $detailRes = mysqli_query($conn, $detailSql);
     $details = [];
     if ($detailRes) {
@@ -250,7 +250,7 @@ LEFT JOIN movira_core_dev.app_company AC ON  SO.from_company_id = AC.company_id 
     ]);
 }
 
-function getSupplyOrders($conn, $page = 1, $limit = 10){
+function getSupplyOrders($conn, $schema, $page = 1, $limit = 10){
 
     $excludedCompanyId = 'company691b31b41ea7b';
 
@@ -280,7 +280,7 @@ function getSupplyOrders($conn, $page = 1, $limit = 10){
     }
 
     $countQuery = "SELECT COUNT(*) as total
-        FROM raki_dev.supply_order SO
+        FROM {$schema}.supply_order SO
         LEFT JOIN movira_core_dev.app_company AC ON SO.from_company_id = AC.company_id
         $where";
     $countResult = mysqli_query($conn, $countQuery);
@@ -288,7 +288,7 @@ function getSupplyOrders($conn, $page = 1, $limit = 10){
     $total = $totalRow['total'];
 
     $sql = " SELECT supply_order_id, order_code, from_company_id, AC.company_name, to_company_id, SO.status, notes, requested_at, approved_at, completed_at, created_by, updated_by, SO.created_at, SO.updated_at, total_amount
-        FROM raki_dev.supply_order SO
+        FROM {$schema}.supply_order SO
         LEFT JOIN movira_core_dev.app_company AC ON SO.to_company_id = AC.company_id 
         $where 
         ORDER BY requested_at DESC, created_at DESC LIMIT $limit OFFSET $offset";
@@ -316,7 +316,7 @@ function getSupplyOrders($conn, $page = 1, $limit = 10){
     jsonResponse(200, 'Success', $response);
 }
 
-function updateOrderStatus($conn, $input, $username){
+function updateOrderStatus($conn, $schema, $input, $username){
     if (!$input || !isset($input['supply_order_id']) || !isset($input['status'])) {
         jsonResponse(400, 'Missing required fields (supply_order_id, status)');
     }
@@ -400,7 +400,7 @@ function updateOrderStatus($conn, $input, $username){
 
     $setClause = implode(', ', $setParts);
 
-    $sql = "UPDATE raki_dev.supply_order SET $setClause WHERE supply_order_id = '$order_id_esc'";
+    $sql = "UPDATE {$schema}.supply_order SET $setClause WHERE supply_order_id = '$order_id_esc'";
 
     if (!mysqli_query($conn, $sql)) {
         jsonResponse(500, 'Failed to update supply order status', ['error' => mysqli_error($conn)]);
@@ -440,7 +440,8 @@ try {
     $decoded = JWT::decode($token, new Key($_ENV['JWT_SECRET'], 'HS256'));
 
     $conn = DB::conn();
-    
+    $schema = DB_SCHEMA;
+
     $token_username = $decoded->username;
     $method = $_SERVER['REQUEST_METHOD'];
 
@@ -452,19 +453,19 @@ try {
             } else {
                 $input = $_POST ?? [];
             }
-            createOrderTransaction($conn, $input, $token_username);
+            createOrderTransaction($conn, $schema, $input, $token_username);
             break;
         case 'GET':
             $company_id = $_GET['company_id'] ?? null;
 
             if (isset($_GET['supply_order_id']) && $_GET['supply_order_id'] !== '') {
-                getSupplyOrderDetail($conn, $_GET['supply_order_id']);
+                getSupplyOrderDetail($conn, $schema, $_GET['supply_order_id']);
             } else {
                 // jika ada company_id dari FE, jadikan filter to_company_id
                 if ($company_id) {
                     $_GET['to_company_id'] = $company_id;
                 }
-                getSupplyOrders($conn);
+                getSupplyOrders($conn, $schema);
             }
             break;
         case 'PUT':
@@ -478,7 +479,7 @@ try {
                     parse_str($rawBody, $input);
                 }
             }
-            updateOrderStatus($conn, $input, $token_username);
+            updateOrderStatus($conn, $schema, $input, $token_username);
             break;
         case 'DELETE':
             jsonResponse(405, 'Method DELETE not implemented');

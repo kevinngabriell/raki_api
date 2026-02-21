@@ -6,7 +6,7 @@ require_once '../general.php';
 require_once '../config.php';
 require_once '../log.php';
 
-function createIngredient($conn, $input, $username){
+function createIngredient($conn, $schema, $input, $username){
     $ingredient_name = $input['ingredient_name'];
     $ingredient_category = $input['ingredient_category'];
     $uom = $input['uom'];
@@ -35,13 +35,13 @@ function createIngredient($conn, $input, $username){
     $company_id = mysqli_real_escape_string($conn, $company_id);
     $is_active = $is_active ? 1 : 0;
 
-    $check_app_query = "SELECT * FROM raki_dev.ingredient WHERE ingredient_name = '$ingredient_name' AND company_id = '$company_id'";
+    $check_app_query = "SELECT * FROM {$schema}.ingredient WHERE ingredient_name = '$ingredient_name' AND company_id = '$company_id'";
     $check_app_result = mysqli_query($conn, $check_app_query);
 
-    $check_category_query = "SELECT * FROM raki_dev.ingredient_category WHERE category_id = '$ingredient_category'";
+    $check_category_query = "SELECT * FROM {$schema}.ingredient_category WHERE category_id = '$ingredient_category'";
     $check_category_result = mysqli_query($conn, $check_category_query);
 
-    $check_uom_query = "SELECT * FROM raki_dev.unit_of_measurement WHERE uom_id = '$uom'";
+    $check_uom_query = "SELECT * FROM {$schema}.unit_of_measurement WHERE uom_id = '$uom'";
     $check_uom_result = mysqli_query($conn, $check_uom_query);
 
     if (mysqli_num_rows($check_app_result) > 0) {
@@ -85,7 +85,7 @@ function createIngredient($conn, $input, $username){
         $ingredientsID = "ingredients" . uniqid();
         $now = getCurrentDateTimeJakarta();
 
-        $category_query = "INSERT INTO raki_dev.ingredient (ingredient_id, ingredient_name, ingredient_category, uom, sku, company_id, is_active, created_at, created_by, price) VALUES ('$ingredientsID', '$ingredient_name', '$ingredient_category', '$uom', '$sku', '$company_id', '$is_active', '$now', '$username', '$price')";
+        $category_query = "INSERT INTO {$schema}.ingredient (ingredient_id, ingredient_name, ingredient_category, uom, sku, company_id, is_active, created_at, created_by, price) VALUES ('$ingredientsID', '$ingredient_name', '$ingredient_category', '$uom', '$sku', '$company_id', '$is_active', '$now', '$username', '$price')";
 
         if (mysqli_query($conn, $category_query)) {
             jsonResponse(201, 'New ingredients has been created successfully', ['ingredients' => $ingredient_name]);
@@ -104,15 +104,15 @@ function createIngredient($conn, $input, $username){
     }
 }
 
-function getAllIngredient($conn, $params, $page = 1, $limit = 10){
+function getAllIngredient($conn, $schema, $params, $page = 1, $limit = 10){
     $offset = ($page - 1) * $limit;
 
-    $countQuery = "SELECT COUNT(*) as total FROM raki_dev.ingredient WHERE (ingredient_name LIKE '%$params%')";
+    $countQuery = "SELECT COUNT(*) as total FROM {$schema}.ingredient WHERE (ingredient_name LIKE '%$params%')";
     $countResult = mysqli_query($conn, $countQuery);
     $totalRow = mysqli_fetch_assoc($countResult);
     $total = $totalRow['total'];
 
-    $query = "SELECT ingredient_id, ingredient_name, UOM.uom_name, IC.category_name, price FROM raki_dev.ingredient I LEFT JOIN raki_dev.unit_of_measurement UOM ON I.uom = UOM.uom_id LEFT JOIN raki_dev.ingredient_category IC ON I.ingredient_category = IC.category_id WHERE (ingredient_name LIKE '%$params%') LIMIT $limit OFFSET $offset";
+    $query = "SELECT ingredient_id, ingredient_name, UOM.uom_name, IC.category_name, price FROM {$schema}.ingredient I LEFT JOIN {$schema}.unit_of_measurement UOM ON I.uom = UOM.uom_id LEFT JOIN {$schema}.ingredient_category IC ON I.ingredient_category = IC.category_id WHERE (ingredient_name LIKE '%$params%') LIMIT $limit OFFSET $offset";
     $result = mysqli_query($conn, $query);
 
     if ($result && mysqli_num_rows($result) > 0) {
@@ -141,8 +141,8 @@ function getAllIngredient($conn, $params, $page = 1, $limit = 10){
     }
 }
 
-function getDetailIngredient($conn, $ingredient_id, $username){
-    $query = "SELECT ingredient_id, ingredient_name, IC.category_id, IC.category_name, I.sku, UOM.uom_id, UOM.uom_name, price FROM raki_dev.ingredient I LEFT JOIN raki_dev.ingredient_category IC ON I.ingredient_category = IC.category_id  LEFT JOIN raki_dev.unit_of_measurement UOM ON I.uom = UOM.uom_id  WHERE ingredient_id = '$ingredient_id'";
+function getDetailIngredient($conn, $schema, $ingredient_id, $username){
+    $query = "SELECT ingredient_id, ingredient_name, IC.category_id, IC.category_name, I.sku, UOM.uom_id, UOM.uom_name, price FROM {$schema}.ingredient I LEFT JOIN {$schema}.ingredient_category IC ON I.ingredient_category = IC.category_id  LEFT JOIN {$schema}.unit_of_measurement UOM ON I.uom = UOM.uom_id  WHERE ingredient_id = '$ingredient_id'";
     $result = mysqli_query($conn, $query);
 
     if ($result && mysqli_num_rows($result) > 0) {
@@ -171,7 +171,7 @@ function getDetailIngredient($conn, $ingredient_id, $username){
     }
 }
 
-function updateIngredient($conn, $input, $username){
+function updateIngredient($conn, $schema, $input, $username){
     if (!isset($input['ingredient_id'])) {
         logApiError($conn, [
             'error_level'   => 'error',
@@ -187,7 +187,7 @@ function updateIngredient($conn, $input, $username){
 
     $ingredient_id = mysqli_real_escape_string($conn, $input['ingredient_id']);
 
-    $query = "SELECT * FROM raki_dev.ingredient WHERE ingredient_id = '$ingredient_id'";
+    $query = "SELECT * FROM {$schema}.ingredient WHERE ingredient_id = '$ingredient_id'";
     $result = mysqli_query($conn, $query);
 
     $updates = [];
@@ -224,7 +224,7 @@ function updateIngredient($conn, $input, $username){
     }
 
     if(mysqli_num_rows($result) > 0) {
-        $updateQuery = "UPDATE raki_dev.ingredient SET " . implode(', ', $updates) . " WHERE ingredient_id = '$ingredient_id'";
+        $updateQuery = "UPDATE {$schema}.ingredient SET " . implode(', ', $updates) . " WHERE ingredient_id = '$ingredient_id'";
 
         if (mysqli_query($conn, $updateQuery)) {
             jsonResponse(200, 'Ingredient updated successfully', ['ingredient_id' => $ingredient_id]);
@@ -255,7 +255,7 @@ function updateIngredient($conn, $input, $username){
 
 }
 
-function deleteIngredient($conn, $ingredient_id, $username){
+function deleteIngredient($conn, $schema, $ingredient_id, $username){
     if($ingredient_id === null || $ingredient_id === ''){
         logApiError($conn, [
             'error_level'   => 'error',
@@ -269,11 +269,11 @@ function deleteIngredient($conn, $ingredient_id, $username){
         jsonResponse(400, 'Missing required fields (ingredient_id)');
     }
 
-    $query = "SELECT * FROM raki_dev.ingredient WHERE ingredient_id = '$ingredient_id'";
+    $query = "SELECT * FROM {$schema}.ingredient WHERE ingredient_id = '$ingredient_id'";
     $result = mysqli_query($conn, $query);
 
     if(mysqli_num_rows($result) > 0) {
-        $query = "DELETE FROM raki_dev.ingredient WHERE ingredient_id = '$ingredient_id'";
+        $query = "DELETE FROM {$schema}.ingredient WHERE ingredient_id = '$ingredient_id'";
 
         if (mysqli_query($conn, $query)) {
             jsonResponse(200, 'Ingredient menu deleted successfully');
@@ -334,14 +334,15 @@ try {
     $decoded = JWT::decode($token, new Key($_ENV['JWT_SECRET'], 'HS256'));
 
     $conn = DB::conn();
-    
+    $schema = DB_SCHEMA;
+
     $token_username = $decoded->username;
     $method = $_SERVER['REQUEST_METHOD'];
 
     switch($method){
         case 'POST':
             $input = json_decode(file_get_contents('php://input'), true);
-            createIngredient($conn, $input, $token_username);
+            createIngredient($conn, $schema, $input, $token_username);
             break;
         case 'GET':
             $params = $_GET['params'] ?? null;
@@ -349,23 +350,25 @@ try {
             $limit = $_GET['limit'] ?? 10;
             $ingredient_id = $_GET['ingredient_id'] ?? null;
             if($ingredient_id != null){
-                getDetailIngredient($conn, $ingredient_id, $token_username);
+                getDetailIngredient($conn, $schema, $ingredient_id, $token_username);
             } else {
-                getAllIngredient($conn, $params, $page, $limit);
+                getAllIngredient($conn, $schema, $params, $page, $limit);
              }
             break;
         case 'PUT':
             $input = json_decode(file_get_contents('php://input'), true);
-            updateIngredient($conn, $input, $token_username);
+            updateIngredient($conn, $schema, $input, $token_username);
             break;
         case 'DELETE':
             $ingredient_id = $_GET['ingredient_id'] ?? null;
-            deleteIngredient($conn, $ingredient_id, $token_username);
+            deleteIngredient($conn, $schema, $ingredient_id, $token_username);
             break;
     }
 
 
 } catch (Exception $e){
+    $conn = DB::conn();
+
     logApiError($conn, [
         'error_level'   => 'error',
         'http_status'   => 500,
@@ -375,6 +378,7 @@ try {
         'user_identifier' => $username ?? null,
         'company_id'      => $decoded->company_id ?? null,
     ]);
+
     jsonResponse(500, 'Internal Server Error', ['error' => $e->getMessage()]);
 }
 

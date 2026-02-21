@@ -7,7 +7,7 @@ require_once '../config.php';
 require_once '../notification/notification.php';
 require_once '../log.php';
 
-function createPOSTransacton($conn, $input, $username, $decoded){
+function createPOSTransacton($conn, $schema, $input, $username, $decoded){
     // company_id from token
     $company_id = $decoded->company_id ?? null;
     if (!$company_id) {
@@ -85,7 +85,7 @@ function createPOSTransacton($conn, $input, $username, $decoded){
     $user_id_esc    = mysqli_real_escape_string($conn, $username);
 
     // 1) Find active session
-    $qSess = "SELECT session_id, started_at, cash_start FROM raki_dev.work_session WHERE company_id='$company_id_esc' AND user_id='$user_id_esc' AND status='active' ORDER BY started_at DESC LIMIT 1";
+    $qSess = "SELECT session_id, started_at, cash_start FROM {$schema}.work_session WHERE company_id='$company_id_esc' AND user_id='$user_id_esc' AND status='active' ORDER BY started_at DESC LIMIT 1";
 
     $rSess = mysqli_query($conn, $qSess);
     if (!$rSess) {
@@ -234,7 +234,7 @@ function createPOSTransacton($conn, $input, $username, $decoded){
         $menu_id = mysqli_real_escape_string($conn, $pi['menu_id']);
         $qtyReq  = (int)$pi['quantity'];
 
-        $qLeft = "SELECT MAX(wss.qty_start) AS qty_start, COALESCE(SUM(td.quantity), 0) AS qty_sold FROM raki_dev.work_session_stock wss LEFT JOIN raki_dev.`transaction` t ON t.session_id = wss.session_id LEFT JOIN raki_dev.transaction_detail td ON td.transaction_id = t.transaction_id AND td.menu_id = wss.menu_id WHERE wss.session_id = '$sid_esc' AND wss.menu_id = '$menu_id' GROUP BY wss.session_id, wss.menu_id LIMIT 1";
+        $qLeft = "SELECT MAX(wss.qty_start) AS qty_start, COALESCE(SUM(td.quantity), 0) AS qty_sold FROM {$schema}.work_session_stock wss LEFT JOIN {$schema}.`transaction` t ON t.session_id = wss.session_id LEFT JOIN {$schema}.transaction_detail td ON td.transaction_id = t.transaction_id AND td.menu_id = wss.menu_id WHERE wss.session_id = '$sid_esc' AND wss.menu_id = '$menu_id' GROUP BY wss.session_id, wss.menu_id LIMIT 1";
 
         $rLeft = mysqli_query($conn, $qLeft);
         if (!$rLeft) {
@@ -296,7 +296,7 @@ function createPOSTransacton($conn, $input, $username, $decoded){
         $transaction_id = 'trx' . uniqid();
         $transaction_date = date('Y-m-d H:i:s');
 
-        $sqlHeader = "INSERT INTO raki_dev.transaction (transaction_id, session_id, company_id, transaction_date, total_amount, latitude, longitude, created_at, created_by, updated_at, updated_by, total_item) VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), ?, NOW(), ?, ?)";
+        $sqlHeader = "INSERT INTO {$schema}.transaction (transaction_id, session_id, company_id, transaction_date, total_amount, latitude, longitude, created_at, created_by, updated_at, updated_by, total_item) VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), ?, NOW(), ?, ?)";
 
         $stmtHeader = $conn->prepare($sqlHeader);
         if (!$stmtHeader) {
@@ -332,7 +332,7 @@ function createPOSTransacton($conn, $input, $username, $decoded){
         }
 
         // Insert details
-        $sqlDetail = "INSERT INTO raki_dev.transaction_detail (detail_id, transaction_id, menu_id, quantity, subtotal, created_at) VALUES (?, ?, ?, ?, ?, NOW())";
+        $sqlDetail = "INSERT INTO {$schema}.transaction_detail (detail_id, transaction_id, menu_id, quantity, subtotal, created_at) VALUES (?, ?, ?, ?, ?, NOW())";
 
         $stmtDetail = $conn->prepare($sqlDetail);
         if (!$stmtDetail) {
@@ -381,7 +381,7 @@ function createPOSTransacton($conn, $input, $username, $decoded){
         }
 
         // Insert payments
-        $sqlPayment = "INSERT INTO raki_dev.transaction_payment (payment_id, transaction_id, payment_method, amount, company_id, created_at) VALUES (?, ?, ?, ?, ?, NOW())";
+        $sqlPayment = "INSERT INTO {$schema}.transaction_payment (payment_id, transaction_id, payment_method, amount, company_id, created_at) VALUES (?, ?, ?, ?, ?, NOW())";
 
         $stmtPayment = $conn->prepare($sqlPayment);
         if (!$stmtPayment) {
@@ -496,6 +496,7 @@ try {
     $decoded = JWT::decode($token, new Key($_ENV['JWT_SECRET'], 'HS256'));
 
     $conn = DB::conn();
+    $schema = DB_SCHEMA;
 
     $token_username = $decoded->username;
     $method = $_SERVER['REQUEST_METHOD'];
@@ -510,9 +511,11 @@ try {
             if (json_last_error() !== JSON_ERROR_NONE) {
                 jsonResponse(400, 'Invalid JSON body');
             }
-            createPOSTransacton($conn, $input, $token_username, $decoded);
+            createPOSTransacton($conn, $schema, $input, $token_username, $decoded);
             break;
         default:
+            $conn = DB::conn();
+
             logApiError($conn, [
                 'error_level'   => 'error',
                 'http_status'   => 405,
@@ -526,6 +529,8 @@ try {
     }
 
 } catch (Exception $e){
+    $conn = DB::conn();
+    
     logApiError($conn, [
         'error_level'   => 'error',
         'http_status'   => 500,

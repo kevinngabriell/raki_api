@@ -7,20 +7,13 @@ require_once '../config.php';
 require_once '../log.php';
 
 function getAllCompany($conn){
-
     $query = "SELECT company_id, company_name FROM app_company WHERE app_id = '06660e87-37e7-491b-92c3-c772130eb57c' AND company_id != 'company691b31b41ea7b'";
     $result = mysqli_query($conn, $query);
 
     if ($result && mysqli_num_rows($result) > 0) {
         $data = mysqli_fetch_all($result, MYSQLI_ASSOC);
         $response = [
-            'data' => $data,
-            // 'pagination' => [
-            //     'total' => (int)$total,
-            //     'page' => (int)$page,
-            //     'limit' => (int)$limit,
-            //     'total_pages' => ceil($total / $limit),
-            // ]
+            'data' => $data
         ];
         jsonResponse(200, 'Company found', $response);
     } else {
@@ -42,6 +35,8 @@ use Firebase\JWT\Key;
 
 $headers = getallheaders();
 if (!isset($headers['Authorization'])) {
+    $conn = DB::conn();
+
     logApiError($conn, [
         'error_level'   => 'error',
         'http_status'   => 401,
@@ -51,6 +46,7 @@ if (!isset($headers['Authorization'])) {
         'user_identifier' => $username ?? null,
         'company_id'      => $decoded->company_id ?? null,
     ]);
+
     jsonResponse(401, 'Authorization header not found');
 }
 
@@ -64,10 +60,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 
 try {
     $token = str_replace('Bearer ', '', $headers['Authorization'] ?? '');
-    if (!$token) {
-        jsonResponse(401, 'Token not provided');
-    }
-
     $decoded = JWT::decode($token, new Key($_ENV['JWT_SECRET'], 'HS256'));
 
     $conn = DB::conn();
@@ -79,11 +71,22 @@ try {
             getAllCompany($conn);
             break;
         default:
+            logApiError($conn, [
+                'error_level'   => 'error',
+                'http_status'   => 405,
+                'endpoint'      => '/dashboard/company.php',
+                'method'        => $method,
+                'error_message' => 'Method Not Allowed',
+                'user_identifier' => $decoded->username ?? null,
+                'company_id'      => $decoded->company_id ?? null,
+            ]);
             jsonResponse(405, 'Method Not Allowed');
             break;
     }
 
 } catch (Exception $e){
+    $conn = DB::conn();
+
     logApiError($conn, [
         'error_level'   => 'error',
         'http_status'   => 500,
@@ -93,6 +96,7 @@ try {
         'user_identifier' => $decoded->username ?? null,
         'company_id'      => $decoded->company_id ?? null,
     ]);
+
     jsonResponse(500, 'Internal Server Error', ['error' => $e->getMessage()]);
 }
 
