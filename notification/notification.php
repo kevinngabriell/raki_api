@@ -1,6 +1,6 @@
 <?php
 
-require_once '../connection/db.php';
+require_once(__DIR__ . '/../connection/db.php');
 require_once '../vendor/autoload.php';
 require_once '../general.php';
 require_once '../config.php';
