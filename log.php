@@ -4,7 +4,7 @@ require_once 'connection/db.php';
 require_once 'vendor/autoload.php';
 require_once 'general.php';
 require_once 'config.php';
-require_once 'notification/notification.php';
+// require_once 'notification/notification.php';
 
 function logApiError(
     mysqli $conn,
