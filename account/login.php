@@ -112,14 +112,16 @@ try {
     }
 
 } catch (Exception $e){
+    $conn = DB::conn();
+    
     logApiError($conn, [
         'error_level'   => 'error',
         'http_status'   => 500,
         'endpoint'      => '/account/login.php',
         'method'        => '',
         'error_message' => $e->getMessage(),
-        'user_identifier' => $decoded->username ?? null,
-        'company_id'      => $decoded->company_id ?? null,
+        'user_identifier' => null,
+        'company_id'      => null,
     ]);
     jsonResponse(500, 'Internal Server Error', ['error' => $e->getMessage()]);
 }
