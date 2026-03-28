@@ -272,6 +272,18 @@ try {
             $schema_id = $_GET['schema_id'] ?? null;
             deleteBonusSchema($conn, $schema, $schema_id, $token_company);
             break;
+        default: 
+            logApiError($conn, [
+                'error_level'   => 'error',
+                'http_status'   => 405,
+                'endpoint'      => '/bonus/schema.php',
+                'method'        => $method,
+                'error_message' => 'Method Not Allowed',
+                'user_identifier' => $decoded->username ?? null,
+                'company_id'      => $decoded->company_id ?? null,
+            ]);
+            jsonResponse(405, 'Method Not Allowed');
+            break;
     }
 
 } catch (Exception $e){

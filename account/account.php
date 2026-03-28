@@ -27,7 +27,30 @@ function getDriverNextBonus($conn, $schemaDB, $username, $company){
 
     $current_total = (int)$trxData['total_item'];
 
-    // 2️⃣ cari next schema
+    // 2️⃣ cari current bonus (tier yang sudah tercapai)
+    $currentSchemaQuery = "SELECT *
+        FROM {$schemaDB}.bonus_schema
+        WHERE frequency = 'weekly'
+        AND is_active = 1
+        AND qty <= $current_total
+        ORDER BY qty DESC
+        LIMIT 1
+    ";
+
+    $currentSchemaResult = mysqli_query($conn, $currentSchemaQuery);
+    $currentSchema = mysqli_num_rows($currentSchemaResult) > 0 ? mysqli_fetch_assoc($currentSchemaResult) : null;
+
+    $current_bonus = null;
+    if ($currentSchema) {
+        $current_bonus = [
+            'schema_id'     => $currentSchema['schema_id'],
+            'schema_name'   => $currentSchema['schema_name'],
+            'achieved_qty'  => $currentSchema['qty'],
+            'bonus_nominal' => $currentSchema['bonus_nominal'],
+        ];
+    }
+
+    // 3️⃣ cari next schema
     $schemaQuery = "SELECT *
         FROM {$schemaDB}.bonus_schema
         WHERE frequency = 'weekly'
@@ -42,7 +65,12 @@ function getDriverNextBonus($conn, $schemaDB, $username, $company){
     if (mysqli_num_rows($schemaResult) === 0) {
         jsonResponse(200, 'All bonus tiers completed 🎉', [
             'current_total_item' => $current_total,
-            'next_target' => null
+            'current_bonus'      => $current_bonus,
+            'next_target'        => null,
+            'period' => [
+                'start' => $start,
+                'end'   => $end
+            ]
         ]);
     }
 
@@ -53,16 +81,18 @@ function getDriverNextBonus($conn, $schemaDB, $username, $company){
 
     jsonResponse(200, 'Driver next bonus target', [
         'current_total_item' => $current_total,
+        'current_bonus'      => $current_bonus,
         'next_target' => [
-            'schema_id' => $nextSchema['schema_id'],
-            'target_qty' => $nextSchema['qty'],
-            'bonus_nominal' => $nextSchema['bonus_nominal'],
-            'remaining_item' => $remaining,
-            'progress_percentage' => min(100,$percentage)
+            'schema_id'         => $nextSchema['schema_id'],
+            'schema_name'       => $nextSchema['schema_name'],
+            'target_qty'        => $nextSchema['qty'],
+            'bonus_nominal'     => $nextSchema['bonus_nominal'],
+            'remaining_item'    => $remaining,
+            'progress_percentage' => min(100, $percentage)
         ],
         'period' => [
             'start' => $start,
-            'end' => $end
+            'end'   => $end
         ]
     ]);
 }

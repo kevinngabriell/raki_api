@@ -17,7 +17,7 @@ function login($conn, $input){
     $username = mysqli_real_escape_string($conn, $username);
     $password = mysqli_real_escape_string($conn, $password);
 
-    $user_query = "SELECT * FROM movira_core_dev.app_user WHERE username = '$username'";
+    $user_query = "SELECT * FROM movira_core_dev.app_user WHERE username = '$username' AND app_id = '06660e87-37e7-491b-92c3-c772130eb57c'";
     $user_result = mysqli_query($conn, $user_query);
 
     if (!$user_result) {
