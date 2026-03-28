@@ -26,7 +26,7 @@ function createTransaction($conn, $schema, $input, $username){
     $total_items = $input['total_items'];
     $transaction_date = isset($input['transaction_date']) && !empty($input['transaction_date']) ? $input['transaction_date'] : date('Y-m-d H:i:s');
 
-    // Items structure: [{ menu_id, quantity, unit_price }]
+    // Items structure: [{ menu_id, quantity, unit_price }] or [{ package_id, quantity, unit_price }]
     $items = $input['items'];
 
     // Compute totals and validate each item
@@ -34,21 +34,36 @@ function createTransaction($conn, $schema, $input, $username){
     $prepared_items = [];
 
     foreach ($items as $idx => $it) {
-        if (!isset($it['menu_id']) || !isset($it['quantity']) || !isset($it['unit_price'])) {
+        $has_menu    = isset($it['menu_id']);
+        $has_package = isset($it['package_id']);
+
+        if (!$has_menu && !$has_package) {
             logApiError($conn, [
                 'error_level'   => 'error',
                 'http_status'   => 400,
                 'endpoint'      => '/transaction/index.php',
                 'method'        => 'POST',
-                'error_message' => "Invalid item at index $idx. Require menu_id, quantity, unit_price.",
+                'error_message' => "Invalid item at index $idx. Require menu_id or package_id, quantity, unit_price.",
                 'user_identifier' => $username ?? null,
                 'company_id'      => $decoded->company_id ?? null,
             ]);
-            jsonResponse(400, "Invalid item at index $idx. Require menu_id, quantity, unit_price.");
+            jsonResponse(400, "Invalid item at index $idx. Require menu_id or package_id, quantity, unit_price.");
         }
 
-        $menu_id = $it['menu_id'];
-        $quantity = (int)$it['quantity'];
+        if (!isset($it['quantity']) || !isset($it['unit_price'])) {
+            logApiError($conn, [
+                'error_level'   => 'error',
+                'http_status'   => 400,
+                'endpoint'      => '/transaction/index.php',
+                'method'        => 'POST',
+                'error_message' => "Invalid item at index $idx. Require quantity and unit_price.",
+                'user_identifier' => $username ?? null,
+                'company_id'      => $decoded->company_id ?? null,
+            ]);
+            jsonResponse(400, "Invalid item at index $idx. Require quantity and unit_price.");
+        }
+
+        $quantity   = (int)$it['quantity'];
         $unit_price = (float)$it['unit_price'];
 
         if ($quantity <= 0 || $unit_price < 0) {
@@ -66,11 +81,49 @@ function createTransaction($conn, $schema, $input, $username){
 
         $subtotal = $quantity * $unit_price;
         $total_amount += $subtotal;
-        $prepared_items[] = [
-            'menu_id' => $menu_id,
-            'quantity' => $quantity,
-            'subtotal' => $subtotal,
-        ];
+
+        if ($has_package) {
+            // Expand package → individual menus
+            $pkg_id  = mysqli_real_escape_string($conn, $it['package_id']);
+            $pkgMenuRes = mysqli_query($conn,
+                "SELECT pm.menu_id FROM {$schema}.package_menu pm
+                 JOIN {$schema}.menu m ON m.menu_id = pm.menu_id
+                 WHERE pm.package_id = '$pkg_id' AND m.is_active = 1"
+            );
+
+            if (!$pkgMenuRes || mysqli_num_rows($pkgMenuRes) === 0) {
+                jsonResponse(404, "package_id '{$it['package_id']}' not found or has no active menus");
+            }
+
+            $pkg_menus   = mysqli_fetch_all($pkgMenuRes, MYSQLI_ASSOC);
+            $menu_count  = count($pkg_menus);
+
+            // Distribute subtotal across menus (first row gets remainder)
+            $per_menu    = (int)floor($subtotal / $menu_count);
+            $remainder   = $subtotal - $per_menu * $menu_count;
+
+            foreach ($pkg_menus as $i => $pm) {
+                $prepared_items[] = [
+                    'menu_id'    => $pm['menu_id'],
+                    'quantity'   => $quantity,
+                    'subtotal'   => $i === 0 ? $per_menu + $remainder : $per_menu,
+                    'package_id' => $it['package_id'],
+                ];
+            }
+        } else {
+            $prepared_items[] = [
+                'menu_id'    => $it['menu_id'],
+                'quantity'   => $quantity,
+                'subtotal'   => $subtotal,
+                'package_id' => null,
+            ];
+        }
+    }
+
+    // Compute total_item server-side (each menu in a package counts individually)
+    $total_items = 0;
+    foreach ($prepared_items as $pi) {
+        $total_items += $pi['quantity'];
     }
 
         // --- Payment breakdown (cash / qris) ---
