@@ -5,7 +5,56 @@ require_once(__DIR__ . '/../vendor/autoload.php');
 require_once(__DIR__ . '/../general.php');
 require_once(__DIR__ . '/../config.php');
 require_once(__DIR__ . '/../log.php');
-require_once(__DIR__ . '/notification.php');
+
+function sendWhatsAppText($chatId, $text, $session = WAHA_SESSION) {
+    $conn = DB::conn();
+
+    $url     = rtrim(WAHA_BASE_URL, '/') . '/api/sendText';
+    $payload = ['chatId' => $chatId, 'text' => $text, 'session' => $session];
+
+    $ch      = curl_init($url);
+    $headers = ['Content-Type: application/json'];
+    if (!empty(WAHA_API_KEY)) {
+        $headers[] = 'X-Api-Key: ' . WAHA_API_KEY;
+    }
+
+    curl_setopt_array($ch, [
+        CURLOPT_POST           => true,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_HTTPHEADER     => $headers,
+        CURLOPT_POSTFIELDS     => json_encode($payload),
+        CURLOPT_TIMEOUT        => 10,
+    ]);
+
+    $responseBody = curl_exec($ch);
+    $errno        = curl_errno($ch);
+    $error        = curl_error($ch);
+    $httpCode     = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    if ($errno) {
+        error_log("WAHA CURL error: $error");
+        logApiError($conn, [
+            'error_level'     => 'error',
+            'http_status'     => 500,
+            'endpoint'        => '/notification/daily_summary.php',
+            'method'          => '',
+            'error_message'   => $error,
+            'user_identifier' => null,
+            'company_id'      => null,
+        ]);
+        return ['success' => false, 'httpCode' => $httpCode, 'error' => $error, 'raw' => $responseBody];
+    }
+
+    return [
+        'success'  => $httpCode >= 200 && $httpCode < 300,
+        'httpCode' => $httpCode,
+        'data'     => json_decode($responseBody, true),
+        'raw'      => $responseBody,
+    ];
+}
+
+function formatRupiah($angka) {
+    return 'Rp ' . number_format((int)$angka, 0, ',', '.');
+}
 
 // --- Determine execution context ---
 $isCli  = php_sapi_name() === 'cli';
