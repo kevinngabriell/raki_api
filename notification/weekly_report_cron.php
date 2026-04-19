@@ -80,7 +80,6 @@ $sql = "SELECT
         FROM movira_core_dev.app_user au
         JOIN movira_core_dev.app_role ar ON ar.app_role_id = au.app_role_id
         WHERE au.app_id          = ?
-          AND au.account_status  = 'verified'
           AND au.company_id      IS NOT NULL
           AND au.email           IS NOT NULL
           AND au.email           != ''
