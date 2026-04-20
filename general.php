@@ -1,25 +1,29 @@
 <?php
 
-// CORS setup
-$origin = $_SERVER['HTTP_ORIGIN'] ?? '*';
-$allowed_origins = [
-    'http://localhost:3000',
-    'https://your-production-domain.com'
-];
+$isCli = php_sapi_name() === 'cli';
 
-if (in_array($origin, $allowed_origins)) {
-    header("Access-Control-Allow-Origin: $origin");
-    header("Access-Control-Allow-Credentials: true");
-}
+if (!$isCli) {
+    // CORS setup
+    $origin = $_SERVER['HTTP_ORIGIN'] ?? '*';
+    $allowed_origins = [
+        'http://localhost:3000',
+        'https://your-production-domain.com'
+    ];
 
-header("Access-Control-Allow-Methods: POST, GET, OPTIONS, DELETE");
-header("Access-Control-Allow-Headers: Origin, X-Requested-With, Content-Type, Accept");
+    if (in_array($origin, $allowed_origins)) {
+        header("Access-Control-Allow-Origin: $origin");
+        header("Access-Control-Allow-Credentials: true");
+    }
 
-if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-    header("Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS");
-    header("Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With");
-    http_response_code(200);
-    exit();
+    header("Access-Control-Allow-Methods: POST, GET, OPTIONS, DELETE");
+    header("Access-Control-Allow-Headers: Origin, X-Requested-With, Content-Type, Accept");
+
+    if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+        header("Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS");
+        header("Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With");
+        http_response_code(200);
+        exit();
+    }
 }
 
 // Error reporting

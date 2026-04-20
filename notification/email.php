@@ -67,6 +67,10 @@ if (!$isCli && !$isHttp) {
     return;
 }
 
+if ($isCli) {
+    return; // CLI: only sendEmail() is needed, skip HTTP handling
+}
+
 // ── HTTP endpoint: POST /notification/email.php ───────────────────────────────
 
 header('Content-Type: application/json');
