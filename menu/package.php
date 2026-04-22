@@ -273,38 +273,50 @@ function deletePackage($conn, $schema, $package_id) {
 // ─────────────────────────────────────────────
 // ROUTING
 // ─────────────────────────────────────────────
-$method = $_SERVER['REQUEST_METHOD'];
-$conn   = DB::conn();
+$method         = $_SERVER['REQUEST_METHOD'];
+$conn           = DB::conn();
+$schema         = DB_SCHEMA;
+$token_username = null;
 
-$headers    = function_exists('getallheaders') ? getallheaders() : [];
-$authHeader = $headers['Authorization'] ?? $headers['authorization'] ?? ($_SERVER['HTTP_AUTHORIZATION'] ?? null);
+// ONLY REQUIRE TOKEN FOR NON-GET REQUESTS
+if ($method !== 'GET') {
+    $headers    = function_exists('getallheaders') ? getallheaders() : [];
+    $authHeader = $headers['Authorization'] ?? $headers['authorization'] ?? ($_SERVER['HTTP_AUTHORIZATION'] ?? null);
 
-if (!$authHeader) {
-    logApiError($conn, [
-        'error_level'     => 'error',
-        'http_status'     => 401,
-        'endpoint'        => '/menu/package.php',
-        'method'          => $method,
-        'error_message'   => 'Authorization header not found',
-        'user_identifier' => null,
-        'company_id'      => null,
-    ]);
-    jsonResponse(401, 'Authorization header not found');
+    if (!$authHeader) {
+        logApiError($conn, [
+            'error_level'     => 'error',
+            'http_status'     => 401,
+            'endpoint'        => '/menu/package.php',
+            'method'          => $method,
+            'error_message'   => 'Authorization header not found',
+            'user_identifier' => null,
+            'company_id'      => null,
+        ]);
+        jsonResponse(401, 'Authorization header not found');
+    }
+
+    try {
+        $token          = preg_replace('/^Bearer\s+/i', '', $authHeader);
+        $decoded        = JWT::decode($token, new Key($_ENV['JWT_SECRET'], 'HS256'));
+        $token_username = $decoded->username;
+    } catch (Exception $e) {
+        logApiError($conn, [
+            'error_level'     => 'error',
+            'http_status'     => 401,
+            'endpoint'        => '/menu/package.php',
+            'method'          => $method,
+            'error_message'   => $e->getMessage(),
+            'user_identifier' => null,
+            'company_id'      => null,
+        ]);
+        jsonResponse(401, 'Invalid or expired token', ['error' => $e->getMessage()]);
+    }
 }
 
 try {
-    $token   = preg_replace('/^Bearer\s+/i', '', $authHeader);
-    $decoded = JWT::decode($token, new Key($_ENV['JWT_SECRET'], 'HS256'));
-
-    $schema         = DB_SCHEMA;
-    $token_username = $decoded->username;
 
     switch ($method) {
-        case 'POST':
-            $input = json_decode(file_get_contents('php://input'), true) ?? [];
-            createPackage($conn, $schema, $input, $token_username);
-            break;
-
         case 'GET':
             $package_id = $_GET['package_id'] ?? null;
             if ($package_id) {
@@ -315,6 +327,11 @@ try {
                 $limit  = $_GET['limit']  ?? 20;
                 getAllPackages($conn, $schema, $params, $page, $limit);
             }
+            break;
+
+        case 'POST':
+            $input = json_decode(file_get_contents('php://input'), true) ?? [];
+            createPackage($conn, $schema, $input, $token_username);
             break;
 
         case 'PUT':
@@ -334,8 +351,8 @@ try {
                 'endpoint'        => '/menu/package.php',
                 'method'          => $method,
                 'error_message'   => 'Method Not Allowed',
-                'user_identifier' => $decoded->username ?? null,
-                'company_id'      => $decoded->company_id ?? null,
+                'user_identifier' => $token_username,
+                'company_id'      => null,
             ]);
             jsonResponse(405, 'Method Not Allowed');
             break;
@@ -348,8 +365,8 @@ try {
         'endpoint'        => '/menu/package.php',
         'method'          => $method ?? '',
         'error_message'   => $e->getMessage(),
-        'user_identifier' => $decoded->username ?? null,
-        'company_id'      => $decoded->company_id ?? null,
+        'user_identifier' => $token_username,
+        'company_id'      => null,
     ]);
     jsonResponse(500, 'Internal Server Error', ['error' => $e->getMessage()]);
 }
