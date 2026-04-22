@@ -33,7 +33,7 @@ function createOTP($conn, $input)
     $phone_number = mysqli_real_escape_string($conn, $phone_number);
 
     // Ambil user berdasarkan nomor telepon
-    $user_query = "SELECT username, phone_number FROM movira_core_dev.app_user WHERE phone_number = '$phone_number' LIMIT 1";
+    $user_query = "SELECT username, phone_number FROM movira_core_dev.app_user WHERE phone_number = '$phone_number' AND app_id = '06660e87-37e7-491b-92c3-c772130eb57c' LIMIT 1";
     $user_result = mysqli_query($conn, $user_query);
 
     if (!$user_result) {
@@ -216,7 +216,7 @@ function validateOTP($conn, $input)
     $otp          = mysqli_real_escape_string($conn, $otp);
 
     // Ambil username dari phone_number
-    $user_query = "SELECT username, company_id, app_role_id FROM movira_core_dev.app_user WHERE phone_number = '$phone_number' LIMIT 1";
+    $user_query = "SELECT username, company_id, app_role_id FROM movira_core_dev.app_user WHERE phone_number = '$phone_number' AND app_id = '06660e87-37e7-491b-92c3-c772130eb57c' LIMIT 1";
     $user_result = mysqli_query($conn, $user_query);
 
     if (!$user_result) {
