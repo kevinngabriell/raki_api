@@ -100,12 +100,16 @@ function getAllVoucher($conn, $params, $schema, $company, $page = 1, $limit = 10
         $search = " AND (voucher_code LIKE '%$keyword%' OR voucher_name LIKE '%$keyword%')";
     }
 
-    $count_query = "SELECT COUNT(*) as total FROM {$schema}.voucher WHERE company_id = '$company' $search";
+    $companyFilter = !empty($company)
+        ? "company_id = '" . mysqli_real_escape_string($conn, $company) . "'"
+        : "1=1";
+
+    $count_query = "SELECT COUNT(*) as total FROM {$schema}.voucher WHERE $companyFilter $search";
     $count_result = mysqli_query($conn, $count_query);
     $count_data = mysqli_fetch_assoc($count_result);
     $total_data = (int)$count_data['total'];
 
-    $query = "SELECT * FROM {$schema}.voucher WHERE company_id = '$company' $search ORDER BY created_at DESC LIMIT $limit OFFSET $offset";
+    $query = "SELECT * FROM {$schema}.voucher WHERE $companyFilter $search ORDER BY created_at DESC LIMIT $limit OFFSET $offset";
 
     $result = mysqli_query($conn, $query);
 
@@ -133,7 +137,8 @@ function getDetailVoucher($conn, $schema, $voucher_id, $company){
 
     $voucher_id = mysqli_real_escape_string($conn, $voucher_id);
 
-    $query = "SELECT * FROM {$schema}.voucher WHERE voucher_id = '$voucher_id' AND company_id = '$company' LIMIT 1";
+    $companyFilter = !empty($company) ? "AND company_id = '" . mysqli_real_escape_string($conn, $company) . "'" : '';
+    $query = "SELECT * FROM {$schema}.voucher WHERE voucher_id = '$voucher_id' $companyFilter LIMIT 1";
 
     $result = mysqli_query($conn, $query);
 
@@ -271,73 +276,79 @@ function deleteVoucher($conn, $schema, $voucher_id, $company){
 use Firebase\JWT\JWT;
 use Firebase\JWT\Key;
 
-$headers = getallheaders();
-if (!isset($headers['Authorization'])) {
-    logApiError($conn, [
-        'error_level'   => 'error',
-        'http_status'   => 401,
-        'endpoint'      => '/menu/category.php',
-        'method'        => 'DELETE',
-        'error_message' => 'Authorization header not found',
-        'user_identifier' => $username ?? null,
-        'company_id'      => $decoded->company_id ?? null,
-    ]);
-    jsonResponse(401, 'Authorization header not found');
-}
-
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     header("Access-Control-Allow-Origin: *");
     header("Access-Control-Allow-Methods: POST, GET, OPTIONS, PUT, DELETE");
-    header("Access-Control-Allow-Headers: Origin, X-Requested-With, Content-Type, Accept");
+    header("Access-Control-Allow-Headers: Origin, X-Requested-With, Content-Type, Accept, Authorization");
     http_response_code(200);
     exit();
+}
+
+$method = $_SERVER['REQUEST_METHOD'];
+
+// ── Public: GET (no auth required) ───────────────────────────────────────────
+if ($method === 'GET') {
+    $conn       = DB::conn();
+    $schema     = DB_SCHEMA;
+    $company_id = $_GET['company_id'] ?? null;
+    $voucher_id = $_GET['voucher_id'] ?? null;
+
+    if ($voucher_id) {
+        getDetailVoucher($conn, $schema, $voucher_id, $company_id);
+    } else {
+        $page  = isset($_GET['page'])  ? (int)$_GET['page']  : 1;
+        $limit = isset($_GET['limit']) ? (int)$_GET['limit'] : 10;
+        getAllVoucher($conn, $_GET, $schema, $company_id, $page, $limit);
+    }
+    exit;
+}
+
+// ── Protected: POST, PUT, DELETE (auth required) ──────────────────────────────
+$headers = getallheaders();
+if (!isset($headers['Authorization'])) {
+    $conn = DB::conn();
+    logApiError($conn, [
+        'error_level'     => 'error',
+        'http_status'     => 401,
+        'endpoint'        => '/voucher/voucher.php',
+        'method'          => $method,
+        'error_message'   => 'Authorization header not found',
+        'user_identifier' => null,
+        'company_id'      => null,
+    ]);
+    jsonResponse(401, 'Authorization header not found');
 }
 
 try {
     $token = str_replace('Bearer ', '', $headers['Authorization']);
     $decoded = JWT::decode($token, new Key($_ENV['JWT_SECRET'], 'HS256'));
 
-    $conn = DB::conn();
-    $schema = DB_SCHEMA;
-
+    $conn           = DB::conn();
+    $schema         = DB_SCHEMA;
     $token_username = $decoded->username;
-    $token_role = $decoded->role;
-    $token_company = $decoded->company_id;
+    $token_role     = $decoded->role;
+    $token_company  = $decoded->company_id;
 
-    $method = $_SERVER['REQUEST_METHOD'];
-
-    switch($method){
-        case "POST":
+    switch ($method) {
+        case 'POST':
             $input = json_decode(file_get_contents('php://input'), true);
             createVoucher($conn, $schema, $input, $token_username, $token_company, $token_role);
             break;
-        case "GET":
-            $voucher_id = $_GET['voucher_id'] ?? null;
-
-            if ($voucher_id) {
-                getDetailVoucher($conn, $schema, $voucher_id, $token_company);
-            } else {
-                $page = isset($_GET['page']) ? (int)$_GET['page'] : 1;
-                $limit = isset($_GET['limit']) ? (int)$_GET['limit'] : 10;
-
-                getAllVoucher($conn, $_GET, $schema, $token_company, $page, $limit);
-            }
-            break;
-        case "PUT":
+        case 'PUT':
             $input = json_decode(file_get_contents('php://input'), true);
             updateVoucher($conn, $schema, $input, $token_company);
             break;
-        case "DELETE":
+        case 'DELETE':
             $voucher_id = $_GET['voucher_id'] ?? null;
             deleteVoucher($conn, $schema, $voucher_id, $token_company);
             break;
-        default: 
+        default:
             logApiError($conn, [
-                'error_level'   => 'error',
-                'http_status'   => 405,
-                'endpoint'      => '/voucher/voucher.php',
-                'method'        => $method,
-                'error_message' => 'Method Not Allowed',
+                'error_level'     => 'error',
+                'http_status'     => 405,
+                'endpoint'        => '/voucher/voucher.php',
+                'method'          => $method,
+                'error_message'   => 'Method Not Allowed',
                 'user_identifier' => $decoded->username ?? null,
                 'company_id'      => $decoded->company_id ?? null,
             ]);
@@ -345,19 +356,17 @@ try {
             break;
     }
 
-} catch (Exception $e){
+} catch (Exception $e) {
     $conn = DB::conn();
-
     logApiError($conn, [
-        'error_level'   => 'error',
-        'http_status'   => 500,
-        'endpoint'      => '/account/register.php',
-        'method'        => '',
-        'error_message' => $e->getMessage(),
+        'error_level'     => 'error',
+        'http_status'     => 500,
+        'endpoint'        => '/voucher/voucher.php',
+        'method'          => $method,
+        'error_message'   => $e->getMessage(),
         'user_identifier' => $decoded->username ?? null,
         'company_id'      => $decoded->company_id ?? null,
     ]);
-    
     jsonResponse(500, 'Internal Server Error', ['error' => $e->getMessage()]);
 }
 

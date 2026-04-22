@@ -11,7 +11,7 @@ class DB {
     }
 
     $host = '127.0.0.1'; 
-    // $host = '100.98.160.119'; 
+    //$host = '100.98.160.119'; 
     $port = 3306;
     $user = 'movira_dev';
     $pass = 'devjayaA9&';
@@ -21,7 +21,10 @@ class DB {
     $conn = new mysqli($host, $user, $pass, $defaultDb, $port);
 
     if ($conn->connect_error) {
-      die('Database connection failed: ' . $conn->connect_error);
+      http_response_code(500);
+      header('Content-Type: application/json');
+      echo json_encode(['status_code' => 500, 'message' => 'Database connection failed']);
+      exit;
     }
 
     $conn->set_charset('utf8mb4');

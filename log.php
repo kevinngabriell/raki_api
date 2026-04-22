@@ -7,9 +7,12 @@ require_once 'config.php';
 // require_once 'notification/notification.php';
 
 function logApiError(
-    mysqli $conn,
+    ?mysqli $conn,
     array $params
 ) {
+    if (!$conn instanceof mysqli) {
+        return false;
+    }
     /*
     Required keys:
     - http_status (int)
