@@ -10,7 +10,7 @@ function checkTransactionHistory($conn, $schema, $company_id, $username){
     $company_id_esc = mysqli_real_escape_string($conn, $company_id);
     $username_esc   = mysqli_real_escape_string($conn, $username);
 
-    $qHeader = "SELECT t.transaction_id, t.created_at, t.total_amount, t.total_item, t.payment_method, t.source_type, COALESCE(SUM(td.quantity), 0) AS total_cup FROM raki_dev.`transaction` t LEFT JOIN raki_dev.transaction_detail td ON td.transaction_id = t.transaction_id WHERE t.company_id = '$company_id_esc' AND t.created_by = '$username_esc' GROUP BY t.transaction_id, t.created_at, t.total_amount, t.total_item, t.payment_method, t.source_type ORDER BY t.created_at DESC, t.created_at DESC";
+    $qHeader = "SELECT t.transaction_id, t.created_at, t.total_amount, t.total_item, t.payment_method, t.source_type, COALESCE(SUM(td.quantity), 0) AS total_cup FROM {$schema}.`transaction` t LEFT JOIN raki_dev.transaction_detail td ON td.transaction_id = t.transaction_id WHERE t.company_id = '$company_id_esc' AND t.created_by = '$username_esc' GROUP BY t.transaction_id, t.created_at, t.total_amount, t.total_item, t.payment_method, t.source_type ORDER BY t.created_at DESC, t.created_at DESC";
 
     $rHeader = mysqli_query($conn, $qHeader);
     if (!$rHeader) {
@@ -59,7 +59,7 @@ function checkTransactionHistory($conn, $schema, $company_id, $username){
     $transaction_ids = array_keys($transactions);
     $inList = "'" . implode("','", array_map('mysqli_real_escape_string', array_fill(0, count($transaction_ids), $conn), $transaction_ids)) . "'";
 
-    $qPay = "SELECT tp.transaction_id, tp.payment_method, SUM(tp.amount) AS amount FROM raki_dev.transaction_payment tp WHERE tp.transaction_id IN ($inList) GROUP BY  tp.transaction_id, tp.payment_method";
+    $qPay = "SELECT tp.transaction_id, tp.payment_method, SUM(tp.amount) AS amount FROM {$schema}.transaction_payment tp WHERE tp.transaction_id IN ($inList) GROUP BY  tp.transaction_id, tp.payment_method";
 
     $rPay = mysqli_query($conn, $qPay);
     if ($rPay) {
