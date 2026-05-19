@@ -75,8 +75,9 @@ function getDashboardStatistic($conn, $schema, $company_id = null, $username){
         ];
     }
 
-    // 2) Revenue per menu (best seller by revenue)
-    $sqlMenuRevenue = "SELECT COALESCE(SUM(T.total_amount), 0) AS total_trx, M.menu_name FROM {$schema}.`transaction` T LEFT JOIN {$schema}.transaction_detail TD ON T.transaction_id = TD.transaction_id LEFT JOIN {$schema}.menu M ON TD.menu_id = M.menu_id $whereTrx GROUP BY M.menu_id ORDER BY total_trx DESC";
+    // 2) Revenue per menu (best seller by revenue) — use TD.subtotal, not T.total_amount,
+    // to avoid inflating the sum when a transaction has multiple menu items
+    $sqlMenuRevenue = "SELECT M.menu_name, COALESCE(SUM(TD.subtotal), 0) AS total_trx, COALESCE(SUM(TD.quantity), 0) AS total_qty FROM {$schema}.`transaction` T LEFT JOIN {$schema}.transaction_detail TD ON T.transaction_id = TD.transaction_id LEFT JOIN {$schema}.menu M ON TD.menu_id = M.menu_id $whereTrx GROUP BY M.menu_id, M.menu_name ORDER BY total_trx DESC";
     $menuRes = mysqli_query($conn, $sqlMenuRevenue);
 
     if (!$menuRes) {
@@ -97,6 +98,7 @@ function getDashboardStatistic($conn, $schema, $company_id = null, $username){
         $menuStats[] = [
             'menu_name' => $row['menu_name'] ?? '-',
             'total_trx' => (float) ($row['total_trx'] ?? 0),
+            'total_qty' => (int) ($row['total_qty'] ?? 0),
         ];
     }
 
