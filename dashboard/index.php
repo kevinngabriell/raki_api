@@ -6,6 +6,54 @@ require_once '../general.php';
 require_once '../config.php';
 require_once '../log.php';
 
+function getPaymentMethodSummary($conn, $schema, $company_id, $start_date, $end_date, $username){
+    if (!$company_id || !$start_date || !$end_date) {
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 400,
+            'endpoint'      => '/dashboard/index.php',
+            'method'        => 'GET',
+            'error_message' => 'company_id, start_date, and end_date parameters are required',
+            'user_identifier' => $username ?? null,
+            'company_id'      => $company_id ?? null,
+        ]);
+        jsonResponse(400, 'company_id, start_date, and end_date parameters are required');
+    }
+
+    $stmt = $conn->prepare("CALL {$schema}.GetPaymentMethodSummary(?, ?, ?)");
+
+    if (!$stmt) {
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 500,
+            'endpoint'      => '/dashboard/index.php',
+            'method'        => 'GET',
+            'error_message' => 'Failed to prepare statement for GetPaymentMethodSummary: ' . $conn->error,
+            'user_identifier' => $username ?? null,
+            'company_id'      => $company_id ?? null,
+        ]);
+        jsonResponse(500, 'Failed to prepare statement', ['error' => $conn->error]);
+    }
+
+    $stmt->bind_param('sss', $start_date, $end_date, $company_id);
+    $stmt->execute();
+
+    $result = $stmt->get_result();
+    $data = [];
+    while ($row = $result->fetch_assoc()) {
+        $data[] = [
+            'payment_method' => $row['payment_method'],
+            'total_amount'   => (float)$row['total_amount'],
+        ];
+    }
+    $stmt->close();
+
+    jsonResponse(200, 'Payment method summary fetched', [
+        'period' => ['start_date' => $start_date, 'end_date' => $end_date],
+        'summary' => $data,
+    ]);
+}
+
 function getDashboard($conn, $schema, $company_id, $username){
     //Check is company id parameter exists or not
     if (!$company_id) {
@@ -183,7 +231,14 @@ try {
     switch($method){
         case 'GET':
             $company_id = $_GET['company_id'] ?? null;
-            getDashboard($conn, $schema, $company_id, $token_username);
+            $action = $_GET['action'] ?? null;
+            if ($action === 'payment_method_summary') {
+                $start_date = $_GET['start_date'] ?? null;
+                $end_date   = $_GET['end_date'] ?? null;
+                getPaymentMethodSummary($conn, $schema, $company_id, $start_date, $end_date, $token_username);
+            } else {
+                getDashboard($conn, $schema, $company_id, $token_username);
+            }
             break;
         default:
             logApiError($conn, [
