@@ -5,6 +5,7 @@ require_once '../vendor/autoload.php';
 require_once '../general.php';
 require_once '../config.php';
 require_once '../notification/notification.php';
+require_once '../notification/email.php';
 require_once '../log.php';
 
 function createTransaction($conn, $schema, $input, $username){
@@ -370,10 +371,35 @@ function createTransaction($conn, $schema, $input, $username){
                 . "Detail lengkap dapat dilihat melalui *Dashboard Raki*.\n"
                 . "Terima kasih dan semangat selalu! ☕😊";
 
-            $result = sendWhatsAppText($chatId, $text);
+            $waResult = sendWhatsAppText($chatId, $text);
 
-            if (!$result['success']) {
-                echo('Gagal kirim WhatsApp: ' . $result['raw']);
+            if (!$waResult['success']) {
+                error_log('Gagal kirim WhatsApp: ' . ($waResult['raw'] ?? ''));
+
+                // Fallback: send email to business owner
+                $sqlOwnerEmail = "SELECT email FROM movira_core_dev.app_user WHERE company_id = ? AND role = 'business_owner' AND email IS NOT NULL AND email != '' LIMIT 1";
+                $stmtOwnerEmail = $conn->prepare($sqlOwnerEmail);
+                if ($stmtOwnerEmail) {
+                    $stmtOwnerEmail->bind_param('s', $company_id);
+                    if ($stmtOwnerEmail->execute()) {
+                        $ownerEmailResult = $stmtOwnerEmail->get_result();
+                        if ($ownerEmailRow = $ownerEmailResult->fetch_assoc()) {
+                            $ownerEmail   = $ownerEmailRow['email'];
+                            $emailSubject = 'Rekap Penjualan Raki Coffee - ' . date('d M Y');
+                            $emailBody    = "<p>Halo!</p>"
+                                . "<p>Berikut adalah rekap penjualan <strong>Raki Coffee</strong> hari ini oleh <strong>{$username}</strong>:</p>"
+                                . "<p><strong>Total Penjualan:</strong> Rp " . number_format($total_amount, 0, ',', '.') . "</p>"
+                                . "<p><strong>Jumlah Cup:</strong> {$total_cups} cup</p>"
+                                . "<p>Detail lengkap dapat dilihat melalui <strong>Dashboard Raki</strong>.</p>"
+                                . "<p>Terima kasih dan semangat selalu!</p>";
+                            $emailFallback = sendEmail($ownerEmail, $emailSubject, $emailBody);
+                            if (!$emailFallback['success']) {
+                                error_log('Gagal kirim email fallback: ' . ($emailFallback['error'] ?? ''));
+                            }
+                        }
+                    }
+                    $stmtOwnerEmail->close();
+                }
             }
         }
 
