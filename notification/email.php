@@ -67,8 +67,8 @@ if (!$isCli && !$isHttp) {
     return;
 }
 
-if ($isCli) {
-    return; // CLI: only sendEmail() is needed, skip HTTP handling
+if ($isCli || !$isHttp) {
+    return; // CLI or included: only sendEmail() is needed
 }
 
 // ── HTTP endpoint: POST /notification/email.php ───────────────────────────────
