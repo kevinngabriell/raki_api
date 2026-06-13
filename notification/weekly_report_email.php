@@ -267,6 +267,16 @@ if (!$isCli && !$isHttp) {
     return;
 }
 
+// ── Skip HTTP handling when included by another file ─────────────────────────
+$isCli  = php_sapi_name() === 'cli';
+$isHttp = !$isCli
+    && isset($_SERVER['SCRIPT_FILENAME'])
+    && basename($_SERVER['SCRIPT_FILENAME']) === basename(__FILE__);
+
+if ($isCli || (!$isCli && !$isHttp)) return;
+// ─────────────────────────────────────────────────────────────────────────────
+
+
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     header("Access-Control-Allow-Origin: *");
     header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
