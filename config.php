@@ -21,5 +21,12 @@ define('SMTP_PASS',       $_ENV['SMTP_PASS']       ?? '');
 define('SMTP_FROM_EMAIL', $_ENV['SMTP_FROM_EMAIL'] ?? '');
 define('SMTP_FROM_NAME',  $_ENV['SMTP_FROM_NAME']  ?? 'Raki');
 
+define('GV_BASE_URL',     $_ENV['GV_BASE_URL']     ?? '');
+define('GV_ID',           $_ENV['GV_ID']           ?? '');
+define('GV_PIN',          $_ENV['GV_PIN']           ?? '');
+define('GV_USERNAME',     $_ENV['GV_USERNAME']      ?? '');
+define('GV_PASSWORD',     $_ENV['GV_PASSWORD']      ?? '');
+define('GV_CALLBACK_URL', $_ENV['GV_CALLBACK_URL']  ?? '');
+
 $dotenv = Dotenv\Dotenv::createImmutable(__DIR__);
 $dotenv->load();
