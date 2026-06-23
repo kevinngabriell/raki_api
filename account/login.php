@@ -63,7 +63,7 @@ function login($conn, $input){
     }
 
     $issuedAt       = time();
-    $expirationTime = $issuedAt + 30 * 24 * 60 * 60; // 30 hari
+    $expirationTime = $issuedAt + 8 * 60 * 60; // 8 jam
 
     $company_id = $row['company_id'];
     $role = $row['app_role_id'];
