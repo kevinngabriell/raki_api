@@ -306,7 +306,7 @@ function validateOTP($conn, $input)
 
     // Generate JWT (sama seperti login)
     $issuedAt       = time();
-    $expirationTime = $issuedAt + 3 * 60 * 60; // 3 jam
+    $expirationTime = $issuedAt + 30 * 24 * 60 * 60; // 30 hari
 
     $payload = [
         'iat'        => $issuedAt,
