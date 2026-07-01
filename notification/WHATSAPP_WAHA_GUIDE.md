@@ -35,25 +35,27 @@ WAHA session status can be checked at:
 
 ## 3. Configuration
 
-Define WAHA connection settings as constants (or env vars) so they can be
-reused across every file that sends WhatsApp messages. In this project
-they live in `general.php`:
+All projects under **Movira** share the same WAHA instance, session, and
+number/API key — so this block is meant to be copy-pasted as-is into the
+other project's `general.php` (or equivalent config file), no placeholders
+to fill in:
 
 ```php
 // general.php
-define('WAHA_BASE_URL', 'https://your-waha-instance.example.com');
+define('WAHA_BASE_URL', 'https://waha-e8n85xppf1xs.cgk-lab.sumopod.my.id');
 define('WAHA_SESSION',  'session_movira_default');
-define('WAHA_API_KEY',  'your-waha-api-key'); // leave empty string if not used
+define('WAHA_API_KEY',  'AZGSGUOZIoF4qSvHC6roINaxEkMXr1qO');
 ```
 
-> When cloning to a new project, prefer sourcing these from `.env` (this
-> repo already has a `loadEnv()`/`vlucas/phpdotenv` pattern in `config.php`)
-> instead of hardcoding, e.g.:
-> ```php
-> define('WAHA_BASE_URL', $_ENV['WAHA_BASE_URL'] ?? '');
-> define('WAHA_SESSION',  $_ENV['WAHA_SESSION']  ?? '');
-> define('WAHA_API_KEY',  $_ENV['WAHA_API_KEY']  ?? '');
-> ```
+Since it's the same underlying WhatsApp number/session across projects,
+there's nothing project-specific to change here — just paste it in and
+`require_once` the file wherever `sendWhatsAppText()` is needed.
+
+> Note: because these values are shared across multiple repos, if the WAHA
+> instance URL, session name, or API key ever changes (e.g. key rotation,
+> server migration), it has to be updated in **every** project that copied
+> this block — there's no central source of truth. Keep that in mind if the
+> number of projects reusing this grows.
 
 ## 4. The reusable helper function
 
@@ -228,9 +230,9 @@ Useful for verifying the WAHA server/session itself before debugging your
 PHP code:
 
 ```bash
-curl -X POST "https://your-waha-instance.example.com/api/sendText" \
+curl -X POST "https://waha-e8n85xppf1xs.cgk-lab.sumopod.my.id/api/sendText" \
   -H "Content-Type: application/json" \
-  -H "X-Api-Key: your-waha-api-key" \
+  -H "X-Api-Key: AZGSGUOZIoF4qSvHC6roINaxEkMXr1qO" \
   -d '{
         "chatId": "6281234567890@c.us",
         "text": "Test message from WAHA",
@@ -240,8 +242,8 @@ curl -X POST "https://your-waha-instance.example.com/api/sendText" \
 
 Check session is authenticated:
 ```bash
-curl "https://your-waha-instance.example.com/api/sessions/session_movira_default" \
-  -H "X-Api-Key: your-waha-api-key"
+curl "https://waha-e8n85xppf1xs.cgk-lab.sumopod.my.id/api/sessions/session_movira_default" \
+  -H "X-Api-Key: AZGSGUOZIoF4qSvHC6roINaxEkMXr1qO"
 ```
 
 ## 8. Cloning this into a different project / stack
@@ -250,7 +252,8 @@ The only things that are PHP/MySQL-specific are: pulling `pic_contact` from
 the DB, and the `$conn`/`logApiError` calls. Everything else is a plain HTTP
 POST and can be ported to any language almost verbatim:
 
-1. Store `WAHA_BASE_URL`, `WAHA_SESSION`, `WAHA_API_KEY` as env vars/secrets.
+1. Copy the same `WAHA_BASE_URL` / `WAHA_SESSION` / `WAHA_API_KEY` values
+   from section 3 (all Movira projects share the same instance/number).
 2. Implement one function/method: `sendWhatsAppText(chatId, text, session)`
    that POSTs JSON `{chatId, text, session}` to `{WAHA_BASE_URL}/api/sendText`
    with header `X-Api-Key` (if set) and a short timeout.
