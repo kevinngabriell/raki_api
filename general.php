@@ -217,8 +217,8 @@ function create_thumbnail(string $srcPath, string $dstPath, int $targetW = 600):
 }
 
 // Sesuaikan sama URL WAHA dashboard kamu
-define('WAHA_BASE_URL', 'https://waha-e8n85xppf1xs.cgk-lab.sumopod.my.id');
-define('WAHA_SESSION', 'session_movira_default');
+define('WAHA_BASE_URL', 'https://waha.getmovira.com');
+define('WAHA_SESSION', 'movira_prod');
 
 // Kalau WAHA kamu pakai API key / basic auth, isi di sini:
 define('WAHA_API_KEY', 'AZGSGUOZIoF4qSvHC6roINaxEkMXr1qO'); // kalau nggak pakai, biarkan kosong
