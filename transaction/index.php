@@ -346,61 +346,67 @@ function createTransaction($conn, $schema, $input, $username){
         // Commit
         $conn->commit();
 
-        // Fetch PIC contact from app_company
-        $sqlPhone = "SELECT pic_contact FROM movira_core_dev.app_company WHERE company_id = ?";
-        $stmtPhone = $conn->prepare($sqlPhone);
+        // Notifications (WhatsApp + email fallback) must never turn an already-committed
+        // transaction into a reported failure, so any error here is swallowed and logged.
+        try {
+            // Fetch PIC contact from app_company
+            $sqlPhone = "SELECT pic_contact FROM movira_core_dev.app_company WHERE company_id = ?";
+            $stmtPhone = $conn->prepare($sqlPhone);
 
-        if ($stmtPhone) {
-            $stmtPhone->bind_param('s', $company_id);
-            if ($stmtPhone->execute()) {
-                $resultPhone = $stmtPhone->get_result();
-                if ($rowPhone = $resultPhone->fetch_assoc()) {
-                    $ownerPhone = preg_replace('/[^0-9]/', '', $rowPhone['pic_contact']); // sanitize
+            if ($stmtPhone) {
+                $stmtPhone->bind_param('s', $company_id);
+                if ($stmtPhone->execute()) {
+                    $resultPhone = $stmtPhone->get_result();
+                    if ($rowPhone = $resultPhone->fetch_assoc()) {
+                        $ownerPhone = preg_replace('/[^0-9]/', '', $rowPhone['pic_contact']); // sanitize
+                    }
                 }
             }
-        }
 
-        if (!empty($ownerPhone)) {
-            $chatId = $ownerPhone . '@c.us';
+            if (!empty($ownerPhone)) {
+                $chatId = $ownerPhone . '@c.us';
 
-            // WhatsApp-friendly message
-            $text = "Halo! 👋\n\n"
-                . "Berikut adalah rekap penjualan *Raki Coffee* hari ini oleh *{$username}*:\n\n"
-                . "*Total Penjualan:* Rp " . number_format($total_amount, 0, ',', '.') . "\n"
-                . "*Jumlah Cup:* " . $total_cups . " cup\n\n"
-                . "Detail lengkap dapat dilihat melalui *Dashboard Raki*.\n"
-                . "Terima kasih dan semangat selalu! ☕😊";
+                // WhatsApp-friendly message
+                $text = "Halo! 👋\n\n"
+                    . "Berikut adalah rekap penjualan *Raki Coffee* hari ini oleh *{$username}*:\n\n"
+                    . "*Total Penjualan:* Rp " . number_format($total_amount, 0, ',', '.') . "\n"
+                    . "*Jumlah Cup:* " . $total_cups . " cup\n\n"
+                    . "Detail lengkap dapat dilihat melalui *Dashboard Raki*.\n"
+                    . "Terima kasih dan semangat selalu! ☕😊";
 
-            $waResult = sendWhatsAppText($chatId, $text);
+                $waResult = sendWhatsAppText($chatId, $text);
 
-            if (!$waResult['success']) {
-                error_log('Gagal kirim WhatsApp: ' . ($waResult['raw'] ?? ''));
+                if (!$waResult['success']) {
+                    error_log('Gagal kirim WhatsApp: ' . ($waResult['raw'] ?? ''));
 
-                // Fallback: send email to business owner
-                $sqlOwnerEmail = "SELECT email FROM movira_core_dev.app_user WHERE company_id = ? AND role = 'business_owner' AND email IS NOT NULL AND email != '' LIMIT 1";
-                $stmtOwnerEmail = $conn->prepare($sqlOwnerEmail);
-                if ($stmtOwnerEmail) {
-                    $stmtOwnerEmail->bind_param('s', $company_id);
-                    if ($stmtOwnerEmail->execute()) {
-                        $ownerEmailResult = $stmtOwnerEmail->get_result();
-                        if ($ownerEmailRow = $ownerEmailResult->fetch_assoc()) {
-                            $ownerEmail   = $ownerEmailRow['email'];
-                            $emailSubject = 'Rekap Penjualan Raki Coffee - ' . date('d M Y');
-                            $emailBody    = "<p>Halo!</p>"
-                                . "<p>Berikut adalah rekap penjualan <strong>Raki Coffee</strong> hari ini oleh <strong>{$username}</strong>:</p>"
-                                . "<p><strong>Total Penjualan:</strong> Rp " . number_format($total_amount, 0, ',', '.') . "</p>"
-                                . "<p><strong>Jumlah Cup:</strong> {$total_cups} cup</p>"
-                                . "<p>Detail lengkap dapat dilihat melalui <strong>Dashboard Raki</strong>.</p>"
-                                . "<p>Terima kasih dan semangat selalu!</p>";
-                            $emailFallback = sendEmail($ownerEmail, $emailSubject, $emailBody);
-                            if (!$emailFallback['success']) {
-                                error_log('Gagal kirim email fallback: ' . ($emailFallback['error'] ?? ''));
+                    // Fallback: send email to business owner
+                    $sqlOwnerEmail = "SELECT u.email FROM movira_core_dev.app_user u JOIN movira_core_dev.app_role r ON r.app_role_id = u.app_role_id WHERE u.company_id = ? AND r.role_name = 'Owner' AND u.email IS NOT NULL AND u.email != '' LIMIT 1";
+                    $stmtOwnerEmail = $conn->prepare($sqlOwnerEmail);
+                    if ($stmtOwnerEmail) {
+                        $stmtOwnerEmail->bind_param('s', $company_id);
+                        if ($stmtOwnerEmail->execute()) {
+                            $ownerEmailResult = $stmtOwnerEmail->get_result();
+                            if ($ownerEmailRow = $ownerEmailResult->fetch_assoc()) {
+                                $ownerEmail   = $ownerEmailRow['email'];
+                                $emailSubject = 'Rekap Penjualan Raki Coffee - ' . date('d M Y');
+                                $emailBody    = "<p>Halo!</p>"
+                                    . "<p>Berikut adalah rekap penjualan <strong>Raki Coffee</strong> hari ini oleh <strong>{$username}</strong>:</p>"
+                                    . "<p><strong>Total Penjualan:</strong> Rp " . number_format($total_amount, 0, ',', '.') . "</p>"
+                                    . "<p><strong>Jumlah Cup:</strong> {$total_cups} cup</p>"
+                                    . "<p>Detail lengkap dapat dilihat melalui <strong>Dashboard Raki</strong>.</p>"
+                                    . "<p>Terima kasih dan semangat selalu!</p>";
+                                $emailFallback = sendEmail($ownerEmail, $emailSubject, $emailBody);
+                                if (!$emailFallback['success']) {
+                                    error_log('Gagal kirim email fallback: ' . ($emailFallback['error'] ?? ''));
+                                }
                             }
                         }
+                        $stmtOwnerEmail->close();
                     }
-                    $stmtOwnerEmail->close();
                 }
             }
+        } catch (Throwable $notifyError) {
+            error_log('Notifikasi transaksi gagal (transaksi tetap tersimpan): ' . $notifyError->getMessage());
         }
 
         jsonResponse(201, 'Transaction created', [
