@@ -143,7 +143,7 @@ function createTransaction($conn, $schema, $input, $username, $role = null){
         jsonResponse(400, 'Invalid payload. Require payments array with at least one item.');
     }
 
-    $allowed_methods = ['cash', 'qris']; // kalau nanti ada transfer, qris_midtrans tinggal tambahin
+    $allowed_methods = ['cash', 'qris', 'edc_flazz']; // kalau nanti ada transfer, qris_midtrans tinggal tambahin
     $prepared_payments = [];
     $total_paid = 0;
 
@@ -204,11 +204,11 @@ function createTransaction($conn, $schema, $input, $username, $role = null){
             'http_status'   => 400,
             'endpoint'      => '/transaction/index.php',
             'method'        => 'POST',
-            'error_message' => "Total payment (cash + qris) must equal total_amount. total_paid=$total_paid, total_amount=$total_amount",
+            'error_message' => "Total payment (sum of all payment_method entries) must equal total_amount. total_paid=$total_paid, total_amount=$total_amount",
             'user_identifier' => $username ?? null,
             'company_id'      => $decoded->company_id ?? null,
         ]);
-        jsonResponse(400, "Total payment (cash + qris) must equal total_amount. total_paid=$total_paid, total_amount=$total_amount");
+        jsonResponse(400, "Total payment (sum of all payment_method entries) must equal total_amount. total_paid=$total_paid, total_amount=$total_amount");
     }
 
     // Start transaction
