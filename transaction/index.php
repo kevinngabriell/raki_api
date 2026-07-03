@@ -8,7 +8,7 @@ require_once '../notification/notification.php';
 require_once '../notification/email.php';
 require_once '../log.php';
 
-function createTransaction($conn, $schema, $input, $username){
+function createTransaction($conn, $schema, $input, $username, $role = null){
     // Basic validation
     if (!$input || !isset($input['company_id']) || !isset($input['items']) || !is_array($input['items']) || count($input['items']) === 0) {
         logApiError($conn, [
@@ -143,7 +143,7 @@ function createTransaction($conn, $schema, $input, $username){
         jsonResponse(400, 'Invalid payload. Require payments array with at least one item.');
     }
 
-    $allowed_methods = ['cash', 'qris']; // kalau nanti ada transfer, qris_midtrans tinggal tambahin
+    $allowed_methods = ['cash', 'qris', 'edc_flazz']; // kalau nanti ada transfer, qris_midtrans tinggal tambahin
     $prepared_payments = [];
     $total_paid = 0;
 
@@ -204,11 +204,11 @@ function createTransaction($conn, $schema, $input, $username){
             'http_status'   => 400,
             'endpoint'      => '/transaction/index.php',
             'method'        => 'POST',
-            'error_message' => "Total payment (cash + qris) must equal total_amount. total_paid=$total_paid, total_amount=$total_amount",
+            'error_message' => "Total payment (sum of all payment_method entries) must equal total_amount. total_paid=$total_paid, total_amount=$total_amount",
             'user_identifier' => $username ?? null,
             'company_id'      => $decoded->company_id ?? null,
         ]);
-        jsonResponse(400, "Total payment (cash + qris) must equal total_amount. total_paid=$total_paid, total_amount=$total_amount");
+        jsonResponse(400, "Total payment (sum of all payment_method entries) must equal total_amount. total_paid=$total_paid, total_amount=$total_amount");
     }
 
     // Start transaction
@@ -346,62 +346,80 @@ function createTransaction($conn, $schema, $input, $username){
         // Commit
         $conn->commit();
 
+        // Outlet-created transactions are recapped once a day (18:00 WIB) instead of
+        // notifying on every transaction — see notification/outlet_daily_recap.php.
+        $creatorRoleName = null;
+        if (!empty($role)) {
+            $stmtRole = $conn->prepare("SELECT role_name FROM movira_core_dev.app_role WHERE app_role_id = ?");
+            if ($stmtRole) {
+                $stmtRole->bind_param('s', $role);
+                if ($stmtRole->execute()) {
+                    $roleRow = $stmtRole->get_result()->fetch_assoc();
+                    $creatorRoleName = $roleRow['role_name'] ?? null;
+                }
+                $stmtRole->close();
+            }
+            
+        }
+
         // Notifications (WhatsApp + email fallback) must never turn an already-committed
         // transaction into a reported failure, so any error here is swallowed and logged.
         try {
-            // Fetch PIC contact from app_company
-            $sqlPhone = "SELECT pic_contact FROM movira_core_dev.app_company WHERE company_id = ?";
-            $stmtPhone = $conn->prepare($sqlPhone);
+            if ($creatorRoleName !== 'Outlet') {
+                // Fetch PIC contact from app_company
+                $sqlPhone = "SELECT pic_contact FROM movira_core_dev.app_company WHERE company_id = ?";
+                $stmtPhone = $conn->prepare($sqlPhone);
 
-            if ($stmtPhone) {
-                $stmtPhone->bind_param('s', $company_id);
-                if ($stmtPhone->execute()) {
-                    $resultPhone = $stmtPhone->get_result();
-                    if ($rowPhone = $resultPhone->fetch_assoc()) {
-                        $ownerPhone = preg_replace('/[^0-9]/', '', $rowPhone['pic_contact']); // sanitize
+                if ($stmtPhone) {
+                    $stmtPhone->bind_param('s', $company_id);
+                    if ($stmtPhone->execute()) {
+                        $resultPhone = $stmtPhone->get_result();
+                        if ($rowPhone = $resultPhone->fetch_assoc()) {
+                            $ownerPhone = preg_replace('/[^0-9]/', '', $rowPhone['pic_contact']); // sanitize
+                        }
                     }
                 }
-            }
 
-            if (!empty($ownerPhone)) {
-                $chatId = $ownerPhone . '@c.us';
+                if (!empty($ownerPhone)) {
+                    $chatId = $ownerPhone . '@c.us';
 
-                // WhatsApp-friendly message
-                $text = "Halo! 👋\n\n"
-                    . "Berikut adalah rekap penjualan *Raki Coffee* hari ini oleh *{$username}*:\n\n"
-                    . "*Total Penjualan:* Rp " . number_format($total_amount, 0, ',', '.') . "\n"
-                    . "*Jumlah Cup:* " . $total_cups . " cup\n\n"
-                    . "Detail lengkap dapat dilihat melalui *Dashboard Raki*.\n"
-                    . "Terima kasih dan semangat selalu! ☕😊";
+                    // WhatsApp-friendly message
+                    $text = "Halo! 👋\n\n"
+                        . "Berikut adalah rekap penjualan *Raki Coffee* hari ini oleh *{$username}*:\n\n"
+                        . "*Total Penjualan:* Rp " . number_format($total_amount, 0, ',', '.') . "\n"
+                        . "*Jumlah Cup:* " . $total_cups . " cup\n\n"
+                        . "Detail lengkap dapat dilihat melalui *Dashboard Raki*.\n"
+                        . "Terima kasih dan semangat selalu! ☕😊";
 
-                $waResult = sendWhatsAppText($chatId, $text);
+                    $waResult = sendWhatsAppText($chatId, $text);
 
-                if (!$waResult['success']) {
-                    error_log('Gagal kirim WhatsApp: ' . ($waResult['raw'] ?? ''));
+                    if (!$waResult['success']) {
+                        error_log('Gagal kirim WhatsApp: ' . ($waResult['raw'] ?? ''));
 
-                    // Fallback: send email to business owner
-                    $sqlOwnerEmail = "SELECT u.email FROM movira_core_dev.app_user u JOIN movira_core_dev.app_role r ON r.app_role_id = u.app_role_id WHERE u.company_id = ? AND r.role_name = 'Owner' AND u.email IS NOT NULL AND u.email != '' LIMIT 1";
-                    $stmtOwnerEmail = $conn->prepare($sqlOwnerEmail);
-                    if ($stmtOwnerEmail) {
-                        $stmtOwnerEmail->bind_param('s', $company_id);
-                        if ($stmtOwnerEmail->execute()) {
-                            $ownerEmailResult = $stmtOwnerEmail->get_result();
-                            if ($ownerEmailRow = $ownerEmailResult->fetch_assoc()) {
-                                $ownerEmail   = $ownerEmailRow['email'];
-                                $emailSubject = 'Rekap Penjualan Raki Coffee - ' . date('d M Y');
-                                $emailBody    = "<p>Halo!</p>"
-                                    . "<p>Berikut adalah rekap penjualan <strong>Raki Coffee</strong> hari ini oleh <strong>{$username}</strong>:</p>"
-                                    . "<p><strong>Total Penjualan:</strong> Rp " . number_format($total_amount, 0, ',', '.') . "</p>"
-                                    . "<p><strong>Jumlah Cup:</strong> {$total_cups} cup</p>"
-                                    . "<p>Detail lengkap dapat dilihat melalui <strong>Dashboard Raki</strong>.</p>"
-                                    . "<p>Terima kasih dan semangat selalu!</p>";
-                                $emailFallback = sendEmail($ownerEmail, $emailSubject, $emailBody);
-                                if (!$emailFallback['success']) {
-                                    error_log('Gagal kirim email fallback: ' . ($emailFallback['error'] ?? ''));
+                        // Fallback: send email to business owner
+                        $sqlOwnerEmail = "SELECT u.email FROM movira_core_dev.app_user u JOIN movira_core_dev.app_role r ON r.app_role_id = u.app_role_id WHERE u.company_id = ? AND r.role_name = 'Owner' AND u.email IS NOT NULL AND u.email != '' LIMIT 1";
+                        $stmtOwnerEmail = $conn->prepare($sqlOwnerEmail);
+                        if ($stmtOwnerEmail) {
+                            $stmtOwnerEmail->bind_param('s', $company_id);
+                            if ($stmtOwnerEmail->execute()) {
+                                $ownerEmailResult = $stmtOwnerEmail->get_result();
+                                if ($ownerEmailRow = $ownerEmailResult->fetch_assoc()) {
+                                    $ownerEmail   = $ownerEmailRow['email'];
+                                    $emailSubject = 'Rekap Penjualan Raki Coffee - ' . date('d M Y');
+                                    $emailBody    = "<p>Halo!</p>"
+                                        . "<p>Berikut adalah rekap penjualan <strong>Raki Coffee</strong> hari ini oleh <strong>{$username}</strong>:</p>"
+                                        . "<p><strong>Total Penjualan:</strong> Rp " . number_format($total_amount, 0, ',', '.') . "</p>"
+                                        . "<p><strong>Jumlah Cup:</strong> {$total_cups} cup</p>"
+                                        . "<p>Detail lengkap dapat dilihat melalui <strong>Dashboard Raki</strong>.</p>"
+                                        . "<p>Terima kasih dan semangat selalu!</p>";
+                                    $emailFallback = sendEmail($ownerEmail, $emailSubject, $emailBody);
+                                    if (!$emailFallback['success']) {
+                                        error_log('Gagal kirim email fallback: ' . ($emailFallback['error'] ?? ''));
+                                    }
                                 }
                             }
+                            $stmtOwnerEmail->close();
                         }
-                        $stmtOwnerEmail->close();
                     }
                 }
             }
@@ -821,7 +839,7 @@ try {
             if (json_last_error() !== JSON_ERROR_NONE) {
                 jsonResponse(400, 'Invalid JSON body');
             }
-            createTransaction($conn, $schema, $input, $token_username);
+            createTransaction($conn, $schema, $input, $token_username, $decoded->role ?? null);
             break;
         case 'GET':
             $company_id = $_GET['company_id'] ?? null;
