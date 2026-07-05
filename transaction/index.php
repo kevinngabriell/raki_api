@@ -418,7 +418,7 @@ function createTransaction($conn, $schema, $input, $username, $role = null){
         // Record voucher usage (supports one_time / max_total_usage enforcement + reporting)
         if ($voucher_id) {
             $usage_id = 'vchu' . uniqid();
-            $sqlUsage = "INSERT INTO {$schema}.voucher_usage (usage_id, voucher_id, transaction_id, company_id, discount_amount, used_at, created_at) VALUES (?, ?, ?, ?, ?, NOW(), NOW())";
+            $sqlUsage = "INSERT INTO {$schema}.voucher_usage (usage_id, voucher_id, transaction_id, user_id, discount_amount, used_at) VALUES (?, ?, ?, ?, ?, NOW())";
             $stmtUsage = $conn->prepare($sqlUsage);
 
             if (!$stmtUsage) {
@@ -434,7 +434,7 @@ function createTransaction($conn, $schema, $input, $username, $role = null){
                 throw new Exception('Prepare voucher usage failed: ' . $conn->error);
             }
 
-            $stmtUsage->bind_param('ssssi', $usage_id, $voucher_id, $transaction_id, $company_id, $discount_amount);
+            $stmtUsage->bind_param('ssssi', $usage_id, $voucher_id, $transaction_id, $username, $discount_amount);
             if (!$stmtUsage->execute()) {
                 logApiError($conn, [
                     'error_level'   => 'error',
