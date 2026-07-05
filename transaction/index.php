@@ -8,6 +8,75 @@ require_once '../notification/notification.php';
 require_once '../notification/email.php';
 require_once '../log.php';
 
+// Re-validates a voucher server-side and returns the voucher_id + discount to
+// actually apply — never trusts the client-supplied discount_amount.
+function validateVoucherForTransaction($conn, $schema, $company_id, $subtotal, $input, $username){
+    $voucher_id = $input['voucher_id'] ?? null;
+    $voucher_code = $input['voucher_code'] ?? null;
+
+    if ($voucher_id) {
+        $stmt = $conn->prepare("SELECT * FROM {$schema}.voucher WHERE voucher_id = ? LIMIT 1");
+        $stmt->bind_param('s', $voucher_id);
+    } else {
+        $stmt = $conn->prepare("SELECT * FROM {$schema}.voucher WHERE voucher_code = ? AND company_id = ? LIMIT 1");
+        $stmt->bind_param('ss', $voucher_code, $company_id);
+    }
+    $stmt->execute();
+    $voucher = $stmt->get_result()->fetch_assoc();
+
+    if (!$voucher) {
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 404,
+            'endpoint'      => '/transaction/index.php',
+            'method'        => 'POST',
+            'error_message' => 'Voucher not found',
+            'user_identifier' => $username ?? null,
+            'company_id'      => $company_id ?? null,
+        ]);
+        jsonResponse(404, 'Voucher tidak ditemukan');
+    }
+
+    $now = getCurrentDateTimeJakarta();
+
+    if ((int)$voucher['is_active'] !== 1 || $now < $voucher['start_date'] || $now > $voucher['end_date']) {
+        jsonResponse(400, 'Voucher sudah tidak berlaku');
+    }
+
+    if ((string)$voucher['company_id'] !== (string)$company_id) {
+        jsonResponse(400, 'Voucher tidak berlaku untuk outlet ini');
+    }
+
+    if ($subtotal < (float)$voucher['min_transaction']) {
+        jsonResponse(400, 'Transaksi belum memenuhi minimum untuk voucher ini');
+    }
+
+    $countStmt = $conn->prepare("SELECT COUNT(*) as cnt FROM {$schema}.voucher_usage WHERE voucher_id = ?");
+    $countStmt->bind_param('s', $voucher['voucher_id']);
+    $countStmt->execute();
+    $usageCount = (int)($countStmt->get_result()->fetch_assoc()['cnt'] ?? 0);
+
+    if ($voucher['usage_type'] === 'one_time' && $usageCount > 0) {
+        jsonResponse(400, 'Voucher sudah mencapai batas pemakaian');
+    }
+
+    if ($voucher['usage_type'] === 'multi_use' && $voucher['max_total_usage'] !== null && $usageCount >= (int)$voucher['max_total_usage']) {
+        jsonResponse(400, 'Voucher sudah mencapai batas pemakaian');
+    }
+
+    if ($voucher['discount_type'] === 'nominal') {
+        $discount = (float)$voucher['discount_value'];
+    } else {
+        $discount = $subtotal * (float)$voucher['discount_value'] / 100;
+        if ($voucher['max_discount'] !== null) {
+            $discount = min($discount, (float)$voucher['max_discount']);
+        }
+    }
+    $discount = (int)round(min($discount, $subtotal));
+
+    return ['voucher_id' => $voucher['voucher_id'], 'discount_amount' => $discount];
+}
+
 function createTransaction($conn, $schema, $input, $username, $role = null){
     // Basic validation
     if (!$input || !isset($input['company_id']) || !isset($input['items']) || !is_array($input['items']) || count($input['items']) === 0) {
@@ -127,6 +196,19 @@ function createTransaction($conn, $schema, $input, $username, $role = null){
         $total_items += $pi['quantity'];
     }
 
+    // --- Voucher (optional) — recompute discount server-side, never trust the client's ---
+    $subtotal = $total_amount;
+    $voucher_id = null;
+    $discount_amount = 0;
+
+    if (!empty($input['voucher_id']) || !empty($input['voucher_code'])) {
+        $voucherResult = validateVoucherForTransaction($conn, $schema, $company_id, $subtotal, $input, $username);
+        $voucher_id = $voucherResult['voucher_id'];
+        $discount_amount = $voucherResult['discount_amount'];
+    }
+
+    $total_amount = $subtotal - $discount_amount;
+
         // --- Payment breakdown (cash / qris) ---
     $payments = $input['payments'] ?? null;
 
@@ -219,7 +301,7 @@ function createTransaction($conn, $schema, $input, $username, $role = null){
         $transaction_id = 'trx' . uniqid();
 
         // Insert into `transaction` (header)
-        $sqlHeader = "INSERT INTO {$schema}.transaction (transaction_id, company_id, transaction_date, total_amount, created_at, created_by, updated_at, updated_by, total_item) VALUES (?, ?, ?, ?, NOW(), ?, NOW(), ?, ?)";
+        $sqlHeader = "INSERT INTO {$schema}.transaction (transaction_id, company_id, transaction_date, total_amount, voucher_id, discount_amount, created_at, created_by, updated_at, updated_by, total_item) VALUES (?, ?, ?, ?, ?, ?, NOW(), ?, NOW(), ?, ?)";
         $stmtHeader = $conn->prepare($sqlHeader);
 
         if (!$stmtHeader) {
@@ -235,7 +317,7 @@ function createTransaction($conn, $schema, $input, $username, $role = null){
             throw new Exception('Prepare header failed: ' . $conn->error);
         }
 
-        $stmtHeader->bind_param('sssissi', $transaction_id, $company_id, $transaction_date, $total_amount, $username, $username, $total_items);
+        $stmtHeader->bind_param('sssisissi', $transaction_id, $company_id, $transaction_date, $total_amount, $voucher_id, $discount_amount, $username, $username, $total_items);
         
         if (!$stmtHeader->execute()) {
             logApiError($conn, [
@@ -330,6 +412,40 @@ function createTransaction($conn, $schema, $input, $username, $role = null){
                     'company_id'      => $decoded->company_id ?? null,
                 ]);
                 throw new Exception('Execute payment failed: ' . $stmtPayment->error);
+            }
+        }
+
+        // Record voucher usage (supports one_time / max_total_usage enforcement + reporting)
+        if ($voucher_id) {
+            $usage_id = 'vchu' . uniqid();
+            $sqlUsage = "INSERT INTO {$schema}.voucher_usage (usage_id, voucher_id, transaction_id, company_id, discount_amount, used_at, created_at) VALUES (?, ?, ?, ?, ?, NOW(), NOW())";
+            $stmtUsage = $conn->prepare($sqlUsage);
+
+            if (!$stmtUsage) {
+                logApiError($conn, [
+                    'error_level'   => 'error',
+                    'http_status'   => 500,
+                    'endpoint'      => '/transaction/index.php',
+                    'method'        => 'POST',
+                    'error_message' => 'Prepare voucher usage failed: ' . $conn->error,
+                    'user_identifier' => $username ?? null,
+                    'company_id'      => $decoded->company_id ?? null,
+                ]);
+                throw new Exception('Prepare voucher usage failed: ' . $conn->error);
+            }
+
+            $stmtUsage->bind_param('ssssi', $usage_id, $voucher_id, $transaction_id, $company_id, $discount_amount);
+            if (!$stmtUsage->execute()) {
+                logApiError($conn, [
+                    'error_level'   => 'error',
+                    'http_status'   => 500,
+                    'endpoint'      => '/transaction/index.php',
+                    'method'        => 'POST',
+                    'error_message' => 'Execute voucher usage failed: ' . $stmtUsage->error,
+                    'user_identifier' => $username ?? null,
+                    'company_id'      => $decoded->company_id ?? null,
+                ]);
+                throw new Exception('Execute voucher usage failed: ' . $stmtUsage->error);
             }
         }
 
@@ -432,6 +548,8 @@ function createTransaction($conn, $schema, $input, $username, $role = null){
             'company_id' => $company_id,
             'transaction_date' => $transaction_date,
             'total_amount' => $total_amount,
+            'voucher_id' => $voucher_id,
+            'discount_amount' => $discount_amount,
             'items' => $response_items,
         ]);
     } catch (Exception $e) {
