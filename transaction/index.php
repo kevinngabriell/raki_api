@@ -99,6 +99,11 @@ function createTransaction($conn, $schema, $input, $username, $role = null, $tok
         $subtotal = $quantity * $unit_price;
         $total_amount += $subtotal;
 
+        // Optional per-item modifiers (Outlet role sugar/ice customization). Only meaningful
+        // for individually-sold menu items, not packages — see docs/pos-sugar-ice-level-outlet.md.
+        $sugar_level = isset($it['sugar_level']) && $it['sugar_level'] !== '' ? (string)$it['sugar_level'] : null;
+        $ice_level   = isset($it['ice_level']) && $it['ice_level'] !== '' ? (string)$it['ice_level'] : null;
+
         if ($has_package) {
             // Expand package → individual menus
             $pkg_id  = mysqli_real_escape_string($conn, $it['package_id']);
@@ -125,6 +130,8 @@ function createTransaction($conn, $schema, $input, $username, $role = null, $tok
                     'quantity'   => $quantity,
                     'subtotal'   => $i === 0 ? $per_menu + $remainder : $per_menu,
                     'package_id' => $it['package_id'],
+                    'sugar_level' => null,
+                    'ice_level'   => null,
                 ];
             }
         } else {
@@ -133,6 +140,8 @@ function createTransaction($conn, $schema, $input, $username, $role = null, $tok
                 'quantity'   => $quantity,
                 'subtotal'   => $subtotal,
                 'package_id' => null,
+                'sugar_level' => $sugar_level,
+                'ice_level'   => $ice_level,
             ];
         }
     }
@@ -267,7 +276,7 @@ function createTransaction($conn, $schema, $input, $username, $role = null, $tok
         }
 
         // Insert details
-        $sqlDetail = "INSERT INTO {$schema}.transaction_detail (detail_id, transaction_id, menu_id, quantity, subtotal, created_at) VALUES (?, ?, ?, ?, ?, NOW())";
+        $sqlDetail = "INSERT INTO {$schema}.transaction_detail (detail_id, transaction_id, menu_id, quantity, subtotal, sugar_level, ice_level, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, NOW())";
         $stmtDetail = $conn->prepare($sqlDetail);
 
         if (!$stmtDetail) {
@@ -289,7 +298,9 @@ function createTransaction($conn, $schema, $input, $username, $role = null, $tok
             $menu_id = $pi['menu_id'];
             $qty = $pi['quantity'];
             $subtotal = $pi['subtotal'];
-            $stmtDetail->bind_param('sssii', $detail_id, $transaction_id, $menu_id, $qty, $subtotal);
+            $sugar_level = $pi['sugar_level'];
+            $ice_level = $pi['ice_level'];
+            $stmtDetail->bind_param('sssiiss', $detail_id, $transaction_id, $menu_id, $qty, $subtotal, $sugar_level, $ice_level);
 
             if (!$stmtDetail->execute()) {
                 logApiError($conn, [
@@ -309,6 +320,8 @@ function createTransaction($conn, $schema, $input, $username, $role = null, $tok
                 'menu_id' => $menu_id,
                 'quantity' => $qty,
                 'subtotal' => $subtotal,
+                'sugar_level' => $sugar_level,
+                'ice_level' => $ice_level,
             ];
         }
 
@@ -470,7 +483,7 @@ function getDetailTransaction($conn, $schema, $trx_id, $username){
         jsonResponse(400, 'trx_id is required');
     }
 
-    $sql = "SELECT t.transaction_id, t.company_id, t.transaction_date, t.total_amount, t.created_at, t.created_by, t.updated_at, t.updated_by, td.detail_id, td.menu_id, m.menu_name, td.quantity, td.subtotal, t.total_item, tp.payment_method, tp.amount FROM {$schema}.transaction t JOIN {$schema}.transaction_detail td ON td.transaction_id = t.transaction_id LEFT JOIN {$schema}.menu m ON m.menu_id = td.menu_id LEFT JOIN {$schema}.transaction_payment tp ON tp.transaction_id = t.transaction_id WHERE t.transaction_id = ?";
+    $sql = "SELECT t.transaction_id, t.company_id, t.transaction_date, t.total_amount, t.created_at, t.created_by, t.updated_at, t.updated_by, td.detail_id, td.menu_id, m.menu_name, td.quantity, td.subtotal, td.sugar_level, td.ice_level, t.total_item, tp.payment_method, tp.amount FROM {$schema}.transaction t JOIN {$schema}.transaction_detail td ON td.transaction_id = t.transaction_id LEFT JOIN {$schema}.menu m ON m.menu_id = td.menu_id LEFT JOIN {$schema}.transaction_payment tp ON tp.transaction_id = t.transaction_id WHERE t.transaction_id = ?";
 
     $stmt = $conn->prepare($sql);
     if (!$stmt) {
@@ -546,6 +559,8 @@ function getDetailTransaction($conn, $schema, $trx_id, $username){
                 'menu_name' => $row['menu_name'],
                 'quantity' => (int)$row['quantity'],
                 'subtotal' => (float)$row['subtotal'],
+                'sugar_level' => $row['sugar_level'],
+                'ice_level' => $row['ice_level'],
             ];
             $seenDetailIds[$row['detail_id']] = true;
         }
