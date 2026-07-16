@@ -27,9 +27,12 @@ function getNextQueueNumber($conn, $schema, $company_id, $username){
     // row doesn't exist yet the first time a company asks on a new date, so the counter
     // starts at 1 again automatically. CURDATE() is evaluated on the DB server so the
     // reset boundary follows the DB's timezone, not the app server's.
+    // LAST_INSERT_ID(1) on the insert branch is required because this table has no
+    // AUTO_INCREMENT column - without it, LAST_INSERT_ID() would stay 0 on a fresh
+    // row and only get set correctly on the ON DUPLICATE KEY UPDATE branch.
     DB::query(
         "INSERT INTO {$schema}.pos_queue_counter (company_id, queue_date, counter)
-         VALUES (?, CURDATE(), 1)
+         VALUES (?, CURDATE(), LAST_INSERT_ID(1))
          ON DUPLICATE KEY UPDATE counter = LAST_INSERT_ID(counter + 1)",
         [$company_id]
     );
