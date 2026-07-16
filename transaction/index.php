@@ -8,22 +8,38 @@ require_once '../notification/notification.php';
 require_once '../notification/email.php';
 require_once '../log.php';
 
-function createTransaction($conn, $schema, $input, $username, $role = null){
+function createTransaction($conn, $schema, $input, $username, $role = null, $token_company_id = null){
     // Basic validation
-    if (!$input || !isset($input['company_id']) || !isset($input['items']) || !is_array($input['items']) || count($input['items']) === 0) {
+    if (!$input || !isset($input['items']) || !is_array($input['items']) || count($input['items']) === 0) {
         logApiError($conn, [
             'error_level'   => 'error',
             'http_status'   => 400,
             'endpoint'      => '/transaction/index.php',
             'method'        => 'POST',
-            'error_message' => 'Invalid payload. Require company_id and non-empty items array.',
+            'error_message' => 'Invalid payload. Require non-empty items array.',
             'user_identifier' => $username ?? null,
-            'company_id'      => $decoded->company_id ?? null,
+            'company_id'      => $token_company_id ?? null,
         ]);
-        jsonResponse(400, 'Invalid payload. Require company_id and non-empty items array.');
+        jsonResponse(400, 'Invalid payload. Require non-empty items array.');
     }
 
-    $company_id = $input['company_id'];
+    // Prefer client-supplied company_id, but fall back to the company_id mapped to
+    // this authenticated user in the JWT (mirrors session/start.php's resolution order).
+    $company_id = $input['company_id'] ?? $token_company_id;
+
+    if (!$company_id) {
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 400,
+            'endpoint'      => '/transaction/index.php',
+            'method'        => 'POST',
+            'error_message' => 'company_id is required (not found in payload or token).',
+            'user_identifier' => $username ?? null,
+            'company_id'      => $token_company_id ?? null,
+        ]);
+        jsonResponse(400, 'company_id is required (not found in payload or token).');
+    }
+
     $total_items = $input['total_items'];
     $transaction_date = isset($input['transaction_date']) && !empty($input['transaction_date']) ? $input['transaction_date'] : date('Y-m-d H:i:s');
 
@@ -839,7 +855,7 @@ try {
             if (json_last_error() !== JSON_ERROR_NONE) {
                 jsonResponse(400, 'Invalid JSON body');
             }
-            createTransaction($conn, $schema, $input, $token_username, $decoded->role ?? null);
+            createTransaction($conn, $schema, $input, $token_username, $decoded->role ?? null, $decoded->company_id ?? null);
             break;
         case 'GET':
             $company_id = $_GET['company_id'] ?? null;
