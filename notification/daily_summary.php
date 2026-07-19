@@ -192,12 +192,15 @@ foreach ($targets as $target) {
     $sqlDaily = "
         SELECT
             t.created_by,
-            SUM(DISTINCT t.total_amount)      AS total_amount
+            SUM(t.total_amount)      AS total_amount
         FROM {$schema}.transaction t
-        JOIN {$schema}.transaction_detail td ON td.transaction_id = t.transaction_id
         WHERE t.company_id = ?
-          AND td.menu_id <> 'menu69112f46968b3'
           AND DATE(t.transaction_date) = ?
+          AND EXISTS (
+              SELECT 1 FROM {$schema}.transaction_detail td
+              WHERE td.transaction_id = t.transaction_id
+                AND td.menu_id <> 'menu69112f46968b3'
+          )
         GROUP BY t.created_by
         ORDER BY t.created_by
     ";
