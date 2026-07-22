@@ -695,13 +695,13 @@ function getAllTransaction($conn, $schema, $company_id = null, $username = null,
     $baseSelect = "SELECT t.transaction_id, t.company_id, t.transaction_date, t.total_amount, t.created_at, t.created_by, t.updated_at, t.updated_by, t.total_item, ac.company_name FROM {$schema}.transaction t LEFT JOIN movira_core_dev.app_company ac ON ac.company_id = t.company_id";
 
     if ($hasCompanyFilter && $hasUsernameFilter) {
-        $sql = $baseSelect . " WHERE t.company_id = ? AND t.created_by = ? ORDER BY t.transaction_date DESC LIMIT ?, ?";
+        $sql = $baseSelect . " WHERE t.company_id = ? AND t.created_by = ? ORDER BY t.transaction_date DESC, t.created_at DESC LIMIT ?, ?";
     } else if ($hasCompanyFilter) {
-        $sql = $baseSelect . " WHERE t.company_id = ? ORDER BY t.transaction_date DESC LIMIT ?, ?";
+        $sql = $baseSelect . " WHERE t.company_id = ? ORDER BY t.transaction_date DESC, t.created_at DESC LIMIT ?, ?";
     } else if ($hasUsernameFilter) {
-        $sql = $baseSelect . " WHERE t.created_by = ? ORDER BY t.transaction_date DESC LIMIT ?, ?";
+        $sql = $baseSelect . " WHERE t.created_by = ? ORDER BY t.transaction_date DESC, t.created_at DESC LIMIT ?, ?";
     } else {
-        $sql = $baseSelect . " WHERE t.company_id <> ? ORDER BY t.transaction_date DESC LIMIT ?, ?";
+        $sql = $baseSelect . " WHERE t.company_id <> ? ORDER BY t.transaction_date DESC, t.created_at DESC LIMIT ?, ?";
     }
 
     $stmt = $conn->prepare($sql);
