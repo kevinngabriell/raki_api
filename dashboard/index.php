@@ -54,6 +54,97 @@ function getPaymentMethodSummary($conn, $schema, $company_id, $start_date, $end_
     ]);
 }
 
+function getCompanyOutletSnapshot($conn, $schema, $company_id){
+    $start_month = date('Y-m-01');
+    $next_month  = date('Y-m-01', strtotime('+1 month', strtotime($start_month)));
+
+    $stmtName = $conn->prepare("SELECT company_name FROM movira_core_dev.app_company WHERE company_id = ? LIMIT 1");
+    $stmtName->bind_param('s', $company_id);
+    $stmtName->execute();
+    $company_name = $stmtName->get_result()->fetch_assoc()['company_name'] ?? null;
+    $stmtName->close();
+
+    $stmtRev = $conn->prepare("SELECT COALESCE(SUM(total_amount),0) AS revenue FROM {$schema}.transaction WHERE company_id = ? AND transaction_date >= ? AND transaction_date < ?");
+    $stmtRev->bind_param('sss', $company_id, $start_month, $next_month);
+    $stmtRev->execute();
+    $revenue = (float)($stmtRev->get_result()->fetch_assoc()['revenue'] ?? 0);
+    $stmtRev->close();
+
+    $stmtCups = $conn->prepare("SELECT COALESCE(SUM(td.quantity),0) AS cups FROM {$schema}.transaction t JOIN {$schema}.transaction_detail td ON td.transaction_id = t.transaction_id WHERE t.company_id = ? AND t.transaction_date >= ? AND t.transaction_date < ?");
+    $stmtCups->bind_param('sss', $company_id, $start_month, $next_month);
+    $stmtCups->execute();
+    $cups = (int)($stmtCups->get_result()->fetch_assoc()['cups'] ?? 0);
+    $stmtCups->close();
+
+    $stmtDrivers = $conn->prepare("SELECT COUNT(*) AS c FROM movira_core_dev.app_user WHERE company_id = ? AND app_role_id = 'app_role6902bc0cbb991'");
+    $stmtDrivers->bind_param('s', $company_id);
+    $stmtDrivers->execute();
+    $driver_count = (int)($stmtDrivers->get_result()->fetch_assoc()['c'] ?? 0);
+    $stmtDrivers->close();
+
+    $stmtActive = $conn->prepare("SELECT COUNT(DISTINCT user_id) AS c FROM {$schema}.work_session WHERE company_id = ? AND status = 'active'");
+    $stmtActive->bind_param('s', $company_id);
+    $stmtActive->execute();
+    $active_drivers_today = (int)($stmtActive->get_result()->fetch_assoc()['c'] ?? 0);
+    $stmtActive->close();
+
+    return [
+        'company_id' => $company_id,
+        'company_name' => $company_name,
+        'revenue_this_month' => $revenue,
+        'cups_this_month' => $cups,
+        'driver_count' => $driver_count,
+        'active_drivers_today' => $active_drivers_today,
+    ];
+}
+
+function getAllOutletsSummary($conn, $schema, $token_username, $token_role, $token_company_id, $username){
+    if (!$token_company_id) {
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 400,
+            'endpoint'      => '/dashboard/index.php',
+            'method'        => 'GET',
+            'error_message' => 'company_id not found in token',
+            'user_identifier' => $username ?? null,
+            'company_id'      => $token_company_id ?? null,
+        ]);
+        jsonResponse(400, 'company_id not found in token');
+    }
+
+    // Multi-outlet owners are separate app_user rows (one per outlet) that share
+    // the same email address. Resolve every company_id tied to this owner's email
+    // so the dashboard can fetch all outlets in a single call instead of N+1.
+    $stmtSelf = $conn->prepare("SELECT email FROM movira_core_dev.app_user WHERE username = ? LIMIT 1");
+    $stmtSelf->bind_param('s', $token_username);
+    $stmtSelf->execute();
+    $email = trim($stmtSelf->get_result()->fetch_assoc()['email'] ?? '');
+    $stmtSelf->close();
+
+    $company_ids = [];
+    if ($email !== '') {
+        $stmtCompanies = $conn->prepare("SELECT DISTINCT company_id FROM movira_core_dev.app_user WHERE email = ? AND app_role_id = ? AND company_id IS NOT NULL AND company_id <> ''");
+        $stmtCompanies->bind_param('ss', $email, $token_role);
+        $stmtCompanies->execute();
+        $res = $stmtCompanies->get_result();
+        while ($row = $res->fetch_assoc()) {
+            $company_ids[] = $row['company_id'];
+        }
+        $stmtCompanies->close();
+    }
+
+    if (empty($company_ids)) {
+        $company_ids = [$token_company_id];
+    }
+
+    $summaries = [];
+    foreach ($company_ids as $company_id) {
+        $summaries[] = getCompanyOutletSnapshot($conn, $schema, $company_id);
+    }
+
+    jsonResponse(200, 'All outlets summary fetched', $summaries);
+}
+
 function getDashboard($conn, $schema, $company_id, $username){
     //Check is company id parameter exists or not
     if (!$company_id) {
@@ -117,6 +208,46 @@ function getDashboard($conn, $schema, $company_id, $username){
     // 3. Average daily revenue (calendar days in the month)
     $days_in_month = (int)date('t', strtotime($start_month));
     $avg_calendar = $days_in_month > 0 ? ($rev / $days_in_month) : 0;
+
+    // 3b. Today-scoped figures (same-day momentum, separate from the monthly rollup)
+    $today = date('Y-m-d');
+    $tomorrow = date('Y-m-d', strtotime('+1 day', strtotime($today)));
+
+    $sqlToday = "SELECT COALESCE(SUM(t.total_amount),0) AS revenue_today, COUNT(*) AS transactions_today FROM {$schema}.transaction t WHERE t.company_id = ? AND t.transaction_date >= ? AND t.transaction_date < ?";
+    $stmtToday = $conn->prepare($sqlToday);
+
+    if(!$stmtToday){
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 500,
+            'endpoint'      => '/dashboard/index.php',
+            'method'        => 'GET',
+            'error_message' => 'Failed to prepare statement for today summary : ' . $conn->error,
+            'user_identifier' => $username ?? null,
+            'company_id'      => $company_id ?? null,
+        ]);
+        jsonResponse(500, 'Failed to prepare statement', ['error'=>$conn->error]);
+    }
+
+    $stmtToday->bind_param('sss', $company_id, $today, $tomorrow);
+    $stmtToday->execute();
+    $todayRow = $stmtToday->get_result()->fetch_assoc();
+    $revenue_today = (float)($todayRow['revenue_today'] ?? 0);
+    $transactions_today = (int)($todayRow['transactions_today'] ?? 0);
+    $stmtToday->close();
+
+    $sqlCupsToday = "SELECT COALESCE(SUM(td.quantity),0) AS cups_today FROM {$schema}.transaction t JOIN {$schema}.transaction_detail td ON td.transaction_id = t.transaction_id WHERE t.company_id = ? AND t.transaction_date >= ? AND t.transaction_date < ?";
+    $stmtCupsToday = $conn->prepare($sqlCupsToday);
+    $stmtCupsToday->bind_param('sss', $company_id, $today, $tomorrow);
+    $stmtCupsToday->execute();
+    $cups_today = (int)($stmtCupsToday->get_result()->fetch_assoc()['cups_today'] ?? 0);
+    $stmtCupsToday->close();
+
+    $stmtActiveDrivers = $conn->prepare("SELECT COUNT(DISTINCT user_id) AS c FROM {$schema}.work_session WHERE company_id = ? AND status = 'active'");
+    $stmtActiveDrivers->bind_param('s', $company_id);
+    $stmtActiveDrivers->execute();
+    $active_drivers_today = (int)($stmtActiveDrivers->get_result()->fetch_assoc()['c'] ?? 0);
+    $stmtActiveDrivers->close();
 
     // 4. Top 3 menus by cups this month
     $sql4 = "SELECT m.menu_id, m.menu_name, COALESCE(SUM(td.quantity),0) AS total_cups, COALESCE(SUM(td.subtotal),0) AS total_revenue FROM {$schema}.transaction t JOIN {$schema}.transaction_detail td ON td.transaction_id = t.transaction_id LEFT JOIN {$schema}.menu m ON m.menu_id = td.menu_id WHERE t.company_id = ? AND t.transaction_date >= ? AND t.transaction_date < ? GROUP BY m.menu_id, m.menu_name ORDER BY total_cups DESC, total_revenue DESC LIMIT 3";
@@ -185,6 +316,10 @@ function getDashboard($conn, $schema, $company_id, $username){
         'revenue_this_month' => (float)$rev,
         'cups_this_month' => (int)$cups,
         'avg_daily_revenue' => (float)$avg_calendar,
+        'revenue_today' => $revenue_today,
+        'cups_today' => $cups_today,
+        'transactions_today' => $transactions_today,
+        'active_drivers_today' => $active_drivers_today,
         'top_menus' => $top,
         'menu_performance' => $per_menu,
     ]);
@@ -236,6 +371,8 @@ try {
                 $start_date = $_GET['start_date'] ?? null;
                 $end_date   = $_GET['end_date'] ?? null;
                 getPaymentMethodSummary($conn, $schema, $company_id, $start_date, $end_date, $token_username);
+            } else if ($action === 'all_outlets_summary') {
+                getAllOutletsSummary($conn, $schema, $token_username, $decoded->role, $decoded->company_id ?? null, $token_username);
             } else {
                 getDashboard($conn, $schema, $company_id, $token_username);
             }
