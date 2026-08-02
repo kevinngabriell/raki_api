@@ -136,8 +136,9 @@ function endSession($conn, $schema, $input, $token_username, $decoded){
     $total_qris = 0;
 
     while ($row = mysqli_fetch_assoc($rPay)) {
-        if ($row['payment_method'] === 'cash') $total_cash = (int)$row['total'];
-        if ($row['payment_method'] === 'qris') $total_qris = (int)$row['total'];
+        // EDC/Flazz is settled like cash for drawer reconciliation purposes.
+        if ($row['payment_method'] === 'cash' || $row['payment_method'] === 'edc_flazz') $total_cash += (int)$row['total'];
+        if ($row['payment_method'] === 'qris') $total_qris += (int)$row['total'];
     }
 
     $total_sales = $total_cash + $total_qris;
