@@ -70,7 +70,7 @@ function checkActiveSession($conn, $schema, $company_id, $username)
     $sid = mysqli_real_escape_string($conn, $session['session_id']);
 
     // --- Payment summary for this session ---
-    $qp = "SELECT SUM(CASE WHEN tp.payment_method = 'cash' THEN t.total_amount ELSE 0 END) AS cash_amount, SUM(CASE WHEN tp.payment_method = 'qris' THEN t.total_amount ELSE 0 END) AS qris_amount, SUM(CASE WHEN tp.payment_method = 'transfer' THEN t.total_amount ELSE 0 END) AS transfer_amount, SUM(CASE WHEN tp.payment_method = 'qris_midtrans' THEN t.total_amount ELSE 0 END) AS qris_midtrans_amount, COUNT(t.transaction_id) AS total_transactions, SUM(t.total_amount) AS grand_total_amount FROM {$schema}.transaction_payment tp LEFT JOIN {$schema}.`transaction` t  ON tp.transaction_id = t.transaction_id WHERE t.session_id = '$sid';";
+    $qp = "SELECT SUM(CASE WHEN tp.payment_method IN ('cash', 'edc_flazz') THEN t.total_amount ELSE 0 END) AS cash_amount, SUM(CASE WHEN tp.payment_method = 'qris' THEN t.total_amount ELSE 0 END) AS qris_amount, SUM(CASE WHEN tp.payment_method = 'transfer' THEN t.total_amount ELSE 0 END) AS transfer_amount, SUM(CASE WHEN tp.payment_method = 'qris_midtrans' THEN t.total_amount ELSE 0 END) AS qris_midtrans_amount, COUNT(t.transaction_id) AS total_transactions, SUM(t.total_amount) AS grand_total_amount FROM {$schema}.transaction_payment tp LEFT JOIN {$schema}.`transaction` t  ON tp.transaction_id = t.transaction_id WHERE t.session_id = '$sid';";
 
     $rp = mysqli_query($conn, $qp);
     $paymentSummary = [

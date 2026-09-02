@@ -22,21 +22,60 @@ use Firebase\JWT\JWT;
 use Firebase\JWT\Key;
 
 /**
- * Get all drivers' bonus achievement for the current week.
+ * Split [start, end] into Mon-Sat bonus weeks whose Saturday (payout day) falls
+ * within that range. Weeks are continuous and never reset on the 1st of a month -
+ * e.g. the week of 31 Aug - 5 Sep belongs to September, since its Saturday is 5 Sep.
+ */
+function getBonusWeekPeriods(string $start, string $end): array {
+    $periods  = [];
+    $rangeEnd = new DateTime($end);
+
+    $cursor = new DateTime($start);
+    $dow    = (int)$cursor->format('N'); // 1=Mon ... 7=Sun
+    $cursor->modify('-' . ($dow - 1) . ' days'); // back up to Monday on/before $start
+
+    while (true) {
+        $weekStart = clone $cursor;
+        $weekEnd   = (clone $cursor)->modify('+5 days'); // Saturday
+        if ($weekEnd > $rangeEnd) {
+            break;
+        }
+        if ($weekEnd->format('Y-m-d') >= $start) {
+            $periods[] = [
+                'start' => $weekStart->format('Y-m-d'),
+                'end'   => $weekEnd->format('Y-m-d'),
+            ];
+        }
+        $cursor->modify('+7 days');
+    }
+
+    return $periods;
+}
+
+/**
+ * Get all drivers' bonus achievement for a date range.
+ *
+ * Bonus weeks run Mon-Sat (paid every Saturday). A range spanning several weeks
+ * (e.g. a full month) is NOT a single tier lookup against the range's item total -
+ * each Mon-Sat week awards its own tier independently, and those are summed.
+ * This also means the current-week default case (start=Monday, end=Saturday of
+ * the same week) still behaves exactly as before: exactly one week is produced.
  *
  * - Drivers are fetched from movira_core_dev.app_user by company_id + role
- * - For each driver, sum total_item from transaction this week
- * - Find the highest bonus tier they have achieved (qty <= total_item)
- * - Find the next bonus tier they are working toward (qty > total_item)
+ * - Bonus tiers are fetched from bonus_schema, scoped to this company
+ * - For each Mon-Sat week in range, each driver's tier is the highest qty <= that week's total_item
+ * - current_bonus / next_target reflect the most recent week in the requested range
  */
 function getAllDriverBonus($conn, $schema, $company_id, $start = null, $end = null) {
     $start ??= date('Y-m-d', strtotime('monday this week'));
-    $end   ??= date('Y-m-d', strtotime('sunday this week'));
+    $end   ??= date('Y-m-d', strtotime('saturday this week'));
+
+    $company_id_esc = mysqli_real_escape_string($conn, $company_id);
 
     // 1. Get all drivers for this company
     $driverQuery = "SELECT username, first_name
                     FROM movira_core_dev.app_user
-                    WHERE company_id = '$company_id'
+                    WHERE company_id = '$company_id_esc'
                     AND app_role_id = 'app_role6902bc0cbb991'
                     ORDER BY username ASC";
 
@@ -48,84 +87,118 @@ function getAllDriverBonus($conn, $schema, $company_id, $start = null, $end = nu
 
     $drivers = mysqli_fetch_all($driverResult, MYSQLI_ASSOC);
 
-    // 2. Get all active weekly bonus schemas once (reuse for every driver)
+    // 2. Get all active weekly bonus schemas for this company once (reused for every week)
     $schemaResult = mysqli_query($conn,
         "SELECT schema_id, schema_name, qty, bonus_nominal
          FROM {$schema}.bonus_schema
-         WHERE frequency = 'weekly' AND is_active = 1
+         WHERE company_id = '$company_id_esc' AND frequency = 'weekly' AND is_active = 1
          ORDER BY qty ASC"
     );
     $bonus_schemas = $schemaResult ? mysqli_fetch_all($schemaResult, MYSQLI_ASSOC) : [];
 
-    // 3. For each driver, compute their bonus status
+    // 3. Initialize per-driver accumulators
     $result = [];
-
     foreach ($drivers as $driver) {
-        $username = mysqli_real_escape_string($conn, $driver['username']);
-
-        // Sum total_item for current week
-        $trxResult = mysqli_query($conn,
-            "SELECT COALESCE(SUM(total_item), 0) as total_item
-             FROM {$schema}.transaction
-             WHERE created_by = '$username'
-             AND transaction_date BETWEEN '$start' AND '$end'"
-        );
-        $trxRow      = mysqli_fetch_assoc($trxResult);
-        $total_item  = (int)$trxRow['total_item'];
-
-        // Find current achieved bonus (highest tier where qty <= total_item)
-        $current_bonus = null;
-        $total_bonus_nominal = 0;
-        foreach ($bonus_schemas as $s) {
-            if ((int)$s['qty'] <= $total_item) {
-                $current_bonus = [
-                    'schema_id'     => $s['schema_id'],
-                    'schema_name'   => $s['schema_name'],
-                    'achieved_qty'  => (int)$s['qty'],
-                    'bonus_nominal' => (int)$s['bonus_nominal'],
-                ];
-                $total_bonus_nominal = (int)$s['bonus_nominal'];
-            }
-        }
-
-        // Find next bonus target (lowest tier where qty > total_item)
-        $next_target = null;
-        foreach ($bonus_schemas as $s) {
-            if ((int)$s['qty'] > $total_item) {
-                $remaining  = (int)$s['qty'] - $total_item;
-                $percentage = round(($total_item / (int)$s['qty']) * 100);
-                $next_target = [
-                    'schema_id'           => $s['schema_id'],
-                    'schema_name'         => $s['schema_name'],
-                    'target_qty'          => (int)$s['qty'],
-                    'bonus_nominal'       => (int)$s['bonus_nominal'],
-                    'remaining_item'      => $remaining,
-                    'progress_percentage' => min(100, $percentage),
-                ];
-                break;
-            }
-        }
-
-        $result[] = [
+        $result[$driver['username']] = [
             'username'            => $driver['username'],
-            'first_name'           => $driver['first_name'],
-            'current_total_item'  => $total_item,
-            'total_bonus_nominal' => $total_bonus_nominal,
-            'current_bonus'       => $current_bonus,
-            'next_target'         => $next_target,
+            'first_name'          => $driver['first_name'],
+            'current_total_item'  => 0,
+            'total_bonus_nominal' => 0,
+            'current_bonus'       => null,
+            'next_target'         => null,
+            'weekly_breakdown'    => [],
         ];
     }
 
-    // Sort by total_item descending (top performer first)
-    usort($result, fn($a, $b) => $b['current_total_item'] - $a['current_total_item']);
+    // 4. Walk each Mon-Sat week in the requested range and award that week's own tier
+    $weekPeriods = getBonusWeekPeriods($start, $end);
+
+    foreach ($weekPeriods as $i => $week) {
+        $weekStart = $week['start'];
+        $weekEnd   = $week['end'];
+
+        $trxResult = mysqli_query($conn,
+            "SELECT created_by, COALESCE(SUM(total_item), 0) as total_item
+             FROM {$schema}.transaction
+             WHERE company_id = '$company_id_esc'
+             AND DATE(transaction_date) BETWEEN '$weekStart' AND '$weekEnd'
+             GROUP BY created_by"
+        );
+        $weekItemsByDriver = [];
+        while ($row = mysqli_fetch_assoc($trxResult)) {
+            $weekItemsByDriver[$row['created_by']] = (int)$row['total_item'];
+        }
+
+        $isLastWeek = ($i === count($weekPeriods) - 1);
+
+        foreach ($drivers as $driver) {
+            $username        = $driver['username'];
+            $week_total_item = $weekItemsByDriver[$username] ?? 0;
+
+            // Highest tier achieved THIS week (qty <= week_total_item)
+            $week_bonus = null;
+            foreach ($bonus_schemas as $s) {
+                if ((int)$s['qty'] <= $week_total_item) {
+                    $week_bonus = [
+                        'schema_id'     => $s['schema_id'],
+                        'schema_name'   => $s['schema_name'],
+                        'achieved_qty'  => (int)$s['qty'],
+                        'bonus_nominal' => (int)$s['bonus_nominal'],
+                    ];
+                }
+            }
+
+            $result[$username]['current_total_item'] += $week_total_item;
+            $result[$username]['total_bonus_nominal'] += $week_bonus['bonus_nominal'] ?? 0;
+            $result[$username]['weekly_breakdown'][]   = [
+                'week_start'    => $weekStart,
+                'week_end'      => $weekEnd,
+                'total_item'    => $week_total_item,
+                'bonus_nominal' => $week_bonus['bonus_nominal'] ?? 0,
+                'schema_name'   => $week_bonus['schema_name'] ?? null,
+            ];
+
+            if ($isLastWeek) {
+                $result[$username]['current_bonus'] = $week_bonus;
+
+                $next_target = null;
+                foreach ($bonus_schemas as $s) {
+                    if ((int)$s['qty'] > $week_total_item) {
+                        $remaining  = (int)$s['qty'] - $week_total_item;
+                        $percentage = round(($week_total_item / (int)$s['qty']) * 100);
+                        $next_target = [
+                            'schema_id'           => $s['schema_id'],
+                            'schema_name'         => $s['schema_name'],
+                            'target_qty'          => (int)$s['qty'],
+                            'bonus_nominal'       => (int)$s['bonus_nominal'],
+                            'remaining_item'      => $remaining,
+                            'progress_percentage' => min(100, $percentage),
+                        ];
+                        break;
+                    }
+                }
+                $result[$username]['next_target'] = $next_target;
+            }
+        }
+    }
+
+    $result = array_values($result);
+
+    // Sort by total bonus earned in the period descending (top performer first)
+    usort($result, fn($a, $b) => $b['total_bonus_nominal'] - $a['total_bonus_nominal']);
+
+    $driversWithBonus = count(array_filter($result, fn($d) => $d['total_bonus_nominal'] > 0));
+    $totalBonusPaid   = array_sum(array_column($result, 'total_bonus_nominal'));
 
     jsonResponse(200, 'Driver bonus summary', [
         'period' => [
             'start' => $start,
             'end'   => $end,
         ],
-        'total_drivers' => count($result),
-        'drivers'       => $result,
+        'total_drivers'      => count($result),
+        'drivers_with_bonus' => $driversWithBonus,
+        'total_bonus_paid'   => $totalBonusPaid,
+        'drivers'            => $result,
     ]);
 }
 

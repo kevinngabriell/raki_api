@@ -11,15 +11,15 @@ use Firebase\JWT\Key;
 
 function getDriverNextBonus($conn, $schemaDB, $username, $company){
 
-    // tentukan minggu ini
+    // tentukan minggu ini (Senin-Sabtu, bonus dibayar tiap Sabtu)
     $start = date('Y-m-d', strtotime('monday this week'));
-    $end   = date('Y-m-d', strtotime('sunday this week'));
+    $end   = date('Y-m-d', strtotime('saturday this week'));
 
     // 1️⃣ total item minggu ini
     $trxQuery = "SELECT COALESCE(SUM(total_item),0) as total_item
         FROM {$schemaDB}.transaction
         WHERE created_by = '$username'
-        AND transaction_date BETWEEN '$start' AND '$end'
+        AND DATE(transaction_date) BETWEEN '$start' AND '$end'
     ";
 
     $trxResult = mysqli_query($conn, $trxQuery);

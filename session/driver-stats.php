@@ -48,15 +48,15 @@ function getDriverStats(mysqli $conn, string $schema, string $company_id, string
     $company_id_esc = mysqli_real_escape_string($conn, $company_id);
     $username_esc   = mysqli_real_escape_string($conn, $username);
 
-    // ── Week boundaries (Mon–Sun, Jakarta time) ───────────────────────────────
+    // ── Week boundaries (Mon–Sat, Jakarta time, bonus paid every Saturday) ────
     $tz    = new DateTimeZone('Asia/Jakarta');
     $today = new DateTime('now', $tz);
     $dow   = (int)$today->format('N'); // 1=Mon … 7=Sun
     $mon   = (clone $today)->modify('-' . ($dow - 1) . ' days');
-    $sun   = (clone $mon)->modify('+6 days');
+    $sat   = (clone $mon)->modify('+5 days');
 
     $weekStart = $mon->format('Y-m-d');
-    $weekEnd   = $sun->format('Y-m-d');
+    $weekEnd   = $sat->format('Y-m-d');
     $todayDate = $today->format('Y-m-d');
 
     // ── 1. Cup sold this week ─────────────────────────────────────────────────
@@ -65,28 +65,28 @@ function getDriverStats(mysqli $conn, string $schema, string $company_id, string
          FROM {$schema}.transaction
          WHERE company_id  = '$company_id_esc'
            AND created_by  = '$username_esc'
-           AND transaction_date BETWEEN '$weekStart' AND '$weekEnd'"
+           AND DATE(transaction_date) BETWEEN '$weekStart' AND '$weekEnd'"
     );
     $cup_sold = (int)(mysqli_fetch_assoc($rCup)['cup_sold'] ?? 0);
 
     // ── 2. Weekly daily breakdown ─────────────────────────────────────────────
-    $dayNames = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+    $dayNames = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
     $rDaily = mysqli_query($conn,
-        "SELECT transaction_date, COALESCE(SUM(total_item), 0) AS cups
+        "SELECT DATE(transaction_date) AS trx_day, COALESCE(SUM(total_item), 0) AS cups
          FROM {$schema}.transaction
          WHERE company_id  = '$company_id_esc'
            AND created_by  = '$username_esc'
-           AND transaction_date BETWEEN '$weekStart' AND '$weekEnd'
-         GROUP BY transaction_date
-         ORDER BY transaction_date ASC"
+           AND DATE(transaction_date) BETWEEN '$weekStart' AND '$weekEnd'
+         GROUP BY DATE(transaction_date)
+         ORDER BY trx_day ASC"
     );
     $dailyMap = [];
     while ($row = mysqli_fetch_assoc($rDaily)) {
-        $dailyMap[$row['transaction_date']] = (int)$row['cups'];
+        $dailyMap[$row['trx_day']] = (int)$row['cups'];
     }
 
     $weekly_data = [];
-    for ($i = 0; $i < 7; $i++) {
+    for ($i = 0; $i < 6; $i++) {
         $d    = (clone $mon)->modify("+{$i} days");
         $date = $d->format('Y-m-d');
         $weekly_data[] = [
@@ -150,7 +150,7 @@ function getDriverStats(mysqli $conn, string $schema, string $company_id, string
          JOIN {$schema}.transaction t  ON t.transaction_id = td.transaction_id
          WHERE t.company_id  = '$company_id_esc'
            AND t.created_by  = '$username_esc'
-           AND t.transaction_date BETWEEN '$weekStart' AND '$weekEnd'
+           AND DATE(t.transaction_date) BETWEEN '$weekStart' AND '$weekEnd'
          GROUP BY td.menu_id, m.menu_name
          ORDER BY total_qty DESC
          LIMIT 1"
