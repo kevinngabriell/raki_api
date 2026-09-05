@@ -126,14 +126,14 @@ function getAllDriverBonus($conn, $schema, $company_id, $start = null, $end = nu
         );
         $weekItemsByDriver = [];
         while ($row = mysqli_fetch_assoc($trxResult)) {
-            $weekItemsByDriver[$row['created_by']] = (int)$row['total_item'];
+            $weekItemsByDriver[mb_strtolower($row['created_by'])] = (int)$row['total_item'];
         }
 
         $isLastWeek = ($i === count($weekPeriods) - 1);
 
         foreach ($drivers as $driver) {
             $username        = $driver['username'];
-            $week_total_item = $weekItemsByDriver[$username] ?? 0;
+            $week_total_item = $weekItemsByDriver[mb_strtolower($username)] ?? 0;
 
             // Highest tier achieved THIS week (qty <= week_total_item)
             $week_bonus = null;
