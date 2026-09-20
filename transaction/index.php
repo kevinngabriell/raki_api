@@ -7,6 +7,7 @@ require_once '../config.php';
 require_once '../notification/notification.php';
 require_once '../notification/email.php';
 require_once '../log.php';
+require_once '../promo/engine.php';
 
 function createTransaction($conn, $schema, $input, $username, $role = null, $token_company_id = null){
     // Basic validation
@@ -41,7 +42,8 @@ function createTransaction($conn, $schema, $input, $username, $role = null, $tok
     }
 
     $total_items = $input['total_items'];
-    $transaction_date = isset($input['transaction_date']) && !empty($input['transaction_date']) ? $input['transaction_date'] : date('Y-m-d H:i:s');
+    // Jakarta explicitly: the promo day check is judged on this date, and PHP's default timezone isn't guaranteed to be Asia/Jakarta.
+    $transaction_date = isset($input['transaction_date']) && !empty($input['transaction_date']) ? $input['transaction_date'] : getCurrentDateTimeJakarta();
 
     // Items structure: [{ menu_id, quantity, unit_price }] or [{ package_id, quantity, unit_price }]
     $items = $input['items'];
@@ -49,6 +51,7 @@ function createTransaction($conn, $schema, $input, $username, $role = null, $tok
     // Compute totals and validate each item
     $total_amount = 0;
     $prepared_items = [];
+    $promo_lines = []; // the cart as the promo engine sees it, see apply_promo below
 
     foreach ($items as $idx => $it) {
         $has_menu    = isset($it['menu_id']);
@@ -99,6 +102,14 @@ function createTransaction($conn, $schema, $input, $username, $role = null, $tok
         $subtotal = $quantity * $unit_price;
         $total_amount += $subtotal;
 
+        $promo_lines[] = [
+            'index'      => $idx,
+            'menu_id'    => $has_package ? null : (string)$it['menu_id'],
+            'package_id' => $has_package ? (string)$it['package_id'] : null,
+            'quantity'   => $quantity,
+            'unit_price' => (int)$unit_price,
+        ];
+
         // Optional per-item modifiers (Outlet role sugar/ice customization). Only meaningful
         // for individually-sold menu items, not packages — see docs/pos-sugar-ice-level-outlet.md.
         $sugar_level = isset($it['sugar_level']) && $it['sugar_level'] !== '' ? (string)$it['sugar_level'] : null;
@@ -132,6 +143,8 @@ function createTransaction($conn, $schema, $input, $username, $role = null, $tok
                     'package_id' => $it['package_id'],
                     'sugar_level' => null,
                     'ice_level'   => null,
+                    'cart_index'  => $idx,
+                    'discount_amount' => 0,
                 ];
             }
         } else {
@@ -142,6 +155,8 @@ function createTransaction($conn, $schema, $input, $username, $role = null, $tok
                 'package_id' => null,
                 'sugar_level' => $sugar_level,
                 'ice_level'   => $ice_level,
+                'cart_index'  => $idx,
+                'discount_amount' => 0,
             ];
         }
     }
@@ -150,6 +165,37 @@ function createTransaction($conn, $schema, $input, $username, $role = null, $tok
     $total_items = 0;
     foreach ($prepared_items as $pi) {
         $total_items += $pi['quantity'];
+    }
+
+    // --- Promo (opt-in) ---
+    // Only requests that send apply_promo are discounted, so POS builds that don't know about
+    // promos keep the exact behaviour above. The discount is always recomputed here from the saved
+    // rules (never taken from the client) by the same engine POST /promo/check.php previews with,
+    // and payments must then add up to the discounted total. Discounted sales are stored net:
+    // transaction.total_amount and every detail subtotal are after discount.
+    $apply_promo = filter_var($input['apply_promo'] ?? false, FILTER_VALIDATE_BOOLEAN);
+    $gross_amount = $total_amount;
+    $discount_amount = 0;
+    $promo_applied = null;
+
+    if ($apply_promo) {
+        $promo_result = promoEvaluateRequest(
+            $conn, $schema, (string)$company_id, promoResolveRoleName($conn, $role),
+            $input['transaction_date'] ?? null, $promo_lines
+        );
+        $discount_amount = $promo_result['discount_amount'];
+        $promo_applied = $promo_result['applied'];
+
+        if ($discount_amount > 0) {
+            $line_discounts = array_column($promo_result['lines'], 'discount_amount', 'index');
+            foreach ($prepared_items as &$pi) {
+                $share = $line_discounts[$pi['cart_index']] ?? 0;
+                $pi['discount_amount'] = $share;
+                $pi['subtotal'] -= $share;
+            }
+            unset($pi);
+            $total_amount = $gross_amount - $discount_amount;
+        }
     }
 
         // --- Payment breakdown (cash / qris) ---
@@ -233,7 +279,9 @@ function createTransaction($conn, $schema, $input, $username, $role = null, $tok
             'user_identifier' => $username ?? null,
             'company_id'      => $decoded->company_id ?? null,
         ]);
-        jsonResponse(400, "Total payment (sum of all payment_method entries) must equal total_amount. total_paid=$total_paid, total_amount=$total_amount");
+        // With apply_promo, tell the POS what the server expects so it can refresh its numbers.
+        jsonResponse(400, "Total payment (sum of all payment_method entries) must equal total_amount. total_paid=$total_paid, total_amount=$total_amount",
+            $apply_promo ? ['gross_amount' => $gross_amount, 'discount_amount' => $discount_amount, 'total_amount' => $total_amount, 'promo' => $promo_applied] : []);
     }
 
     // Start transaction
@@ -244,7 +292,13 @@ function createTransaction($conn, $schema, $input, $username, $role = null, $tok
         $transaction_id = 'trx' . uniqid();
 
         // Insert into `transaction` (header)
-        $sqlHeader = "INSERT INTO {$schema}.transaction (transaction_id, company_id, transaction_date, total_amount, created_at, created_by, updated_at, updated_by, total_item) VALUES (?, ?, ?, ?, NOW(), ?, NOW(), ?, ?)";
+        // Only a discounted sale touches the promo-era columns/tables, so ordinary sales run the
+        // original statements and don't depend on promo/promo_migration.sql having been applied.
+        if ($discount_amount > 0) {
+            $sqlHeader = "INSERT INTO {$schema}.transaction (transaction_id, company_id, transaction_date, total_amount, created_at, created_by, updated_at, updated_by, total_item, discount_amount) VALUES (?, ?, ?, ?, NOW(), ?, NOW(), ?, ?, ?)";
+        } else {
+            $sqlHeader = "INSERT INTO {$schema}.transaction (transaction_id, company_id, transaction_date, total_amount, created_at, created_by, updated_at, updated_by, total_item) VALUES (?, ?, ?, ?, NOW(), ?, NOW(), ?, ?)";
+        }
         $stmtHeader = $conn->prepare($sqlHeader);
 
         if (!$stmtHeader) {
@@ -260,7 +314,11 @@ function createTransaction($conn, $schema, $input, $username, $role = null, $tok
             throw new Exception('Prepare header failed: ' . $conn->error);
         }
 
-        $stmtHeader->bind_param('sssissi', $transaction_id, $company_id, $transaction_date, $total_amount, $username, $username, $total_items);
+        if ($discount_amount > 0) {
+            $stmtHeader->bind_param('sssissii', $transaction_id, $company_id, $transaction_date, $total_amount, $username, $username, $total_items, $discount_amount);
+        } else {
+            $stmtHeader->bind_param('sssissi', $transaction_id, $company_id, $transaction_date, $total_amount, $username, $username, $total_items);
+        }
         
         if (!$stmtHeader->execute()) {
             logApiError($conn, [
@@ -276,7 +334,11 @@ function createTransaction($conn, $schema, $input, $username, $role = null, $tok
         }
 
         // Insert details
-        $sqlDetail = "INSERT INTO {$schema}.transaction_detail (detail_id, transaction_id, menu_id, quantity, subtotal, sugar_level, ice_level, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, NOW())";
+        if ($discount_amount > 0) {
+            $sqlDetail = "INSERT INTO {$schema}.transaction_detail (detail_id, transaction_id, menu_id, quantity, subtotal, discount_amount, sugar_level, ice_level, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())";
+        } else {
+            $sqlDetail = "INSERT INTO {$schema}.transaction_detail (detail_id, transaction_id, menu_id, quantity, subtotal, sugar_level, ice_level, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, NOW())";
+        }
         $stmtDetail = $conn->prepare($sqlDetail);
 
         if (!$stmtDetail) {
@@ -300,7 +362,12 @@ function createTransaction($conn, $schema, $input, $username, $role = null, $tok
             $subtotal = $pi['subtotal'];
             $sugar_level = $pi['sugar_level'];
             $ice_level = $pi['ice_level'];
-            $stmtDetail->bind_param('sssiiss', $detail_id, $transaction_id, $menu_id, $qty, $subtotal, $sugar_level, $ice_level);
+            $line_discount = $pi['discount_amount'];
+            if ($discount_amount > 0) {
+                $stmtDetail->bind_param('sssiiiss', $detail_id, $transaction_id, $menu_id, $qty, $subtotal, $line_discount, $sugar_level, $ice_level);
+            } else {
+                $stmtDetail->bind_param('sssiiss', $detail_id, $transaction_id, $menu_id, $qty, $subtotal, $sugar_level, $ice_level);
+            }
 
             if (!$stmtDetail->execute()) {
                 logApiError($conn, [
@@ -323,6 +390,9 @@ function createTransaction($conn, $schema, $input, $username, $role = null, $tok
                 'sugar_level' => $sugar_level,
                 'ice_level' => $ice_level,
             ];
+            if ($apply_promo) {
+                $response_items[count($response_items) - 1]['discount_amount'] = $line_discount;
+            }
         }
 
         // Insert payment breakdown ke transaction_payment_daily
@@ -359,6 +429,19 @@ function createTransaction($conn, $schema, $input, $username, $role = null, $tok
                     'company_id'      => $decoded->company_id ?? null,
                 ]);
                 throw new Exception('Execute payment failed: ' . $stmtPayment->error);
+            }
+        }
+
+        // Audit which promo discounted this sale (promo_name is a snapshot; see promo_migration.sql).
+        if ($promo_applied && $discount_amount > 0) {
+            $stmtPromo = $conn->prepare("INSERT INTO {$schema}.transaction_promo (transaction_promo_id, transaction_id, promo_id, promo_name, applications, discount_amount) VALUES (?, ?, ?, ?, ?, ?)");
+            $promo_row_id = 'trp' . uniqid();
+            $promo_id = $promo_applied['promo_id'];
+            $promo_name = $promo_applied['promo_name'];
+            $promo_applications = $promo_applied['applications'];
+            $stmtPromo->bind_param('ssssii', $promo_row_id, $transaction_id, $promo_id, $promo_name, $promo_applications, $discount_amount);
+            if (!$stmtPromo->execute()) {
+                throw new Exception('Execute promo usage failed: ' . $stmtPromo->error);
             }
         }
 
@@ -456,13 +539,20 @@ function createTransaction($conn, $schema, $input, $username, $role = null, $tok
             error_log('Notifikasi transaksi gagal (transaksi tetap tersimpan): ' . $notifyError->getMessage());
         }
 
-        jsonResponse(201, 'Transaction created', [
+        $response = [
             'transaction_id' => $transaction_id,
             'company_id' => $company_id,
             'transaction_date' => $transaction_date,
             'total_amount' => $total_amount,
             'items' => $response_items,
-        ]);
+        ];
+        // Only for apply_promo requests, so the response for existing clients is unchanged.
+        if ($apply_promo) {
+            $response['gross_amount'] = $gross_amount;
+            $response['discount_amount'] = $discount_amount;
+            $response['promo'] = $promo_applied;
+        }
+        jsonResponse(201, 'Transaction created', $response);
     } catch (Exception $e) {
         $conn->rollback();
         logApiError($conn, [

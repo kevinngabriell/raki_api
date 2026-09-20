@@ -17,15 +17,16 @@
 7. [Dashboard](#dashboard)
 8. [Reward](#reward)
 9. [Voucher](#voucher)
-10. [Member](#member)
-11. [Bonus Schema](#bonus-schema)
-12. [Driver (Abang)](#driver-abang)
-13. [Digital Products](#digital-products)
-14. [Supply](#supply)
-15. [Settings](#settings)
-16. [Notification](#notification)
-17. [Public Endpoints](#public-endpoints)
-18. [Error Responses](#error-responses)
+10. [Promo](#promo)
+11. [Member](#member)
+12. [Bonus Schema](#bonus-schema)
+13. [Driver (Abang)](#driver-abang)
+14. [Digital Products](#digital-products)
+15. [Supply](#supply)
+16. [Settings](#settings)
+17. [Notification](#notification)
+18. [Public Endpoints](#public-endpoints)
+19. [Error Responses](#error-responses)
 
 ---
 
@@ -852,44 +853,6 @@ Get the active session for a specific driver.
 
 ---
 
-### GET /session/transaction-history.php
-
-Get all transactions for the current active session.
-
-**Auth:** Bearer Token
-
-**Query Parameters:**
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `company_id` | string | Yes | Company ID |
-| `username` | string | Yes | Driver username |
-
-**Response 200:**
-
-```json
-{
-  "status_code": 200,
-  "status_message": "Transaction history found",
-  "data": [
-    {
-      "transaction_id": "trx6abc123",
-      "transaction_date": "2026-06-24 10:30:00",
-      "total_amount": 50000,
-      "total_item": 2,
-      "total_cup": 2,
-      "payment_method": "cash",
-      "source_type": "pos",
-      "payments": [
-        { "payment_method": "cash", "amount": 50000 }
-      ]
-    }
-  ]
-}
-```
-
----
-
 ### GET /session/active-drivers.php
 
 Get all active drivers and their stock for the authenticated user's company.
@@ -1158,7 +1121,8 @@ Create a sale transaction. Supports single menus or packages. The sum of all `pa
 | `company_id` | string | Yes | Company ID |
 | `items` | array | Yes | Each item needs either `menu_id` or `package_id`, plus `quantity` and `unit_price` |
 | `payments` | array | Yes | Methods: `cash`, `qris`, `edc_flazz`. Sum must equal total |
-| `transaction_date` | datetime | No | Defaults to current datetime |
+| `transaction_date` | datetime | No | Defaults to current Jakarta datetime. Only the date part is stored |
+| `apply_promo` | bool | No | Opt in to the server-side [promo](#promo) discount. See below |
 
 **Response 201:**
 
@@ -1174,6 +1138,31 @@ Create a sale transaction. Supports single menus or packages. The sum of all `pa
     "items": [
       { "detail_id": "trd001", "menu_id": "menu001", "quantity": 2, "subtotal": 30000 },
       { "detail_id": "trd002", "menu_id": "menu003", "quantity": 1, "subtotal": 25000 }
+    ]
+  }
+}
+```
+
+#### Promo discount (`apply_promo`)
+
+Without `apply_promo` the endpoint behaves exactly as described above. With `"apply_promo": true` the server re-evaluates the company's active promos (the same evaluation as [`POST /promo/check.php`](#post-promocheckphp)) and never trusts a client-side discount:
+
+- `payments[].amount` must add up to the **discounted** total, not the gross one. If they don't, the response is `400` and `data` carries `gross_amount`, `discount_amount`, `total_amount` and `promo` so the POS can refresh.
+- A discounted sale is stored **net**: `transaction.total_amount` and each `transaction_detail.subtotal` are after discount (so dashboards and cash reconciliation stay consistent). The total discount is in `transaction.discount_amount`, each line's share in `transaction_detail.discount_amount` (gross line value = `subtotal + discount_amount`), and `transaction_promo` records which promo applied.
+- If no promo applies, the sale is saved at full price, and the response still includes `promo: null`.
+- `apply_promo` requires `promo/promo_migration.sql` to have been applied; requests without it never touch the new objects.
+
+Extra fields in the `201` response when `apply_promo` was sent:
+
+```json
+{
+  "data": {
+    "total_amount": 28000,
+    "gross_amount": 31000,
+    "discount_amount": 3000,
+    "promo": { "promo_id": "promo6abc", "promo_name": "Monday Bestie Day", "promo_type": "buy_n_nominal_off", "applications": 1, "cap_reached": false, "discount_amount": 3000, "next_reward": { "items_needed": 2, "discount_amount": 3000 } },
+    "items": [
+      { "detail_id": "trd001", "menu_id": "menu001", "quantity": 1, "subtotal": 14451, "discount_amount": 1549 }
     ]
   }
 }
@@ -1780,6 +1769,173 @@ Get all vouchers or a single voucher. **No authentication required.**
 
 **PUT** — `{ "voucher_id": "...", ...updatable fields }` → 200  
 **DELETE** — `?voucher_id=...` → 200
+
+---
+
+## Promo
+
+Configurable, automatic discounts. A promo is a per-company rule of the form **"every `buy_quantity` eligible items earn `discount_amount` rupiah off"**, limited by day, menu/category, price and outlet type. Apply it from the POS with `apply_promo` on [`POST /transaction/index.php`](#post-transactionindexphp); preview it live with [`POST /promo/check.php`](#post-promocheckphp).
+
+**Setup:** run `promo/promo_migration.sql` once per schema (`raki_dev` first, then `raki`).
+
+### How a promo is evaluated
+
+| Dimension | Field | Meaning when empty |
+|-----------|-------|--------------------|
+| Day | `days_of_week` (1 = Monday … 7 = Sunday) | any day |
+| Outlet type | `outlet_types` (the cashier's role name, e.g. `Outlet`) | any role |
+| Menu | `category_ids` **or** `menu_ids` (an item in either qualifies) | every single menu |
+| Exclusion | `exclude_menu_ids` (never eligible, wins over the above) | none |
+| Item price | `min_item_price` / `max_item_price` (inclusive, on the line's `unit_price`) | not checked |
+| Cart value | `min_eligible_subtotal` (value of the eligible lines) | not checked |
+| Cap | `max_applications` (max times the rule fires per transaction) | unlimited |
+
+- Applications = `floor(eligible quantity / buy_quantity)`, capped by `max_applications`. Discount = applications × `discount_amount`, never more than the eligible items' value. The discount is spread over the eligible lines in proportion to their value.
+- Package (`package_id`) lines are never eligible and never discounted.
+- Days are judged on the sale's **Jakarta date** (`transaction_date`, default today). The promo applies **only if that date is today** (Jakarta), so a sale can't be back-dated or future-dated onto a promo day; otherwise the sale saves at full price.
+- If several promos match, only the one with the largest discount applies (no stacking).
+- Outlet type is the cashier's `app_role.role_name` from the JWT (`Outlet`, `Abang`, `Owner`, …).
+
+### GET /promo/promo.php
+
+List (`page`, `limit` ≤ 100, `is_active`, `search`) or fetch one (`?promo_id=`). Any authenticated user; always scoped to the company in the token.
+
+**Response 200 (detail):**
+
+```json
+{
+  "status_code": 200,
+  "status_message": "Promo detail retrieved successfully",
+  "data": {
+    "promo_id": "promo6abc",
+    "company_id": "company6abc123",
+    "promo_name": "Monday Bestie Day",
+    "promo_type": "buy_n_nominal_off",
+    "buy_quantity": 2,
+    "discount_amount": 3000,
+    "max_applications": null,
+    "min_item_price": null,
+    "max_item_price": null,
+    "min_eligible_subtotal": null,
+    "is_active": 1,
+    "days_of_week": [1],
+    "category_ids": ["category6907fb386e005"],
+    "menu_ids": [],
+    "exclude_menu_ids": [],
+    "outlet_types": ["Outlet"],
+    "created_by": "owner1",
+    "created_at": "2026-09-21 09:00:00",
+    "updated_by": null,
+    "updated_at": null
+  }
+}
+```
+
+The list response is `{ "data": [ ...promos ], "pagination": { "total", "page", "limit", "total_pages" } }`.
+
+### POST /promo/promo.php
+
+**Auth:** Bearer Token, role `Owner` (own company only; other roles get `403`).
+
+Monday Bestie Day — buy 2 non-coffee drinks, Rp 3.000 off, Mondays, Outlet cashiers only:
+
+```json
+{
+  "promo_name": "Monday Bestie Day",
+  "buy_quantity": 2,
+  "discount_amount": 3000,
+  "days_of_week": [1],
+  "category_ids": ["category6907fb386e005"],
+  "outlet_types": ["Outlet"]
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `promo_name` | string | Yes | Max 255 chars |
+| `buy_quantity` | int | Yes | ≥ 1 |
+| `discount_amount` | int | Yes | Rupiah off per application, ≥ 1 |
+| `max_applications` | int\|null | No | ≥ 1; omit/null = unlimited. Set it to protect against several customers' cups being entered as one transaction |
+| `min_item_price`, `max_item_price`, `min_eligible_subtotal` | int\|null | No | ≥ 0; `min_item_price` ≤ `max_item_price` |
+| `is_active` | 0/1 | No | Default 1 |
+| `days_of_week`, `category_ids`, `menu_ids`, `exclude_menu_ids`, `outlet_types` | string[] | No | Ids must exist; `outlet_types` are RAKI role names (case-insensitive, stored as the exact role name). An unknown value lists the valid ones in the error |
+
+**Response 201:** the created promo (same shape as the detail above).
+
+### PUT /promo/promo.php
+
+**Auth:** Owner. Send `promo_id` plus any fields to change. A `null` clears a nullable field; a condition array that is present **replaces** that dimension (`[]` clears it); absent fields are untouched. Returns the updated promo.
+
+### DELETE /promo/promo.php?promo_id=…
+
+**Auth:** Owner. Removes the promo. Sales it already discounted keep their `transaction_promo` history (with a name snapshot). Use `is_active: 0` to switch a promo off instead.
+
+### POST /promo/check.php
+
+Stateless, read-only preview for the POS. Call it whenever the cart changes: the discount is calculated automatically, and it tells the cashier how many more items unlock it. It runs the same evaluation as `POST /transaction/index.php` with `apply_promo`, so the numbers match what gets saved.
+
+**Auth:** Bearer Token (any role; `company_id` from the body, else the token — same rule as creating a transaction).
+
+**Request Body:**
+
+```json
+{
+  "company_id": "company6abc123",
+  "transaction_date": "2026-09-21",
+  "items": [
+    { "menu_id": "menu6a541a7dd8d63", "quantity": 1, "unit_price": 16000 },
+    { "menu_id": "menu6a157d58bfa89", "quantity": 1, "unit_price": 15000 }
+  ]
+}
+```
+
+`transaction_date` is optional (default today).
+
+**Response 200:**
+
+```json
+{
+  "status_code": 200,
+  "status_message": "Promo check",
+  "data": {
+    "eligible": true,
+    "sale_date": "2026-09-21",
+    "subtotal": 31000,
+    "discount_amount": 3000,
+    "total": 28000,
+    "applied": {
+      "promo_id": "promo6abc",
+      "promo_name": "Monday Bestie Day",
+      "promo_type": "buy_n_nominal_off",
+      "applications": 1,
+      "cap_reached": false,
+      "discount_amount": 3000,
+      "next_reward": { "items_needed": 2, "discount_amount": 3000 }
+    },
+    "lines": [
+      { "index": 0, "menu_id": "menu6a541a7dd8d63", "package_id": null, "quantity": 1, "unit_price": 16000, "subtotal": 16000, "discount_amount": 1549, "net_subtotal": 14451 },
+      { "index": 1, "menu_id": "menu6a157d58bfa89", "package_id": null, "quantity": 1, "unit_price": 15000, "subtotal": 15000, "discount_amount": 1451, "net_subtotal": 13549 }
+    ],
+    "evaluations": [
+      { "promo_id": "promo6abc", "promo_name": "Monday Bestie Day", "applicable": true, "reason": null, "message": null, "eligible_quantity": 2, "applications": 1, "cap_reached": false, "discount_amount": 3000, "next_reward": { "items_needed": 2, "discount_amount": 3000 } }
+    ]
+  }
+}
+```
+
+`evaluations` has one entry per active promo. When one doesn't apply, `reason` says why and `next_reward` (when relevant) says what is missing, e.g. one eligible drink in the cart gives `"reason": "need_more_items"` with `"next_reward": { "items_needed": 1, "discount_amount": 3000 }`.
+
+| `reason` | Meaning |
+|----------|---------|
+| `sale_date_not_today` | `transaction_date` is not today (Jakarta) or is not a valid date |
+| `day_not_allowed` | Not one of the promo's `days_of_week` |
+| `outlet_type_not_allowed` | The cashier's role is not in `outlet_types` |
+| `no_eligible_items` | Nothing in the cart matches the promo's menu/price rules |
+| `need_more_items` | Fewer than `buy_quantity` eligible items |
+| `below_min_subtotal` | Eligible items are worth less than `min_eligible_subtotal` |
+| `nothing_to_discount` | The eligible items have no value to discount |
+
+Always `200` for a valid cart, whether or not a promo applies. `400` for an invalid cart (empty, missing `quantity`/`unit_price`, non-positive quantity).
 
 ---
 
