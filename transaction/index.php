@@ -9,6 +9,10 @@ require_once '../notification/email.php';
 require_once '../log.php';
 require_once '../promo/engine.php';
 
+// Cashier roles (app_role.role_name) whose sales get a No. Antrian from pos_queue_counter.
+// The Outlet POS saves through this endpoint; the Abang app uses /pos/transaction.php.
+const QUEUE_NUMBER_ROLES = ['Outlet'];
+
 function createTransaction($conn, $schema, $input, $username, $role = null, $token_company_id = null){
     // Basic validation
     if (!$input || !isset($input['items']) || !is_array($input['items']) || count($input['items']) === 0) {
@@ -261,10 +265,20 @@ function createTransaction($conn, $schema, $input, $username, $role = null, $tok
             jsonResponse(400, "Invalid payment amount at index $idx.");
         }
 
+        // Optional EDC receipt number ("No. Referensi"). Only kept for edc_flazz; ignored on other methods.
+        $reference_no = null;
+        if ($method === 'edc_flazz' && isset($p['reference_no']) && trim((string)$p['reference_no']) !== '') {
+            $reference_no = trim((string)$p['reference_no']);
+            if (mb_strlen($reference_no) > 50) {
+                jsonResponse(400, "reference_no at index $idx must be at most 50 characters.");
+            }
+        }
+
         $total_paid += $amount;
         $prepared_payments[] = [
             'payment_method' => $method,
             'amount' => $amount,
+            'reference_no' => $reference_no,
         ];
     }
 
@@ -284,6 +298,9 @@ function createTransaction($conn, $schema, $input, $username, $role = null, $tok
             $apply_promo ? ['gross_amount' => $gross_amount, 'discount_amount' => $discount_amount, 'total_amount' => $total_amount, 'promo' => $promo_applied] : []);
     }
 
+    // Decides both the queue number below and the per-transaction notification after commit.
+    $creatorRoleName = promoResolveRoleName($conn, $role);
+
     // Start transaction
     $conn->begin_transaction();
 
@@ -291,13 +308,31 @@ function createTransaction($conn, $schema, $input, $username, $role = null, $tok
         // Generate IDs
         $transaction_id = 'trx' . uniqid();
 
+        // No. Antrian: POS sales take the next number from the same per-company, per-day counter
+        // as /pos/queue-next.php, inside this DB transaction so a failed sale doesn't burn a number.
+        // The day is the real (DB) date, not transaction_date: the number goes on the ticket handed
+        // out now. Dashboard entries by other roles are left NULL.
+        $queue_number = null;
+        if (in_array($creatorRoleName, QUEUE_NUMBER_ROLES, true)) {
+            $stmtQueue = $conn->prepare("INSERT INTO {$schema}.pos_queue_counter (company_id, queue_date, counter) VALUES (?, CURDATE(), LAST_INSERT_ID(1)) ON DUPLICATE KEY UPDATE counter = LAST_INSERT_ID(counter + 1)");
+            if (!$stmtQueue) {
+                throw new Exception('Prepare queue number failed: ' . $conn->error);
+            }
+            $stmtQueue->bind_param('s', $company_id);
+            if (!$stmtQueue->execute()) {
+                throw new Exception('Execute queue number failed: ' . $stmtQueue->error);
+            }
+            $queueRes = $conn->query("SELECT LAST_INSERT_ID() AS queue_number");
+            $queue_number = (int)$queueRes->fetch_assoc()['queue_number'];
+        }
+
         // Insert into `transaction` (header)
         // Only a discounted sale touches the promo-era columns/tables, so ordinary sales run the
         // original statements and don't depend on promo/promo_migration.sql having been applied.
         if ($discount_amount > 0) {
-            $sqlHeader = "INSERT INTO {$schema}.transaction (transaction_id, company_id, transaction_date, total_amount, created_at, created_by, updated_at, updated_by, total_item, discount_amount) VALUES (?, ?, ?, ?, NOW(), ?, NOW(), ?, ?, ?)";
+            $sqlHeader = "INSERT INTO {$schema}.transaction (transaction_id, company_id, transaction_date, total_amount, created_at, created_by, updated_at, updated_by, total_item, queue_number, discount_amount) VALUES (?, ?, ?, ?, NOW(), ?, NOW(), ?, ?, ?, ?)";
         } else {
-            $sqlHeader = "INSERT INTO {$schema}.transaction (transaction_id, company_id, transaction_date, total_amount, created_at, created_by, updated_at, updated_by, total_item) VALUES (?, ?, ?, ?, NOW(), ?, NOW(), ?, ?)";
+            $sqlHeader = "INSERT INTO {$schema}.transaction (transaction_id, company_id, transaction_date, total_amount, created_at, created_by, updated_at, updated_by, total_item, queue_number) VALUES (?, ?, ?, ?, NOW(), ?, NOW(), ?, ?, ?)";
         }
         $stmtHeader = $conn->prepare($sqlHeader);
 
@@ -315,9 +350,9 @@ function createTransaction($conn, $schema, $input, $username, $role = null, $tok
         }
 
         if ($discount_amount > 0) {
-            $stmtHeader->bind_param('sssissii', $transaction_id, $company_id, $transaction_date, $total_amount, $username, $username, $total_items, $discount_amount);
+            $stmtHeader->bind_param('sssissiii', $transaction_id, $company_id, $transaction_date, $total_amount, $username, $username, $total_items, $queue_number, $discount_amount);
         } else {
-            $stmtHeader->bind_param('sssissi', $transaction_id, $company_id, $transaction_date, $total_amount, $username, $username, $total_items);
+            $stmtHeader->bind_param('sssissii', $transaction_id, $company_id, $transaction_date, $total_amount, $username, $username, $total_items, $queue_number);
         }
         
         if (!$stmtHeader->execute()) {
@@ -334,10 +369,12 @@ function createTransaction($conn, $schema, $input, $username, $role = null, $tok
         }
 
         // Insert details
+        // package_id + line_no (the cart index) let /pos/history.php fold a package's component
+        // rows back into the one "Paket" line the cashier sold.
         if ($discount_amount > 0) {
-            $sqlDetail = "INSERT INTO {$schema}.transaction_detail (detail_id, transaction_id, menu_id, quantity, subtotal, discount_amount, sugar_level, ice_level, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())";
+            $sqlDetail = "INSERT INTO {$schema}.transaction_detail (detail_id, transaction_id, menu_id, quantity, subtotal, discount_amount, sugar_level, ice_level, package_id, line_no, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())";
         } else {
-            $sqlDetail = "INSERT INTO {$schema}.transaction_detail (detail_id, transaction_id, menu_id, quantity, subtotal, sugar_level, ice_level, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, NOW())";
+            $sqlDetail = "INSERT INTO {$schema}.transaction_detail (detail_id, transaction_id, menu_id, quantity, subtotal, sugar_level, ice_level, package_id, line_no, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())";
         }
         $stmtDetail = $conn->prepare($sqlDetail);
 
@@ -363,10 +400,12 @@ function createTransaction($conn, $schema, $input, $username, $role = null, $tok
             $sugar_level = $pi['sugar_level'];
             $ice_level = $pi['ice_level'];
             $line_discount = $pi['discount_amount'];
+            $package_id = $pi['package_id'];
+            $line_no = (int)$pi['cart_index'];
             if ($discount_amount > 0) {
-                $stmtDetail->bind_param('sssiiiss', $detail_id, $transaction_id, $menu_id, $qty, $subtotal, $line_discount, $sugar_level, $ice_level);
+                $stmtDetail->bind_param('sssiiisssi', $detail_id, $transaction_id, $menu_id, $qty, $subtotal, $line_discount, $sugar_level, $ice_level, $package_id, $line_no);
             } else {
-                $stmtDetail->bind_param('sssiiss', $detail_id, $transaction_id, $menu_id, $qty, $subtotal, $sugar_level, $ice_level);
+                $stmtDetail->bind_param('sssiisssi', $detail_id, $transaction_id, $menu_id, $qty, $subtotal, $sugar_level, $ice_level, $package_id, $line_no);
             }
 
             if (!$stmtDetail->execute()) {
@@ -396,7 +435,7 @@ function createTransaction($conn, $schema, $input, $username, $role = null, $tok
         }
 
         // Insert payment breakdown ke transaction_payment_daily
-        $sqlPayment = "INSERT INTO {$schema}.transaction_payment (payment_id, transaction_id, payment_method, amount, company_id, created_at) VALUES (?, ?, ?, ?, ?, NOW())";
+        $sqlPayment = "INSERT INTO {$schema}.transaction_payment (payment_id, transaction_id, payment_method, amount, company_id, reference_no, created_at) VALUES (?, ?, ?, ?, ?, ?, NOW())";
         $stmtPayment = $conn->prepare($sqlPayment);
 
         if (!$stmtPayment) {
@@ -416,8 +455,9 @@ function createTransaction($conn, $schema, $input, $username, $role = null, $tok
             $payment_id = 'pay' . uniqid();
             $method = $pay['payment_method'];
             $amount = $pay['amount'];
+            $reference_no = $pay['reference_no'];
 
-            $stmtPayment->bind_param('sssii', $payment_id, $transaction_id, $method, $amount, $company_id);
+            $stmtPayment->bind_param('sssiss', $payment_id, $transaction_id, $method, $amount, $company_id, $reference_no);
             if (!$stmtPayment->execute()) {
                 logApiError($conn, [
                     'error_level'   => 'error',
@@ -460,19 +500,7 @@ function createTransaction($conn, $schema, $input, $username, $role = null, $tok
 
         // Outlet-created transactions are recapped once a day (18:00 WIB) instead of
         // notifying on every transaction — see notification/outlet_daily_recap.php.
-        $creatorRoleName = null;
-        if (!empty($role)) {
-            $stmtRole = $conn->prepare("SELECT role_name FROM movira_core_dev.app_role WHERE app_role_id = ?");
-            if ($stmtRole) {
-                $stmtRole->bind_param('s', $role);
-                if ($stmtRole->execute()) {
-                    $roleRow = $stmtRole->get_result()->fetch_assoc();
-                    $creatorRoleName = $roleRow['role_name'] ?? null;
-                }
-                $stmtRole->close();
-            }
-            
-        }
+        // ($creatorRoleName is resolved before the DB transaction.)
 
         // Notifications (WhatsApp + email fallback) must never turn an already-committed
         // transaction into a reported failure, so any error here is swallowed and logged.
@@ -544,6 +572,7 @@ function createTransaction($conn, $schema, $input, $username, $role = null, $tok
             'company_id' => $company_id,
             'transaction_date' => $transaction_date,
             'total_amount' => $total_amount,
+            'queue_number' => $queue_number,
             'items' => $response_items,
         ];
         // Only for apply_promo requests, so the response for existing clients is unchanged.
@@ -573,7 +602,7 @@ function getDetailTransaction($conn, $schema, $trx_id, $username){
         jsonResponse(400, 'trx_id is required');
     }
 
-    $sql = "SELECT t.transaction_id, t.company_id, t.transaction_date, t.total_amount, t.created_at, t.created_by, t.updated_at, t.updated_by, td.detail_id, td.menu_id, m.menu_name, td.quantity, td.subtotal, td.sugar_level, td.ice_level, t.total_item, tp.payment_method, tp.amount FROM {$schema}.transaction t JOIN {$schema}.transaction_detail td ON td.transaction_id = t.transaction_id LEFT JOIN {$schema}.menu m ON m.menu_id = td.menu_id LEFT JOIN {$schema}.transaction_payment tp ON tp.transaction_id = t.transaction_id WHERE t.transaction_id = ?";
+    $sql = "SELECT t.transaction_id, t.company_id, t.transaction_date, t.total_amount, t.created_at, t.created_by, t.updated_at, t.updated_by, t.queue_number, td.detail_id, td.menu_id, m.menu_name, td.package_id, p.package_name, td.quantity, td.subtotal, td.sugar_level, td.ice_level, t.total_item, tp.payment_id, tp.payment_method, tp.amount, tp.reference_no FROM {$schema}.transaction t JOIN {$schema}.transaction_detail td ON td.transaction_id = t.transaction_id LEFT JOIN {$schema}.menu m ON m.menu_id = td.menu_id LEFT JOIN {$schema}.package p ON p.package_id = td.package_id LEFT JOIN {$schema}.transaction_payment tp ON tp.transaction_id = t.transaction_id WHERE t.transaction_id = ?";
 
     $stmt = $conn->prepare($sql);
     if (!$stmt) {
@@ -638,6 +667,7 @@ function getDetailTransaction($conn, $schema, $trx_id, $username){
                 'created_by' => $row['created_by'],
                 'updated_at' => $row['updated_at'],
                 'updated_by' => $row['updated_by'],
+                'queue_number' => $row['queue_number'] !== null ? (int)$row['queue_number'] : null,
             ];
         }
 
@@ -647,6 +677,8 @@ function getDetailTransaction($conn, $schema, $trx_id, $username){
                 'detail_id' => $row['detail_id'],
                 'menu_id' => $row['menu_id'],
                 'menu_name' => $row['menu_name'],
+                'package_id' => $row['package_id'],
+                'package_name' => $row['package_name'],
                 'quantity' => (int)$row['quantity'],
                 'subtotal' => (float)$row['subtotal'],
                 'sugar_level' => $row['sugar_level'],
@@ -655,12 +687,13 @@ function getDetailTransaction($conn, $schema, $trx_id, $username){
             $seenDetailIds[$row['detail_id']] = true;
         }
 
-        // Add each payment only once per (payment_method, amount) combination
-        $paymentKey = $row['payment_method'] . '|' . $row['amount'];
-        if (!isset($seenPayments[$paymentKey])) {
+        // Add each payment only once (the detail JOIN repeats it per item)
+        $paymentKey = $row['payment_id'];
+        if ($paymentKey !== null && !isset($seenPayments[$paymentKey])) {
             $payments[] = [
                 'payment_method' => $row['payment_method'],
                 'amount' => $row['amount'],
+                'reference_no' => $row['reference_no'],
             ];
             $seenPayments[$paymentKey] = true;
         }

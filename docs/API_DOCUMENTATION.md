@@ -94,11 +94,20 @@ Authenticate a user with username and password.
 }
 ```
 
+**Response 403** (correct password, account not approved; `PUT /account/otp.php` returns the same):
+
+| account_status | status_message |
+|----------------|----------------|
+| `pending` | `Akun kamu masih menunggu persetujuan admin.` |
+| `rejected` | `Pendaftaran akun kamu ditolak. Hubungi admin RAKI.` |
+
+Any other value, including `NULL` (accounts created before self-registration), logs in as before.
+
 ---
 
 ### POST /account/register.php
 
-Register a new user account.
+Self-registration. The account is created **pending**, with no role and no company, and can't log in until an Owner approves it ([`/account/pending.php`](#get--patch-accountpendingphp)).
 
 **Auth:** None
 
@@ -106,31 +115,68 @@ Register a new user account.
 
 ```json
 {
-  "username": "driver002",
-  "password": "secret123",
-  "app_id": "06660e87-37e7-491b-92c3-c772130eb57c",
-  "app_role_id": "driver"
+  "username": "adi.raki",
+  "password": "rahasia123",
+  "full_name": "Adi Pratama",
+  "phone_number": "6281234567890",
+  "email": "adi@email.com",
+  "app_id": "06660e87-37e7-491b-92c3-c772130eb57c"
 }
 ```
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `username` | string | Yes | New username |
-| `password` | string | Yes | Password |
-| `app_id` | string | Yes | Application ID |
-| `app_role_id` | string | Yes | Role to assign |
+| `username` | string | Yes | `^[a-z0-9.]+$`, max 50. Unique |
+| `password` | string | Yes | At least 8 characters |
+| `full_name` | string | Yes | Trimmed, max 100. Stored in `app_user.first_name` |
+| `phone_number` | string | Yes | Normalized to `62…` (`0812…` / `+62 812…` accepted), 10–15 digits. Unique within RAKI (it's the OTP / password-reset number) |
+| `email` | string | Yes | Valid email, max 100 |
+| `app_id` | string | No | Must be RAKI's app_id (the default) |
+| `app_role_id` | — | — | **Ignored.** The role is granted on approval |
 
-**Response 201:**
+**Responses:**
+
+| HTTP | status_message |
+|------|----------------|
+| 201 | `Pendaftaran berhasil, menunggu persetujuan admin` · `data: { "username": "adi.raki", "account_status": "pending" }` |
+| 400 | Validation message in Indonesian, safe to show as-is (e.g. `Password minimal 8 karakter.`) |
+| 409 | `Username sudah dipakai` or `Nomor HP sudah terdaftar` |
+
+---
+
+### GET / PATCH /account/pending.php
+
+Owner review of self-registered accounts.
+
+**Auth:** Bearer Token, **Owner** role only (403 otherwise)
+
+**GET** `?page=1&limit=20` lists pending sign-ups, oldest first:
 
 ```json
 {
-  "status_code": 201,
-  "status_message": "New user has been created successfully",
+  "status_code": 200,
+  "status_message": "Success",
   "data": {
-    "username": "driver002"
+    "users": [
+      { "user_id": "user6abc", "username": "adi.raki", "full_name": "Adi Pratama", "phone_number": "6281234567890", "email": "adi@email.com", "created_at": "2026-09-24 09:12:00" }
+    ],
+    "pagination": { "total": 1, "page": 1, "limit": 20, "total_pages": 1 }
   }
 }
 ```
+
+**PATCH** approves or rejects one:
+
+```json
+{ "user_id": "user6abc", "action": "approve", "app_role_id": "app_role6a2d1c8e22260", "company_id": "company6abc123" }
+```
+```json
+{ "user_id": "user6abc", "action": "reject", "reason": "Data tidak lengkap" }
+```
+
+- `approve` sets `account_status = 'active'`, `app_role_id` and `company_id`. The role must be Mitra/Franchise, Abang or Outlet (403 otherwise). `company_id` defaults to the Owner's own company, and any other company is refused (403).
+- `reject` sets `account_status = 'rejected'`. `reason` is echoed back but not stored.
+- 404 if the user isn't a RAKI account, 409 if it isn't pending anymore.
 
 ---
 
@@ -592,6 +638,8 @@ Get all menu packages or a single package.
         "package_id": "pkg001",
         "package_name": "Bundle Hemat",
         "package_price": 25000,
+        "image_url": "http://getmovira.com/raki-uploads/package/2026-09/ab12.jpg",
+        "thumb_url": "http://getmovira.com/raki-uploads/package/2026-09/ab12_thumb.webp",
         "menus": [
           { "menu_id": "menu001", "menu_name": "Kopi Susu" },
           { "menu_id": "menu002", "menu_name": "Snack" }
@@ -615,6 +663,10 @@ Get all menu packages or a single package.
 
 **PUT** — `{ "package_id": "pkg001", "package_name": "...", "package_price": 0, "menu_ids": [] }` → 200  
 **DELETE** — `?package_id=pkg001` → 200
+
+`image_url` / `thumb_url` are `null` when the package has no photo (same meaning as on menus).
+
+**Photo upload:** send `POST` as `multipart/form-data` with an `image` file (JPG, PNG or WEBP) and the other fields as form fields. `menu_ids` can be `menu_ids[]` fields, a JSON string (`["menu001","menu002"]`) or `menu001,menu002`. Include `package_id` to update an existing package, since PHP doesn't parse multipart bodies on `PUT`. JSON `POST`/`PUT` work as before.
 
 ---
 
@@ -1120,7 +1172,7 @@ Create a sale transaction. Supports single menus or packages. The sum of all `pa
 |-------|------|----------|-------------|
 | `company_id` | string | Yes | Company ID |
 | `items` | array | Yes | Each item needs either `menu_id` or `package_id`, plus `quantity` and `unit_price` |
-| `payments` | array | Yes | Methods: `cash`, `qris`, `edc_flazz`. Sum must equal total |
+| `payments` | array | Yes | Methods: `cash`, `qris`, `edc_flazz`. Sum must equal total. Optional `reference_no` (EDC receipt number, max 50 chars) is stored for `edc_flazz` and ignored on other methods |
 | `transaction_date` | datetime | No | Defaults to current Jakarta datetime. Only the date part is stored |
 | `apply_promo` | bool | No | Opt in to the server-side [promo](#promo) discount. See below |
 
@@ -1135,6 +1187,7 @@ Create a sale transaction. Supports single menus or packages. The sum of all `pa
     "company_id": "company6abc123",
     "transaction_date": "2026-06-24 10:30:00",
     "total_amount": 55000,
+    "queue_number": 23,
     "items": [
       { "detail_id": "trd001", "menu_id": "menu001", "quantity": 2, "subtotal": 30000 },
       { "detail_id": "trd002", "menu_id": "menu003", "quantity": 1, "subtotal": 25000 }
@@ -1142,6 +1195,8 @@ Create a sale transaction. Supports single menus or packages. The sum of all `pa
   }
 }
 ```
+
+`queue_number` (No. Antrian) is issued for sales by the **Outlet** role, from the same per-company, per-day counter as `POST /pos/queue-next.php` and in the same DB transaction as the sale. The day is the real date, not `transaction_date`. Other roles get `null`.
 
 #### Promo discount (`apply_promo`)
 
@@ -1233,17 +1288,72 @@ List results are always sorted by `transaction_date DESC, created_at DESC` (newe
       "created_by": "driver001",
       "created_at": "2026-06-24 10:30:00",
       "updated_at": "2026-06-24 10:30:00",
-      "updated_by": "driver001"
+      "updated_by": "driver001",
+      "queue_number": 23
     },
     "items": [
-      { "detail_id": "trd001", "menu_id": "menu001", "menu_name": "Kopi Susu", "quantity": 2, "subtotal": 30000 }
+      { "detail_id": "trd001", "menu_id": "menu001", "menu_name": "Kopi Susu", "package_id": null, "package_name": null, "quantity": 2, "subtotal": 30000 }
     ],
     "payments": [
-      { "payment_method": "cash", "amount": 55000 }
+      { "payment_method": "edc_flazz", "amount": 55000, "reference_no": "004512" }
     ]
   }
 }
 ```
+
+---
+
+### GET /pos/history.php
+
+The POS "Riwayat Transaksi" modal: filtered, paginated sales with their lines, payments and a summary.
+
+**Auth:** Bearer Token. Owner/Mitra see the whole company (optionally one cashier via `username`). Every other role only sees its own sales (`created_by` = token username) and must pass its own `company_id` (403 otherwise).
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `company_id` | string | Yes | — | |
+| `start_date` | `YYYY-MM-DD` | No | — | Inclusive, on the sale's (Jakarta) date. Omit both dates for "Semua" |
+| `end_date` | `YYYY-MM-DD` | No | — | Inclusive |
+| `search` | string | No | — | Case-insensitive substring of a menu **or** package name. A sale matches if any of its lines does |
+| `username` | string | No | — | Owner/Mitra only; ignored for other roles |
+| `page` / `limit` | int | No | 1 / 10 | `limit` max 100. Newest first (`transaction_date DESC, created_at DESC`) |
+
+**Response 200:**
+
+```json
+{
+  "status_code": 200,
+  "status_message": "Success",
+  "data": {
+    "summary": { "transaction_count": 42, "items_sold": 97, "total_revenue": 1250000 },
+    "transactions": [
+      {
+        "transaction_id": "trx6abc123",
+        "transaction_date": "2026-09-24",
+        "created_at": "2026-09-24 10:30:00",
+        "queue_number": 23,
+        "total_item": 3,
+        "gross_amount": 31000,
+        "discount_amount": 3000,
+        "total_amount": 28000,
+        "promo_name": "Monday Bestie Day",
+        "lines": [
+          { "menu_id": "menu001", "package_id": null, "name": "Aren Latte", "quantity": 2, "unit_price": 8000, "subtotal": 16000, "sugar_level": "Less Sugar", "ice_level": "Normal" },
+          { "menu_id": null, "package_id": "pkg001", "name": "Bundle 2 Raki Signature Aren 500ML", "quantity": 1, "unit_price": 15000, "subtotal": 15000, "sugar_level": null, "ice_level": null }
+        ],
+        "payments": [ { "payment_method": "edc_flazz", "amount": 28000, "reference_no": "004512" } ]
+      }
+    ],
+    "pagination": { "total": 42, "page": 1, "limit": 10, "total_pages": 5 }
+  }
+}
+```
+
+- `summary` covers every sale matching the filters, not just the page. `items_sold` = sum of `total_item`, where each menu inside a package counts. `total_revenue` = sum of `total_amount`, net of promo.
+- `transaction_date` is date-only (that's how it's stored). Use `created_at` for the time the sale was saved.
+- `lines[].unit_price` / `subtotal` are **before** promo, so they add up to `gross_amount`. The discount is `discount_amount` / `promo_name`.
+- Package lines: sales saved from this release on come back as one package line. Older sales stored only the component menus, so their packages appear as separate menu lines with the package price split between them, and searching by package name won't find them.
+- `queue_number` is `null` for sales without one.
 
 ---
 

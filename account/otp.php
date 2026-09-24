@@ -6,6 +6,7 @@ require_once '../general.php';
 require_once '../config.php';
 require_once '../notification/notification.php';
 require_once '../log.php';
+require_once __DIR__ . '/account_rules.php';
 
 use Firebase\JWT\JWT;
 
@@ -216,7 +217,7 @@ function validateOTP($conn, $input)
     $otp          = mysqli_real_escape_string($conn, $otp);
 
     // Ambil username dari phone_number
-    $user_query = "SELECT username, company_id, app_role_id FROM movira_core_dev.app_user WHERE phone_number = '$phone_number' AND app_id = '06660e87-37e7-491b-92c3-c772130eb57c' LIMIT 1";
+    $user_query = "SELECT username, company_id, app_role_id, account_status FROM movira_core_dev.app_user WHERE phone_number = '$phone_number' AND app_id = '06660e87-37e7-491b-92c3-c772130eb57c' LIMIT 1";
     $user_result = mysqli_query($conn, $user_query);
 
     if (!$user_result) {
@@ -303,6 +304,12 @@ function validateOTP($conn, $input)
     // Tandai OTP sebagai sudah dipakai
     $mark_used = "UPDATE otp_codes SET is_used = 1, used_at = NOW() WHERE otp_id = '{$otp_row['otp_id']}' LIMIT 1";
     mysqli_query($conn, $mark_used);
+
+    // Same gate as login.php: a pending/rejected sign-up must not get a token through OTP either.
+    $blockedMessage = accountStatusBlockMessage($user['account_status'] ?? null);
+    if ($blockedMessage !== null) {
+        jsonResponse(403, $blockedMessage);
+    }
 
     // Generate JWT (sama seperti login)
     $issuedAt       = time();
