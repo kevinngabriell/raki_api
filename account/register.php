@@ -4,97 +4,81 @@ require_once '../connection/db.php';
 require_once '../vendor/autoload.php';
 require_once '../general.php';
 require_once '../log.php';
+require_once __DIR__ . '/account_rules.php';
 
+// Self-registration. The account is created pending, with no role and no company:
+// any app_role_id the client sends is ignored (this endpoint is public, so trusting
+// it would let anyone create an Owner). An Owner grants the role through
+// account/pending.php, and login.php refuses pending/rejected accounts until then.
 function register($conn, $input){
     $conn = DB::conn();
 
-    $username = $input['username'];
-    $password = $input['password'];
-    $app_id = $input['app_id'];
-    $app_role_id = $input['app_role_id'];
-
-    $username = mysqli_real_escape_string($conn, $username);
-    $password = mysqli_real_escape_string($conn, $password);
-    $app_id = mysqli_real_escape_string($conn, $app_id);
-    $app_role_id = mysqli_real_escape_string($conn, $app_role_id);
-
-    $checkAppQuery = "SELECT * FROM movira_core_dev.app WHERE app_id = '$app_id'";
-    $checkAppResult = mysqli_query($conn, $checkAppQuery);
-
-    if (mysqli_num_rows($checkAppResult) === 0) {
+    $validated = accountValidateRegistration($input);
+    if (isset($validated['error'])) {
         logApiError($conn, [
-            'error_level'   => 'error',
-            'http_status'   => 500,
+            'error_level'   => 'warning',
+            'http_status'   => 400,
             'endpoint'      => '/account/register.php',
             'method'        => 'POST',
-            'error_message' => 'App ID is not valid !!!',
-            'user_identifier' => $username,
+            'error_message' => $validated['error'],
+            'user_identifier' => is_array($input) ? ($input['username'] ?? null) : null,
             'company_id'      => null,
         ]);
+        jsonResponse(400, $validated['error']);
+    }
+    $data = $validated['data'];
+    $username = $data['username'];
 
-        jsonResponse(500, 'Failed to create user', ['error' => 'App ID tidak valid.']);
-        return ['success' => false, 'message' => 'App ID is not valid.'];
+    // Usernames stay unique across every app: other endpoints (profile.php, forgot_password.php)
+    // look users up by username alone.
+    $stmtUser = $conn->prepare("SELECT user_id FROM movira_core_dev.app_user WHERE username = ? LIMIT 1");
+    $stmtUser->bind_param('s', $username);
+    $stmtUser->execute();
+    if ($stmtUser->get_result()->num_rows > 0) {
+        jsonResponse(409, 'Username sudah dipakai');
     }
 
-    $checkAppRoleQuery = "SELECT * FROM movira_core_dev.app_role WHERE app_role_id = '$app_role_id'";
-    $checkAppRoleResult = mysqli_query($conn, $checkAppRoleQuery);
-    
-    if (mysqli_num_rows($checkAppRoleResult) === 0) {
-        logApiError($conn, [
-            'error_level'   => 'error',
-            'http_status'   => 500,
-            'endpoint'      => '/account/register.php',
-            'method'        => 'POST',
-            'error_message' => 'App role ID is not valid !!!',
-            'user_identifier' => $username,
-            'company_id'      => null,
-        ]);
-
-        jsonResponse(500, 'Failed to create user', ['error' => 'App role ID is not valid.']);
-        return ['success' => false, 'message' => 'App role ID is not valid.'];
+    // Phone numbers stay unique within RAKI: account/otp.php finds the user by phone_number,
+    // and with two matches it would auto-create yet another account instead of logging in.
+    $variants = accountPhoneVariants($data['phone_number']);
+    $appId = $data['app_id'];
+    $stmtPhone = $conn->prepare("SELECT user_id FROM movira_core_dev.app_user WHERE app_id = ? AND phone_number IN (?, ?, ?) LIMIT 1");
+    $stmtPhone->bind_param('ssss', $appId, $variants[0], $variants[1], $variants[2]);
+    $stmtPhone->execute();
+    if ($stmtPhone->get_result()->num_rows > 0) {
+        jsonResponse(409, 'Nomor HP sudah terdaftar');
     }
 
-    // Cek apakah username sudah ada
-    $checkUserQuery = "SELECT user_id FROM movira_core_dev.app_user WHERE username = '$username'";
-    $checkUserResult = mysqli_query($conn, $checkUserQuery);
-
-    if (mysqli_num_rows($checkUserResult) > 0) {
-        logApiError($conn, [
-            'error_level'   => 'error',
-            'http_status'   => 500,
-            'endpoint'      => '/account/register.php',
-            'method'        => 'POST',
-            'error_message' => 'Username has been used !!',
-            'user_identifier' => $username,
-            'company_id'      => null,
-        ]);
-
-        jsonResponse(500, 'Failed to create OTP', ['error' => 'Username has been used !!']);
-
-        return ['success' => false, 'message' => 'Username has been used !!'];
-    }
-
-    $hashedPassword = password_hash($password, PASSWORD_DEFAULT);
+    // login.php escapes the password before password_verify(), so it has to be hashed the same way.
+    $hashedPassword = password_hash(mysqli_real_escape_string($conn, $data['password']), PASSWORD_DEFAULT);
     $userID = "user" . uniqid();
+    $status = ACCOUNT_STATUS_PENDING;
 
-    $insertQuery = "INSERT INTO movira_core_dev.app_user (user_id, username, password, app_id, app_role_id, created_at) VALUES ('$userID','$username', '$hashedPassword', '$app_id', '$app_role_id', NOW())";
+    $stmtInsert = $conn->prepare("INSERT INTO movira_core_dev.app_user (user_id, username, password, app_id, app_role_id, company_id, first_name, phone_number, email, account_status, created_at) VALUES (?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, NOW())");
+    $stmtInsert->bind_param('ssssssss', $userID, $username, $hashedPassword, $appId, $data['full_name'], $data['phone_number'], $data['email'], $status);
 
-    if (mysqli_query($conn, $insertQuery)) {
-        $userId = mysqli_insert_id($conn);
-        jsonResponse(201, 'New user has been created successfully', ['username' => $userId]);
-    } else {
-        logApiError($conn, [
-            'error_level'   => 'error',
-            'http_status'   => 500,
-            'endpoint'      => '/account/register.php',
-            'method'        => 'POST',
-            'error_message' => mysqli_error($conn),
-            'user_identifier' => $username ?? null,
-            'company_id'      => $decoded->company_id ?? null,
-        ]);
-
-        jsonResponse(500, 'Failed to create a new user: ' . mysqli_error($conn));
+    try {
+        $inserted = $stmtInsert->execute();
+        $errno = $inserted ? 0 : $stmtInsert->errno;
+        $error = $inserted ? '' : $stmtInsert->error;
+    } catch (mysqli_sql_exception $e) {
+        $inserted = false;
+        $errno = $e->getCode();
+        $error = $e->getMessage();
     }
+
+    if (!$inserted) {
+        // Lost a race with a concurrent sign-up for the same username.
+        if ($errno === 1062) {
+            jsonResponse(409, 'Username sudah dipakai');
+        }
+        throw new Exception('Failed to create user: ' . $error);
+    }
+
+    jsonResponse(201, 'Pendaftaran berhasil, menunggu persetujuan admin', [
+        'username'       => $username,
+        'account_status' => $status,
+    ]);
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
@@ -111,7 +95,7 @@ try {
     switch($method){
         case 'POST':
             $input = json_decode(file_get_contents('php://input'), true);
-            register($conn, $input);   
+            register($conn, $input);
             break;
         default:
             logApiError($conn, [
@@ -139,7 +123,7 @@ try {
         'user_identifier' => $decoded->username ?? null,
         'company_id'      => $decoded->company_id ?? null,
     ]);
-    
+
     jsonResponse(500, 'Internal Server Error', ['error' => $e->getMessage()]);
 }
 

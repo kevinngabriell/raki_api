@@ -24,10 +24,39 @@ use Firebase\JWT\Key;
 // ─────────────────────────────────────────────
 // CREATE
 // ─────────────────────────────────────────────
+
+// menu_ids arrive as a JSON array, or from a multipart form as menu_ids[]=…,
+// a JSON string '["a","b"]' or "a,b". null when not sent at all.
+function packageMenuIds($value) {
+    if ($value === null) {
+        return null;
+    }
+    if (is_string($value)) {
+        $decoded = json_decode($value, true);
+        $value = is_array($decoded) ? $decoded : array_filter(array_map('trim', explode(',', $value)), 'strlen');
+    }
+    return is_array($value) ? array_values($value) : $value;
+}
+
+// Optional photo (multipart field `image`), stored like menu photos. [null, null] when none was sent.
+function packageImageUpload() {
+    if (empty($_FILES['image']) || !isset($_FILES['image']['error']) || $_FILES['image']['error'] === UPLOAD_ERR_NO_FILE) {
+        return [null, null];
+    }
+    if ($_FILES['image']['error'] !== UPLOAD_ERR_OK) {
+        jsonResponse(400, 'Upload error code: ' . $_FILES['image']['error']);
+    }
+    try {
+        return handle_menu_image_upload($_FILES['image'], 'package');
+    } catch (RuntimeException $e) {
+        jsonResponse(400, $e->getMessage());
+    }
+}
+
 function createPackage($conn, $schema, $input, $username) {
     $package_name  = isset($input['package_name'])  ? mysqli_real_escape_string($conn, trim($input['package_name']))  : null;
     $package_price = isset($input['package_price']) ? (int)$input['package_price'] : null;
-    $menu_ids      = $input['menu_ids'] ?? [];   // array of menu_id
+    $menu_ids      = packageMenuIds($input['menu_ids'] ?? null) ?? [];   // array of menu_id
 
     if (!$package_name || empty($menu_ids) || !is_array($menu_ids)) {
         jsonResponse(400, 'package_name and menu_ids (array) are required');
@@ -52,10 +81,14 @@ function createPackage($conn, $schema, $input, $username) {
     $now           = getCurrentDateTimeJakarta();
     $price_sql     = ($package_price !== null) ? $package_price : 'NULL';
 
+    [$image_url, $thumb_url] = packageImageUpload();
+    $img_sql   = $image_url ? "'" . mysqli_real_escape_string($conn, $image_url) . "'" : 'NULL';
+    $thumb_sql = $thumb_url ? "'" . mysqli_real_escape_string($conn, $thumb_url) . "'" : 'NULL';
+
     mysqli_begin_transaction($conn);
     try {
-        $insertPkg = "INSERT INTO {$schema}.package (package_id, package_name, package_price, created_by, created_at)
-                      VALUES ('$package_id', '$package_name', $price_sql, '$username', '$now')";
+        $insertPkg = "INSERT INTO {$schema}.package (package_id, package_name, package_price, image_url, thumb_url, created_by, created_at)
+                      VALUES ('$package_id', '$package_name', $price_sql, $img_sql, $thumb_sql, '$username', '$now')";
         if (!mysqli_query($conn, $insertPkg)) {
             throw new Exception('Failed to insert package: ' . mysqli_error($conn));
         }
@@ -71,7 +104,7 @@ function createPackage($conn, $schema, $input, $username) {
         }
 
         mysqli_commit($conn);
-        jsonResponse(201, 'Package created successfully', ['package_id' => $package_id, 'package_name' => $package_name]);
+        jsonResponse(201, 'Package created successfully', ['package_id' => $package_id, 'package_name' => $package_name, 'image_url' => $image_url, 'thumb_url' => $thumb_url]);
     } catch (Exception $e) {
         mysqli_rollback($conn);
         jsonResponse(500, $e->getMessage());
@@ -88,7 +121,7 @@ function getAllPackages($conn, $schema, $params, $page = 1, $limit = 20) {
     $countResult = mysqli_query($conn, "SELECT COUNT(*) as total FROM {$schema}.package WHERE package_name LIKE '%$params%'");
     $total       = (int)mysqli_fetch_assoc($countResult)['total'];
 
-    $query = "SELECT p.package_id, p.package_name, p.package_price,
+    $query = "SELECT p.package_id, p.package_name, p.package_price, p.image_url, p.thumb_url,
                      p.created_by, p.created_at, p.updated_by, p.updated_at
               FROM {$schema}.package p
               WHERE p.package_name LIKE '%$params%'
@@ -135,7 +168,7 @@ function getDetailPackage($conn, $schema, $package_id) {
     $package_id = mysqli_real_escape_string($conn, $package_id);
 
     $result = mysqli_query($conn,
-        "SELECT package_id, package_name, package_price, created_by, created_at, updated_by, updated_at
+        "SELECT package_id, package_name, package_price, image_url, thumb_url, created_by, created_at, updated_by, updated_at
          FROM {$schema}.package WHERE package_id = '$package_id'"
     );
 
@@ -184,7 +217,13 @@ function updatePackage($conn, $schema, $input, $username) {
         $fields[] = "package_price = $price";
     }
 
-    $menu_ids = $input['menu_ids'] ?? null;
+    [$image_url, $thumb_url] = packageImageUpload();
+    if ($image_url) {
+        $fields[] = "image_url = '" . mysqli_real_escape_string($conn, $image_url) . "'";
+        $fields[] = "thumb_url = '" . mysqli_real_escape_string($conn, $thumb_url) . "'";
+    }
+
+    $menu_ids = packageMenuIds($input['menu_ids'] ?? null);
 
     if (empty($fields) && $menu_ids === null) {
         jsonResponse(400, 'No fields provided for update');
@@ -330,8 +369,15 @@ try {
             break;
 
         case 'POST':
-            $input = json_decode(file_get_contents('php://input'), true) ?? [];
-            createPackage($conn, $schema, $input, $token_username);
+            // JSON, or multipart/form-data when a photo (`image`) is attached. PHP only parses
+            // multipart bodies on POST, so a photo update is POST with package_id (like menu.php).
+            $input = !empty($_POST) ? $_POST : (json_decode(file_get_contents('php://input'), true) ?? []);
+
+            if (!empty($input['package_id'])) {
+                updatePackage($conn, $schema, $input, $token_username);
+            } else {
+                createPackage($conn, $schema, $input, $token_username);
+            }
             break;
 
         case 'PUT':
