@@ -128,7 +128,7 @@ function getDashboardStatistic($conn, $schema, $company_id = null, $username){
     }
 
     // 4) Total supply order amount per ingredient + company (from_company)
-    $sqlIngredientPurchase = "SELECT COALESCE(SUM(SO.total_amount), 0) AS total_trx, I.ingredient_name, AC.company_name FROM {$schema}.supply_order SO LEFT JOIN {$schema}.supply_order_detail SOD ON SO.supply_order_id = SOD.supply_order_id LEFT JOIN {$schema}.ingredient I ON SOD.ingredient_id = I.ingredient_id LEFT JOIN movira_core_dev.app_company AC ON SO.from_company_id = AC.company_id $whereSoIngredient GROUP BY I.ingredient_name, AC.company_name ORDER BY total_trx DESC";
+    $sqlIngredientPurchase = "SELECT COALESCE(SUM(SO.total_amount), 0) AS total_trx, I.ingredient_name, AC.company_name FROM {$schema}.supply_order SO LEFT JOIN {$schema}.supply_order_detail SOD ON SO.supply_order_id = SOD.supply_order_id LEFT JOIN {$schema}.ingredient I ON SOD.ingredient_id = I.ingredient_id LEFT JOIN movira_core.app_company AC ON SO.from_company_id = AC.company_id $whereSoIngredient GROUP BY I.ingredient_name, AC.company_name ORDER BY total_trx DESC";
     $ingRes = mysqli_query($conn, $sqlIngredientPurchase);
 
     if (!$ingRes) {

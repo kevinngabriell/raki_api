@@ -155,7 +155,7 @@ function createOrderTransaction($conn, $schema, $input, $username){
         $fromCompanyName = '';
 
         // PIC contact untuk company tujuan (biasanya Raki pusat)
-        $sqlPhone = "SELECT pic_contact FROM movira_core_dev.app_company WHERE company_id = ?";
+        $sqlPhone = "SELECT pic_contact FROM movira_core.app_company WHERE company_id = ?";
         $stmtPhone = $conn->prepare($sqlPhone);
         if ($stmtPhone) {
             $stmtPhone->bind_param('s', $to_company_id);
@@ -170,7 +170,7 @@ function createOrderTransaction($conn, $schema, $input, $username){
         }
 
         // Nama mitra (asal permintaan supply)
-        $sqlFrom = "SELECT company_name FROM movira_core_dev.app_company WHERE company_id = ?";
+        $sqlFrom = "SELECT company_name FROM movira_core.app_company WHERE company_id = ?";
         $stmtFrom = $conn->prepare($sqlFrom);
         if ($stmtFrom) {
             $stmtFrom->bind_param('s', $from_company_id);
@@ -225,7 +225,7 @@ function getSupplyOrderDetail($conn, $schema, $order_id){
 
     $orderSql = "SELECT supply_order_id, order_code, from_company_id, AC.company_name, to_company_id, SO.status, notes, requested_at, approved_at, completed_at, created_by, updated_by, SO.created_at, SO.updated_at, total_amount
 FROM {$schema}.supply_order SO
-LEFT JOIN movira_core_dev.app_company AC ON  SO.from_company_id = AC.company_id WHERE supply_order_id = '$order_id_esc'";
+LEFT JOIN movira_core.app_company AC ON  SO.from_company_id = AC.company_id WHERE supply_order_id = '$order_id_esc'";
     $orderRes = mysqli_query($conn, $orderSql);
     if (!$orderRes || mysqli_num_rows($orderRes) === 0) {
         jsonResponse(404, 'Supply order not found');
@@ -281,7 +281,7 @@ function getSupplyOrders($conn, $schema, $page = 1, $limit = 10){
 
     $countQuery = "SELECT COUNT(*) as total
         FROM {$schema}.supply_order SO
-        LEFT JOIN movira_core_dev.app_company AC ON SO.from_company_id = AC.company_id
+        LEFT JOIN movira_core.app_company AC ON SO.from_company_id = AC.company_id
         $where";
     $countResult = mysqli_query($conn, $countQuery);
     $totalRow = mysqli_fetch_assoc($countResult);
@@ -289,7 +289,7 @@ function getSupplyOrders($conn, $schema, $page = 1, $limit = 10){
 
     $sql = " SELECT supply_order_id, order_code, from_company_id, AC.company_name, to_company_id, SO.status, notes, requested_at, approved_at, completed_at, created_by, updated_by, SO.created_at, SO.updated_at, total_amount
         FROM {$schema}.supply_order SO
-        LEFT JOIN movira_core_dev.app_company AC ON SO.to_company_id = AC.company_id 
+        LEFT JOIN movira_core.app_company AC ON SO.to_company_id = AC.company_id 
         $where 
         ORDER BY requested_at DESC, created_at DESC LIMIT $limit OFFSET $offset";
 

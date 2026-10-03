@@ -130,7 +130,7 @@ class LocationSocket implements MessageComponentInterface
                 $_ENV['DB_HOST'] ?? '127.0.0.1',
                 $_ENV['DB_USER'] ?? '',
                 $_ENV['DB_PASS'] ?? '',
-                'movira_core_dev',
+                'movira_core',
                 (int)($_ENV['DB_PORT'] ?? 3306)
             );
             $this->db->set_charset('utf8mb4');

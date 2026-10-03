@@ -23,13 +23,13 @@ function getPendingAccounts($conn, $page, $limit){
     $appId  = ACCOUNT_RAKI_APP_ID;
     $status = ACCOUNT_STATUS_PENDING;
 
-    $stmtCount = $conn->prepare("SELECT COUNT(*) AS total FROM movira_core_dev.app_user WHERE app_id = ? AND account_status = ?");
+    $stmtCount = $conn->prepare("SELECT COUNT(*) AS total FROM movira_core.app_user WHERE app_id = ? AND account_status = ?");
     $stmtCount->bind_param('ss', $appId, $status);
     $stmtCount->execute();
     $total = (int)$stmtCount->get_result()->fetch_assoc()['total'];
 
     // Oldest first: whoever has been waiting longest gets reviewed first.
-    $stmt = $conn->prepare("SELECT user_id, username, first_name AS full_name, phone_number, email, created_at FROM movira_core_dev.app_user WHERE app_id = ? AND account_status = ? ORDER BY created_at ASC, user_id ASC LIMIT ?, ?");
+    $stmt = $conn->prepare("SELECT user_id, username, first_name AS full_name, phone_number, email, created_at FROM movira_core.app_user WHERE app_id = ? AND account_status = ? ORDER BY created_at ASC, user_id ASC LIMIT ?, ?");
     $stmt->bind_param('ssii', $appId, $status, $offset, $limit);
     $stmt->execute();
     $users = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
@@ -57,7 +57,7 @@ function reviewPendingAccount($conn, $input, $decoded){
     }
 
     $appId = ACCOUNT_RAKI_APP_ID;
-    $stmtUser = $conn->prepare("SELECT user_id, username, account_status FROM movira_core_dev.app_user WHERE user_id = ? AND app_id = ? LIMIT 1");
+    $stmtUser = $conn->prepare("SELECT user_id, username, account_status FROM movira_core.app_user WHERE user_id = ? AND app_id = ? LIMIT 1");
     $stmtUser->bind_param('ss', $userId, $appId);
     $stmtUser->execute();
     $user = $stmtUser->get_result()->fetch_assoc();
@@ -72,7 +72,7 @@ function reviewPendingAccount($conn, $input, $decoded){
     if ($action === 'reject') {
         $newStatus = ACCOUNT_STATUS_REJECTED;
         $pending = ACCOUNT_STATUS_PENDING;
-        $stmt = $conn->prepare("UPDATE movira_core_dev.app_user SET account_status = ?, updated_at = NOW() WHERE user_id = ? AND account_status = ?");
+        $stmt = $conn->prepare("UPDATE movira_core.app_user SET account_status = ?, updated_at = NOW() WHERE user_id = ? AND account_status = ?");
         $stmt->bind_param('sss', $newStatus, $userId, $pending);
         $stmt->execute();
         if ($stmt->affected_rows !== 1) {
@@ -112,7 +112,7 @@ function reviewPendingAccount($conn, $input, $decoded){
 
     $newStatus = ACCOUNT_STATUS_ACTIVE;
     $pending = ACCOUNT_STATUS_PENDING;
-    $stmt = $conn->prepare("UPDATE movira_core_dev.app_user SET account_status = ?, app_role_id = ?, company_id = ?, updated_at = NOW() WHERE user_id = ? AND account_status = ?");
+    $stmt = $conn->prepare("UPDATE movira_core.app_user SET account_status = ?, app_role_id = ?, company_id = ?, updated_at = NOW() WHERE user_id = ? AND account_status = ?");
     $stmt->bind_param('sssss', $newStatus, $appRoleId, $companyId, $userId, $pending);
     $stmt->execute();
     if ($stmt->affected_rows !== 1) {

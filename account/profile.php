@@ -14,7 +14,7 @@ function getUserProfile($conn, $username) {
 
     $query = "SELECT user_id, username, account_status, app_id, app_role_id, company_id,
                      phone_number, first_name, language, email, created_at, updated_at
-              FROM movira_core_dev.app_user
+              FROM movira_core.app_user
               WHERE username = '$username'
               LIMIT 1";
 

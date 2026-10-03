@@ -507,7 +507,7 @@ function createTransaction($conn, $schema, $input, $username, $role = null, $tok
         try {
             if ($creatorRoleName !== 'Outlet') {
                 // Fetch PIC contact from app_company
-                $sqlPhone = "SELECT pic_contact FROM movira_core_dev.app_company WHERE company_id = ?";
+                $sqlPhone = "SELECT pic_contact FROM movira_core.app_company WHERE company_id = ?";
                 $stmtPhone = $conn->prepare($sqlPhone);
 
                 if ($stmtPhone) {
@@ -537,7 +537,7 @@ function createTransaction($conn, $schema, $input, $username, $role = null, $tok
                         error_log('Gagal kirim WhatsApp: ' . ($waResult['raw'] ?? ''));
 
                         // Fallback: send email to business owner
-                        $sqlOwnerEmail = "SELECT u.email FROM movira_core_dev.app_user u JOIN movira_core_dev.app_role r ON r.app_role_id = u.app_role_id WHERE u.company_id = ? AND r.role_name = 'Owner' AND u.email IS NOT NULL AND u.email != '' LIMIT 1";
+                        $sqlOwnerEmail = "SELECT u.email FROM movira_core.app_user u JOIN movira_core.app_role r ON r.app_role_id = u.app_role_id WHERE u.company_id = ? AND r.role_name = 'Owner' AND u.email IS NOT NULL AND u.email != '' LIMIT 1";
                         $stmtOwnerEmail = $conn->prepare($sqlOwnerEmail);
                         if ($stmtOwnerEmail) {
                             $stmtOwnerEmail->bind_param('s', $company_id);
@@ -815,7 +815,7 @@ function getAllTransaction($conn, $schema, $company_id = null, $username = null,
     $total = (int)($totalRow['total'] ?? 0);
 
     // --- Query data transaksi + nama company ---
-    $baseSelect = "SELECT t.transaction_id, t.company_id, t.transaction_date, t.total_amount, t.created_at, t.created_by, t.updated_at, t.updated_by, t.total_item, ac.company_name FROM {$schema}.transaction t LEFT JOIN movira_core_dev.app_company ac ON ac.company_id = t.company_id";
+    $baseSelect = "SELECT t.transaction_id, t.company_id, t.transaction_date, t.total_amount, t.created_at, t.created_by, t.updated_at, t.updated_by, t.total_item, ac.company_name FROM {$schema}.transaction t LEFT JOIN movira_core.app_company ac ON ac.company_id = t.company_id";
 
     if ($hasCompanyFilter && $hasUsernameFilter) {
         $sql = $baseSelect . " WHERE t.company_id = ? AND t.created_by = ? ORDER BY t.transaction_date DESC, t.created_at DESC LIMIT ?, ?";

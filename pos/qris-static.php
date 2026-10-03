@@ -10,7 +10,7 @@ use Firebase\JWT\JWT;
 use Firebase\JWT\Key;
 
 function showStaticQRIS($conn, $company_id, $username){
-    $query = "SELECT * FROM movira_core_dev.app_static_payment WHERE company_id = '$company_id'";
+    $query = "SELECT * FROM movira_core.app_static_payment WHERE company_id = '$company_id'";
     $result = mysqli_query($conn, $query);
 
     if ($result && mysqli_num_rows($result) > 0) {

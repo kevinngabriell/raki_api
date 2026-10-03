@@ -11,7 +11,7 @@ const PROMO_TYPE_BUY_N_NOMINAL_OFF = 'buy_n_nominal_off';
 // app_role.role_name values allowed to create/edit/delete promos. Own company only.
 const PROMO_MANAGER_ROLES = ['Owner'];
 
-// RAKI's app_id in movira_core_dev.app (same literal as account/login.php).
+// RAKI's app_id in movira_core.app (same literal as account/login.php).
 const PROMO_APP_ID = '06660e87-37e7-491b-92c3-c772130eb57c';
 
 function promoRupiah(int $amount): string {
@@ -299,7 +299,7 @@ function promoResolveRoleName(mysqli $conn, ?string $appRoleId): ?string {
     if ($appRoleId === null || $appRoleId === '') {
         return null;
     }
-    $stmt = $conn->prepare("SELECT role_name FROM movira_core_dev.app_role WHERE app_role_id = ?");
+    $stmt = $conn->prepare("SELECT role_name FROM movira_core.app_role WHERE app_role_id = ?");
     if (!$stmt) {
         throw new Exception('Prepare role lookup failed: ' . $conn->error);
     }

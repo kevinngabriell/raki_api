@@ -638,8 +638,8 @@ Get all menu packages or a single package.
         "package_id": "pkg001",
         "package_name": "Bundle Hemat",
         "package_price": 25000,
-        "image_url": "http://getmovira.com/raki-uploads/package/2026-09/ab12.jpg",
-        "thumb_url": "http://getmovira.com/raki-uploads/package/2026-09/ab12_thumb.webp",
+        "image_url": "https://getmovira.com/raki-uploads/package/2026-09/ab12.jpg",
+        "thumb_url": "https://getmovira.com/raki-uploads/package/2026-09/ab12.jpg",
         "menus": [
           { "menu_id": "menu001", "menu_name": "Kopi Susu" },
           { "menu_id": "menu002", "menu_name": "Snack" }

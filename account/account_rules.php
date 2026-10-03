@@ -5,7 +5,7 @@
 // The first half is pure (no DB) so it can be unit-tested; see
 // account/tests/account_rules_test.php.
 
-// RAKI's app_id in movira_core_dev.app (same literal as account/login.php).
+// RAKI's app_id in movira_core.app (same literal as account/login.php).
 const ACCOUNT_RAKI_APP_ID = '06660e87-37e7-491b-92c3-c772130eb57c';
 
 // app_user.account_status values written by this API. Accounts created before
@@ -125,7 +125,7 @@ function accountRoleName(mysqli $conn, ?string $appRoleId): ?string {
     if ($appRoleId === null || $appRoleId === '') {
         return null;
     }
-    $stmt = $conn->prepare("SELECT role_name FROM movira_core_dev.app_role WHERE app_role_id = ? AND app_id = ?");
+    $stmt = $conn->prepare("SELECT role_name FROM movira_core.app_role WHERE app_role_id = ? AND app_id = ?");
     if (!$stmt) {
         return null;
     }
