@@ -24,7 +24,7 @@ function getMemberProfile($conn, $username) {
     $username = mysqli_real_escape_string($conn, $username);
 
     $query = "SELECT username, first_name, phone_number, email, language
-              FROM movira_core_dev.app_user
+              FROM movira_core.app_user
               WHERE username = '$username'
               LIMIT 1";
 

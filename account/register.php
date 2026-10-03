@@ -31,7 +31,7 @@ function register($conn, $input){
 
     // Usernames stay unique across every app: other endpoints (profile.php, forgot_password.php)
     // look users up by username alone.
-    $stmtUser = $conn->prepare("SELECT user_id FROM movira_core_dev.app_user WHERE username = ? LIMIT 1");
+    $stmtUser = $conn->prepare("SELECT user_id FROM movira_core.app_user WHERE username = ? LIMIT 1");
     $stmtUser->bind_param('s', $username);
     $stmtUser->execute();
     if ($stmtUser->get_result()->num_rows > 0) {
@@ -42,7 +42,7 @@ function register($conn, $input){
     // and with two matches it would auto-create yet another account instead of logging in.
     $variants = accountPhoneVariants($data['phone_number']);
     $appId = $data['app_id'];
-    $stmtPhone = $conn->prepare("SELECT user_id FROM movira_core_dev.app_user WHERE app_id = ? AND phone_number IN (?, ?, ?) LIMIT 1");
+    $stmtPhone = $conn->prepare("SELECT user_id FROM movira_core.app_user WHERE app_id = ? AND phone_number IN (?, ?, ?) LIMIT 1");
     $stmtPhone->bind_param('ssss', $appId, $variants[0], $variants[1], $variants[2]);
     $stmtPhone->execute();
     if ($stmtPhone->get_result()->num_rows > 0) {
@@ -54,7 +54,7 @@ function register($conn, $input){
     $userID = "user" . uniqid();
     $status = ACCOUNT_STATUS_PENDING;
 
-    $stmtInsert = $conn->prepare("INSERT INTO movira_core_dev.app_user (user_id, username, password, app_id, app_role_id, company_id, first_name, phone_number, email, account_status, created_at) VALUES (?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, NOW())");
+    $stmtInsert = $conn->prepare("INSERT INTO movira_core.app_user (user_id, username, password, app_id, app_role_id, company_id, first_name, phone_number, email, account_status, created_at) VALUES (?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, NOW())");
     $stmtInsert->bind_param('ssssssss', $userID, $username, $hashedPassword, $appId, $data['full_name'], $data['phone_number'], $data['email'], $status);
 
     try {

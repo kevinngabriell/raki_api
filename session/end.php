@@ -190,7 +190,7 @@ function endSession($conn, $schema, $input, $token_username, $decoded){
     require_once '../notification/notification.php';
 
     $ownerPhone = null;
-    $stmtPhone = $conn->prepare("SELECT pic_contact FROM movira_core_dev.app_company WHERE company_id = ?");
+    $stmtPhone = $conn->prepare("SELECT pic_contact FROM movira_core.app_company WHERE company_id = ?");
     if ($stmtPhone) {
         $stmtPhone->bind_param('s', $company_id);
         if ($stmtPhone->execute()) {

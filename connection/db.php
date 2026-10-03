@@ -10,14 +10,14 @@ class DB {
       return self::$conn;
     }
 
-    $host = '127.0.0.1'; 
-    //$host = '100.98.160.119'; 
+    //$host = '127.0.0.1'; 
+    $host = '100.98.160.119'; 
     $port = 3306;
     $user = 'movira_dev';
     $pass = 'devjayaA9&';
 
-    // connect default ke movira_core_dev
-    $defaultDb = $dbName ?: 'movira_core_dev';
+    // connect default ke movira_core
+    $defaultDb = $dbName ?: 'movira_core';
     $conn = new mysqli($host, $user, $pass, $defaultDb, $port);
 
     if ($conn->connect_error) {

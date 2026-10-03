@@ -34,7 +34,7 @@ function createOTP($conn, $input)
     $phone_number = mysqli_real_escape_string($conn, $phone_number);
 
     // Ambil user berdasarkan nomor telepon
-    $user_query = "SELECT username, phone_number FROM movira_core_dev.app_user WHERE phone_number = '$phone_number' AND app_id = '06660e87-37e7-491b-92c3-c772130eb57c' LIMIT 1";
+    $user_query = "SELECT username, phone_number FROM movira_core.app_user WHERE phone_number = '$phone_number' AND app_id = '06660e87-37e7-491b-92c3-c772130eb57c' LIMIT 1";
     $user_result = mysqli_query($conn, $user_query);
 
     if (!$user_result) {
@@ -71,7 +71,7 @@ function createOTP($conn, $input)
         $app_id_esc = mysqli_real_escape_string($conn, $app_id);
         $app_role_id_esc = mysqli_real_escape_string($conn, $app_role_id);
 
-        $insertUserQuery = "INSERT INTO movira_core_dev.app_user (user_id, username, password, app_id, app_role_id, phone_number, created_at) VALUES ('$user_id_esc', '$username_esc', '$pass_esc', '$app_id_esc', '$app_role_id_esc', '$phone_number', NOW())";
+        $insertUserQuery = "INSERT INTO movira_core.app_user (user_id, username, password, app_id, app_role_id, phone_number, created_at) VALUES ('$user_id_esc', '$username_esc', '$pass_esc', '$app_id_esc', '$app_role_id_esc', '$phone_number', NOW())";
 
         if (!mysqli_query($conn, $insertUserQuery)) {
             logApiError($conn, [
@@ -217,7 +217,7 @@ function validateOTP($conn, $input)
     $otp          = mysqli_real_escape_string($conn, $otp);
 
     // Ambil username dari phone_number
-    $user_query = "SELECT username, company_id, app_role_id, account_status FROM movira_core_dev.app_user WHERE phone_number = '$phone_number' AND app_id = '06660e87-37e7-491b-92c3-c772130eb57c' LIMIT 1";
+    $user_query = "SELECT username, company_id, app_role_id, account_status FROM movira_core.app_user WHERE phone_number = '$phone_number' AND app_id = '06660e87-37e7-491b-92c3-c772130eb57c' LIMIT 1";
     $user_result = mysqli_query($conn, $user_query);
 
     if (!$user_result) {

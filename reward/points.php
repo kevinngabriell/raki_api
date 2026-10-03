@@ -11,7 +11,7 @@ use Firebase\JWT\Key;
 
 function resolveUserId($conn, $username) {
     $username = mysqli_real_escape_string($conn, $username);
-    $result = mysqli_query($conn, "SELECT user_id FROM movira_core_dev.app_user WHERE username = '$username' LIMIT 1");
+    $result = mysqli_query($conn, "SELECT user_id FROM movira_core.app_user WHERE username = '$username' LIMIT 1");
     if (!$result || mysqli_num_rows($result) === 0) return null;
     return mysqli_fetch_assoc($result)['user_id'];
 }
@@ -69,7 +69,7 @@ function addPoints($conn, $schema, $input, $actor_username) {
 
     // verify user exists
     $check = mysqli_query($conn,
-        "SELECT user_id FROM movira_core_dev.app_user WHERE user_id = '$target_user_id' LIMIT 1"
+        "SELECT user_id FROM movira_core.app_user WHERE user_id = '$target_user_id' LIMIT 1"
     );
     if (!$check || mysqli_num_rows($check) === 0) {
         jsonResponse(404, 'User not found');

@@ -61,7 +61,7 @@ function getBonusWeekPeriods(string $start, string $end): array {
  * This also means the current-week default case (start=Monday, end=Saturday of
  * the same week) still behaves exactly as before: exactly one week is produced.
  *
- * - Drivers are fetched from movira_core_dev.app_user by company_id + role,
+ * - Drivers are fetched from movira_core.app_user by company_id + role,
  *   excluding inactive accounts (account_status suspended/disabled/rejected)
  * - Bonus tiers are fetched from bonus_schema, scoped to this company
  * - For each Mon-Sat week in range, each driver's tier is the highest qty <= that week's total_item
@@ -75,7 +75,7 @@ function getAllDriverBonus($conn, $schema, $company_id, $start = null, $end = nu
 
     // 1. Get all drivers for this company
     $driverQuery = "SELECT username, first_name
-                    FROM movira_core_dev.app_user
+                    FROM movira_core.app_user
                     WHERE company_id = '$company_id_esc'
                     AND app_role_id = 'app_role6902bc0cbb991'
                     AND account_status NOT IN ('suspended', 'disabled', 'rejected')

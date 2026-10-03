@@ -36,7 +36,7 @@ function requestPasswordResetOTP($conn, $input)
 
     $username = mysqli_real_escape_string($conn, $username);
 
-    $user_query = "SELECT username, phone_number FROM movira_core_dev.app_user WHERE username = '$username' AND app_id = '" . RAKI_APP_ID . "' LIMIT 1";
+    $user_query = "SELECT username, phone_number FROM movira_core.app_user WHERE username = '$username' AND app_id = '" . RAKI_APP_ID . "' LIMIT 1";
     $user_result = mysqli_query($conn, $user_query);
 
     if (!$user_result) {
@@ -269,7 +269,7 @@ function resetPassword($conn, $input)
     $username = mysqli_real_escape_string($conn, $decoded->username);
     $hashedPassword = password_hash($newPassword, PASSWORD_DEFAULT);
 
-    $update_query = "UPDATE movira_core_dev.app_user SET password = '$hashedPassword' WHERE username = '$username' AND app_id = '" . RAKI_APP_ID . "'";
+    $update_query = "UPDATE movira_core.app_user SET password = '$hashedPassword' WHERE username = '$username' AND app_id = '" . RAKI_APP_ID . "'";
 
     if (!mysqli_query($conn, $update_query)) {
         logApiError($conn, [

@@ -38,7 +38,7 @@ CREATE TABLE `promo` (
   `updated_at` datetime DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`promo_id`),
   KEY `idx_promo_company_active` (`company_id`, `is_active`),
-  CONSTRAINT `fk_promo_company` FOREIGN KEY (`company_id`) REFERENCES `movira_core_dev`.`app_company` (`company_id`) ON DELETE CASCADE
+  CONSTRAINT `fk_promo_company` FOREIGN KEY (`company_id`) REFERENCES `movira_core`.`app_company` (`company_id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
 -- Multi-valued conditions. A dimension with no rows is unrestricted.

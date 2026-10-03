@@ -9,7 +9,7 @@
 --
 --   mysql -h <host> -u <user> -p raki_dev < pos/pos_v2_migration.sql
 --
--- Part 2 is a read-only check on movira_core_dev (shared with other apps).
+-- Part 2 is a read-only check on movira_core (shared with other apps).
 
 
 -- ───────────── Part 1: RAKI schema ─────────────
@@ -34,7 +34,7 @@ ALTER TABLE `package`
   ADD COLUMN `thumb_url` varchar(255) DEFAULT NULL;
 
 
--- ───────────── Part 2: movira_core_dev.app_user (check only) ─────────────
+-- ───────────── Part 2: movira_core.app_user (check only) ─────────────
 --
 -- account/register.php now inserts sign-ups with
 --   account_status = 'pending', app_role_id = NULL, company_id = NULL
@@ -45,7 +45,7 @@ ALTER TABLE `package`
 -- Check before deploying:
 SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, COLUMN_DEFAULT
 FROM information_schema.COLUMNS
-WHERE TABLE_SCHEMA = 'movira_core_dev' AND TABLE_NAME = 'app_user'
+WHERE TABLE_SCHEMA = 'movira_core' AND TABLE_NAME = 'app_user'
   AND COLUMN_NAME IN ('account_status', 'app_role_id', 'company_id', 'first_name', 'phone_number', 'email');
 --
 -- What the result must show:
