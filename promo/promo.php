@@ -178,7 +178,7 @@ function promoParseConditions(mysqli $conn, string $schema, array $input, string
 
 // The outlet types a promo can target = the role names of the RAKI app.
 function promoOutletTypes(mysqli $conn): array {
-    $stmt = $conn->prepare("SELECT role_name FROM movira_core_dev.app_role WHERE app_id = ? ORDER BY role_name");
+    $stmt = $conn->prepare("SELECT role_name FROM movira_core.app_role WHERE app_id = ? ORDER BY role_name");
     $appId = PROMO_APP_ID;
     $stmt->bind_param('s', $appId);
     $stmt->execute();

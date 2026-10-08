@@ -111,7 +111,7 @@ $targets = [];
 if ($isHttp && isset($_GET['company_id']) && trim($_GET['company_id']) !== '') {
     $companyId = trim($_GET['company_id']);
 
-    $stmt = $conn->prepare("SELECT company_id, company_name, pic_contact FROM movira_core_dev.app_company WHERE company_id = ?");
+    $stmt = $conn->prepare("SELECT company_id, company_name, pic_contact FROM movira_core.app_company WHERE company_id = ?");
     if (!$stmt) {
         http_response_code(500);
         echo json_encode(['status_code' => 500, 'status_message' => 'Database error: unable to prepare company query.']);
@@ -135,7 +135,7 @@ if ($isHttp && isset($_GET['company_id']) && trim($_GET['company_id']) !== '') {
     ];
 
 } else {
-    $stmt = $conn->prepare("SELECT company_id, company_name, pic_contact FROM movira_core_dev.app_company WHERE app_id = ?");
+    $stmt = $conn->prepare("SELECT company_id, company_name, pic_contact FROM movira_core.app_company WHERE app_id = ?");
     if (!$stmt) {
         $msg = 'Database error: unable to prepare company list query.';
         if ($isCli) {

@@ -137,7 +137,7 @@ if ($isHttp && isset($_GET['company_id']) && trim($_GET['company_id']) !== '') {
     // HTTP single-company mode
     $companyId = trim($_GET['company_id']);
 
-    $sqlPhone = "SELECT company_id, company_name, pic_contact FROM movira_core_dev.app_company WHERE company_id = ?";
+    $sqlPhone = "SELECT company_id, company_name, pic_contact FROM movira_core.app_company WHERE company_id = ?";
     $stmtPhone = $conn->prepare($sqlPhone);
     if (!$stmtPhone) {
         http_response_code(500);
@@ -164,7 +164,7 @@ if ($isHttp && isset($_GET['company_id']) && trim($_GET['company_id']) !== '') {
 
 } else {
     // Cron / HTTP all-companies mode
-    $sqlCompanies = "SELECT company_id, company_name, pic_contact FROM movira_core_dev.app_company WHERE app_id = ?";
+    $sqlCompanies = "SELECT company_id, company_name, pic_contact FROM movira_core.app_company WHERE app_id = ?";
     $stmtCompanies = $conn->prepare($sqlCompanies);
     if (!$stmtCompanies) {
         $msg = 'Database error: unable to prepare company list query.';

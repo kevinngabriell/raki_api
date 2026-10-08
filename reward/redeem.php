@@ -12,7 +12,7 @@ use Firebase\JWT\Key;
 function resolveUserId($conn, $username) {
     $username = mysqli_real_escape_string($conn, $username);
     $result   = mysqli_query($conn,
-        "SELECT user_id FROM movira_core_dev.app_user WHERE username = '$username' LIMIT 1"
+        "SELECT user_id FROM movira_core.app_user WHERE username = '$username' LIMIT 1"
     );
     if (!$result || mysqli_num_rows($result) === 0) return null;
     return mysqli_fetch_assoc($result)['user_id'];
@@ -187,7 +187,7 @@ function updateRedemption($conn, $schema, $input, $actor_username, $company_id) 
     if ($status === 'claimed') {
         // resolve actor user_id for claimed_by
         $actor_result = mysqli_query($conn,
-            "SELECT user_id FROM movira_core_dev.app_user WHERE username = '$actor_username' LIMIT 1"
+            "SELECT user_id FROM movira_core.app_user WHERE username = '$actor_username' LIMIT 1"
         );
         $actor_user_id = $actor_result && mysqli_num_rows($actor_result) > 0
             ? mysqli_real_escape_string($conn, mysqli_fetch_assoc($actor_result)['user_id'])

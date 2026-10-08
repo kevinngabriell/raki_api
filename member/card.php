@@ -18,7 +18,7 @@ function getMemberCard($conn, $schema, $username, $company_id) {
     $userResult = mysqli_query($conn,
         "SELECT user_id, first_name,
                 DATE_ADD(created_at, INTERVAL 1 YEAR) AS valid_until
-         FROM movira_core_dev.app_user
+         FROM movira_core.app_user
          WHERE username = '$username'
          LIMIT 1"
     );

@@ -58,7 +58,7 @@ function getCompanyOutletSnapshot($conn, $schema, $company_id){
     $start_month = date('Y-m-01');
     $next_month  = date('Y-m-01', strtotime('+1 month', strtotime($start_month)));
 
-    $stmtName = $conn->prepare("SELECT company_name FROM movira_core_dev.app_company WHERE company_id = ? LIMIT 1");
+    $stmtName = $conn->prepare("SELECT company_name FROM movira_core.app_company WHERE company_id = ? AND status = 'active' LIMIT 1");
     $stmtName->bind_param('s', $company_id);
     $stmtName->execute();
     $company_name = $stmtName->get_result()->fetch_assoc()['company_name'] ?? null;
@@ -76,7 +76,7 @@ function getCompanyOutletSnapshot($conn, $schema, $company_id){
     $cups = (int)($stmtCups->get_result()->fetch_assoc()['cups'] ?? 0);
     $stmtCups->close();
 
-    $stmtDrivers = $conn->prepare("SELECT COUNT(*) AS c FROM movira_core_dev.app_user WHERE company_id = ? AND app_role_id = 'app_role6902bc0cbb991'");
+    $stmtDrivers = $conn->prepare("SELECT COUNT(*) AS c FROM movira_core.app_user WHERE company_id = ? AND app_role_id = 'app_role6902bc0cbb991' AND account_status = 'verified'");
     $stmtDrivers->bind_param('s', $company_id);
     $stmtDrivers->execute();
     $driver_count = (int)($stmtDrivers->get_result()->fetch_assoc()['c'] ?? 0);
@@ -115,7 +115,7 @@ function getAllOutletsSummary($conn, $schema, $token_username, $token_role, $tok
     // Multi-outlet owners are separate app_user rows (one per outlet) that share
     // the same email address. Resolve every company_id tied to this owner's email
     // so the dashboard can fetch all outlets in a single call instead of N+1.
-    $stmtSelf = $conn->prepare("SELECT email FROM movira_core_dev.app_user WHERE username = ? LIMIT 1");
+    $stmtSelf = $conn->prepare("SELECT email FROM movira_core.app_user WHERE username = ? LIMIT 1");
     $stmtSelf->bind_param('s', $token_username);
     $stmtSelf->execute();
     $email = trim($stmtSelf->get_result()->fetch_assoc()['email'] ?? '');
@@ -123,7 +123,10 @@ function getAllOutletsSummary($conn, $schema, $token_username, $token_role, $tok
 
     $company_ids = [];
     if ($email !== '') {
-        $stmtCompanies = $conn->prepare("SELECT DISTINCT company_id FROM movira_core_dev.app_user WHERE email = ? AND app_role_id = ? AND company_id IS NOT NULL AND company_id <> ''");
+        $stmtCompanies = $conn->prepare("SELECT DISTINCT AU.company_id 
+            FROM movira_core.app_user AU
+            LEFT JOIN movira_core.app_company AC ON AU.company_id = AC.company_id
+            WHERE AU.email = ? AND AU.app_role_id = ? AND AU.company_id IS NOT NULL AND AU.company_id <> '' AND AC.status = 'active'");
         $stmtCompanies->bind_param('ss', $email, $token_role);
         $stmtCompanies->execute();
         $res = $stmtCompanies->get_result();
@@ -243,7 +246,7 @@ function getDashboard($conn, $schema, $company_id, $username){
     $cups_today = (int)($stmtCupsToday->get_result()->fetch_assoc()['cups_today'] ?? 0);
     $stmtCupsToday->close();
 
-    $stmtActiveDrivers = $conn->prepare("SELECT COUNT(DISTINCT user_id) AS c FROM {$schema}.work_session WHERE company_id = ? AND status = 'active'");
+    $stmtActiveDrivers = $conn->prepare("SELECT COUNT(DISTINCT user_id) AS c FROM movira_core.app_user WHERE company_id = ? AND account_status = 'verified';");
     $stmtActiveDrivers->bind_param('s', $company_id);
     $stmtActiveDrivers->execute();
     $active_drivers_today = (int)($stmtActiveDrivers->get_result()->fetch_assoc()['c'] ?? 0);

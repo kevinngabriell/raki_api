@@ -14,7 +14,7 @@ function getPointsHistory($conn, $schema, $username, $company_id, array $params)
     $company_id = mysqli_real_escape_string($conn, $company_id);
 
     $userResult = mysqli_query($conn,
-        "SELECT user_id FROM movira_core_dev.app_user
+        "SELECT user_id FROM movira_core.app_user
          WHERE username = '$username' LIMIT 1"
     );
 

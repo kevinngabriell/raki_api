@@ -5,6 +5,7 @@ require_once '../vendor/autoload.php';
 require_once '../general.php';
 require_once '../config.php';
 require_once '../log.php';
+require_once __DIR__ . '/account_rules.php';
 
 use Firebase\JWT\JWT;
 
@@ -17,7 +18,7 @@ function login($conn, $input){
     $username = mysqli_real_escape_string($conn, $username);
     $password = mysqli_real_escape_string($conn, $password);
 
-    $user_query = "SELECT * FROM movira_core_dev.app_user WHERE username = '$username' AND app_id = '06660e87-37e7-491b-92c3-c772130eb57c'";
+    $user_query = "SELECT * FROM movira_core.app_user WHERE username = '$username' AND app_id = '06660e87-37e7-491b-92c3-c772130eb57c'";
     $user_result = mysqli_query($conn, $user_query);
 
     if (!$user_result) {
@@ -60,6 +61,21 @@ function login($conn, $input){
             'company_id'      => $decoded->company_id ?? null,
         ]);
         jsonResponse(401, 'Invalid credentials');
+    }
+
+    // Self-registered accounts can't log in until an Owner approves them (account/pending.php).
+    $blockedMessage = accountStatusBlockMessage($row['account_status'] ?? null);
+    if ($blockedMessage !== null) {
+        logApiError($conn, [
+            'error_level'   => 'warning',
+            'http_status'   => 403,
+            'endpoint'      => '/account/login.php',
+            'method'        => 'POST',
+            'error_message' => 'Login blocked, account_status=' . $row['account_status'],
+            'user_identifier' => $username ?? null,
+            'company_id'      => null,
+        ]);
+        jsonResponse(403, $blockedMessage);
     }
 
     $issuedAt       = time();

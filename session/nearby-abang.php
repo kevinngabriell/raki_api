@@ -57,7 +57,7 @@ function getNearbyAbang(mysqli $conn, string $schema, float $lat, float $lng, fl
                 GROUP BY session_id
             ) t2 ON t1.session_id = t2.session_id AND t1.created_at = t2.max_at
         ) loc ON loc.session_id = ws.session_id
-        LEFT JOIN movira_core_dev.app_user au
+        LEFT JOIN movira_core.app_user au
             ON au.username = ws.user_id
             OR au.phone_number = ws.user_id
             OR au.user_id = ws.user_id

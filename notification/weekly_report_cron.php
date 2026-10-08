@@ -77,8 +77,8 @@ $sql = "SELECT
             au.first_name,
             au.email,
             au.company_id
-        FROM movira_core_dev.app_user au
-        JOIN movira_core_dev.app_role ar ON ar.app_role_id = au.app_role_id
+        FROM movira_core.app_user au
+        JOIN movira_core.app_role ar ON ar.app_role_id = au.app_role_id
         WHERE au.app_id          = ?
           AND au.company_id      IS NOT NULL
           AND au.email           IS NOT NULL

@@ -22,6 +22,7 @@ jobs:
           rsync -a --delete \
             --exclude=".git" \
             --exclude=".github" \
+            --exclude=".env" \
             ./ "$APP_DIR"/
 
       # Start / restart PHP built-in server lewat PM2 di port 8082
