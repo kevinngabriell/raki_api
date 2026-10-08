@@ -29,7 +29,7 @@ use Firebase\JWT\Key;
  * (or its start, if it was never properly closed).
  */
 function getDriverStatus($conn, $schema, $company_id) {
-    $stmtRoster = $conn->prepare("SELECT username, first_name, phone_number FROM movira_core.app_user WHERE company_id = ? AND app_role_id = 'app_role6902bc0cbb991' ORDER BY first_name ASC, username ASC");
+    $stmtRoster = $conn->prepare("SELECT username, first_name, phone_number FROM movira_core.app_user WHERE company_id = ? AND app_role_id = 'app_role6902bc0cbb991' AND account_status = 'verified' ORDER BY first_name ASC, username ASC");
 
     if (!$stmtRoster) {
         logApiError($conn, [

@@ -7,7 +7,7 @@ require_once '../config.php';
 require_once '../log.php';
 
 function getAllCompany($conn){
-    $query = "SELECT company_id, company_name FROM app_company WHERE app_id = '06660e87-37e7-491b-92c3-c772130eb57c' AND company_id != 'company691b31b41ea7b'";
+    $query = "SELECT company_id, company_name FROM app_company WHERE app_id = '06660e87-37e7-491b-92c3-c772130eb57c' AND company_id != 'company691b31b41ea7b' AND status = 'active'";
     $result = mysqli_query($conn, $query);
 
     if ($result && mysqli_num_rows($result) > 0) {
