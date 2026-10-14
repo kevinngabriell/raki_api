@@ -9,17 +9,9 @@ require_once '../log.php';
 header("Content-Type: application/json");
 
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-    header("Access-Control-Allow-Origin: *");
-    header("Vary: Origin");
-    header("Access-Control-Allow-Methods: GET, OPTIONS");
-    header("Access-Control-Allow-Headers: Authorization, Content-Type");
-    header("Access-Control-Allow-Credentials: true");
-    http_response_code(204);
+    http_response_code(200);
     exit();
 }
-
-use Firebase\JWT\JWT;
-use Firebase\JWT\Key;
 
 /**
  * Online/offline + last-seen status for every driver belonging to a company.
@@ -29,7 +21,8 @@ use Firebase\JWT\Key;
  * (or its start, if it was never properly closed).
  */
 function getDriverStatus($conn, $schema, $company_id) {
-    $stmtRoster = $conn->prepare("SELECT username, first_name, phone_number FROM movira_core.app_user WHERE company_id = ? AND app_role_id = 'app_role6902bc0cbb991' AND account_status = 'verified' ORDER BY first_name ASC, username ASC");
+    $coreSchema = MOVIRA_CORE_SCHEMA;
+    $stmtRoster = $conn->prepare("SELECT username, first_name, phone_number FROM {$coreSchema}.app_user WHERE company_id = ? AND app_role_id = 'app_role6902bc0cbb991' AND account_status = 'verified' ORDER BY first_name ASC, username ASC");
 
     if (!$stmtRoster) {
         logApiError($conn, [
@@ -41,7 +34,6 @@ function getDriverStatus($conn, $schema, $company_id) {
             'user_identifier' => null,
             'company_id'      => $company_id,
         ]);
-        jsonResponse(500, 'Failed to prepare statement', ['error' => $conn->error]);
     }
 
     $stmtRoster->bind_param('s', $company_id);
@@ -71,7 +63,7 @@ function getDriverStatus($conn, $schema, $company_id) {
              WHERE company_id = ?
              GROUP BY user_id
          ) latest ON latest.user_id = ws.user_id AND latest.max_started = ws.started_at
-         LEFT JOIN movira_core.app_user au ON au.username = ws.user_id OR au.phone_number = ws.user_id OR au.user_id = ws.user_id
+         LEFT JOIN {$coreSchema}.app_user au ON au.username = ws.user_id OR au.phone_number = ws.user_id OR au.user_id = ws.user_id
          WHERE ws.company_id = ?"
     );
 
@@ -85,7 +77,6 @@ function getDriverStatus($conn, $schema, $company_id) {
             'user_identifier' => null,
             'company_id'      => $company_id,
         ]);
-        jsonResponse(500, 'Failed to prepare statement', ['error' => $conn->error]);
     }
 
     $stmtSessions->bind_param('ss', $company_id, $company_id);
@@ -133,28 +124,12 @@ function getDriverStatus($conn, $schema, $company_id) {
 // ─────────────────────────────────────────────
 // ROUTING
 // ─────────────────────────────────────────────
-$method  = $_SERVER['REQUEST_METHOD'];
-$conn    = DB::conn();
-$headers = function_exists('getallheaders') ? getallheaders() : [];
-$authHeader = $headers['Authorization'] ?? $headers['authorization'] ?? ($_SERVER['HTTP_AUTHORIZATION'] ?? null);
-
-if (!$authHeader) {
-    logApiError($conn, [
-        'error_level'     => 'error',
-        'http_status'     => 401,
-        'endpoint'        => '/abang/status.php',
-        'method'          => $method,
-        'error_message'   => 'Authorization header not found',
-        'user_identifier' => null,
-        'company_id'      => null,
-    ]);
-    jsonResponse(401, 'Authorization header not found');
-}
+$method = $_SERVER['REQUEST_METHOD'];
 
 try {
-    $token   = preg_replace('/^Bearer\s+/i', '', $authHeader);
-    $decoded = JWT::decode($token, new Key($_ENV['JWT_SECRET'], 'HS256'));
+    $decoded = requireAuth();
 
+    $conn       = DB::conn();
     $schema     = DB_SCHEMA;
     $company_id = $decoded->company_id;
 
@@ -193,14 +168,15 @@ try {
     }
 
 } catch (Exception $e) {
+    $conn = DB::conn();
     logApiError($conn, [
         'error_level'     => 'error',
         'http_status'     => 500,
         'endpoint'        => '/abang/status.php',
         'method'          => $method ?? '',
         'error_message'   => $e->getMessage(),
-        'user_identifier' => $decoded->username ?? null,
-        'company_id'      => $decoded->company_id ?? null,
+        'user_identifier' => null,
+        'company_id'      => null,
     ]);
-    jsonResponse(500, 'Internal Server Error', ['error' => $e->getMessage()]);
+    jsonResponse(500, 'Internal Server Error');
 }

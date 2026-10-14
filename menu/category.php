@@ -6,104 +6,153 @@ require_once '../general.php';
 require_once '../config.php';
 require_once '../log.php';
 
-function createCategory($conn, $schema, $input, $username){
-    $category_name = $input['category_name'];
+if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+    http_response_code(200);
+    exit();
+}
 
-    if ($category_name === null || $category_name === "") {
+function createCategory($conn, $schema, $input, $username) {
+    $category_name = $input['category_name'] ?? null;
+
+    if ($category_name === null || $category_name === '') {
         logApiError($conn, [
             'error_level'   => 'error',
             'http_status'   => 400,
             'endpoint'      => '/menu/category.php',
             'method'        => 'POST',
-            'error_message' => 'category_name are required',
+            'error_message' => 'category_name is required',
             'user_identifier' => $username ?? null,
-            'company_id'      => $decoded->company_id ?? null,
+            'company_id'      => null,
         ]);
-        jsonResponse(400, 'Category name are required');
+        jsonResponse(400, 'Category name is required');
     }
 
-    $category_name = mysqli_real_escape_string($conn, $category_name);
+    $stmt = $conn->prepare("SELECT category_id FROM {$schema}.category_menu WHERE category_name = ?");
+    if (!$stmt) {
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 500,
+            'endpoint'      => '/menu/category.php',
+            'method'        => 'POST',
+            'error_message' => 'Database query error',
+            'user_identifier' => $username ?? null,
+            'company_id'      => null,
+        ]);
+        jsonResponse(500, 'Database query error');
+    }
+    $stmt->bind_param('s', $category_name);
+    $stmt->execute();
+    $result = $stmt->get_result();
 
-    $check_app_query = "SELECT * FROM {$schema}.category_menu WHERE category_name = '$category_name'";
-    $check_app_result = mysqli_query($conn, $check_app_query);
-
-    if (mysqli_num_rows($check_app_result) > 0) {
+    if ($result && $result->num_rows > 0) {
+        $stmt->close();
         logApiError($conn, [
             'error_level'   => 'error',
             'http_status'   => 400,
             'endpoint'      => '/menu/category.php',
             'method'        => 'POST',
-            'error_message' => 'Category has already exists in database !!',
+            'error_message' => 'Category already exists in database',
             'user_identifier' => $username ?? null,
-            'company_id'      => $decoded->company_id ?? null,
+            'company_id'      => null,
         ]);
-        jsonResponse(400, 'Category has already exists in database !!');    
+        jsonResponse(400, 'Category already exists in database');
+    }
+    $stmt->close();
+
+    $categoryID = "category" . uniqid();
+    $now = getCurrentDateTimeJakarta();
+
+    $stmt = $conn->prepare("INSERT INTO {$schema}.category_menu (category_id, category_name, company_id, created_by, created_at) VALUES (?, ?, NULL, ?, ?)");
+    if (!$stmt) {
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 500,
+            'endpoint'      => '/menu/category.php',
+            'method'        => 'POST',
+            'error_message' => 'Database query error',
+            'user_identifier' => $username ?? null,
+            'company_id'      => null,
+        ]);
+        jsonResponse(500, 'Database query error');
+    }
+
+    $stmt->bind_param('ssss', $categoryID, $category_name, $username, $now);
+
+    if ($stmt->execute()) {
+        $stmt->close();
+        jsonResponse(201, 'New category has been created successfully', ['category' => $category_name]);
     } else {
-        $categoryID = "category" . uniqid();
-        $now = getCurrentDateTimeJakarta();
-
-        $category_query = "INSERT INTO {$schema}.category_menu (category_id, category_name, company_id, created_by, created_at) VALUES ('$categoryID', '$category_name', NULL, '$username', '$now')";
-
-        if (mysqli_query($conn, $category_query)) {
-            jsonResponse(201, 'New category has been created successfully', ['category' => $category_name]);
-        } else {
-            logApiError($conn, [
-                'error_level'   => 'error',
-                'http_status'   => 500,
-                'endpoint'      => '/menu/category.php',
-                'method'        => 'POST',
-                'error_message' => 'Failed to create a new category: ' . mysqli_error($conn),
-                'user_identifier' => $username ?? null,
-                'company_id'      => $decoded->company_id ?? null,
-            ]);
-            jsonResponse(500, 'Failed to create a new category: ' . mysqli_error($conn));
-        }
+        $stmt->close();
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 500,
+            'endpoint'      => '/menu/category.php',
+            'method'        => 'POST',
+            'error_message' => 'Failed to create a new category',
+            'user_identifier' => $username ?? null,
+            'company_id'      => null,
+        ]);
+        jsonResponse(500, 'Failed to create a new category');
     }
 }
 
-function getAllCategory($conn, $schema, $params, $page = 1, $limit = 10){
+function getAllCategory($conn, $schema, $params, $page = 1, $limit = 10) {
+    $page = (int)$page;
+    $limit = (int)$limit;
     $offset = ($page - 1) * $limit;
+    $search = '%' . ($params ?? '') . '%';
 
-    $countQuery = "SELECT COUNT(*) as total FROM {$schema}.category_menu WHERE (category_name LIKE '%$params%')";
-    $countResult = mysqli_query($conn, $countQuery);
-    $totalRow = mysqli_fetch_assoc($countResult);
-    $total = $totalRow['total'];
+    $stmt = $conn->prepare("SELECT COUNT(*) as total FROM {$schema}.category_menu WHERE category_name LIKE ?");
+    if (!$stmt) {
+        jsonResponse(500, 'Database query error');
+    }
+    $stmt->bind_param('s', $search);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    $totalRow = $result->fetch_assoc();
+    $total = (int)$totalRow['total'];
+    $stmt->close();
 
-    $query = "SELECT category_id, category_name FROM {$schema}.category_menu WHERE (category_name LIKE '%$params%') LIMIT $limit OFFSET $offset";
-    $result = mysqli_query($conn, $query);
+    $query = "SELECT category_id, category_name FROM {$schema}.category_menu WHERE category_name LIKE ? LIMIT ? OFFSET ?";
+    $stmt = $conn->prepare($query);
+    if (!$stmt) {
+        jsonResponse(500, 'Database query error');
+    }
+    $stmt->bind_param('sii', $search, $limit, $offset);
+    $stmt->execute();
+    $result = $stmt->get_result();
 
-    if ($result && mysqli_num_rows($result) > 0) {
-        $data = mysqli_fetch_all($result, MYSQLI_ASSOC);
+    if ($result && $result->num_rows > 0) {
+        $data = $result->fetch_all(MYSQLI_ASSOC);
+        $stmt->close();
         $response = [
             'data' => $data,
             'pagination' => [
-                'total' => (int)$total,
-                'page' => (int)$page,
-                'limit' => (int)$limit,
-                'total_pages' => ceil($total / $limit),
+                'total' => $total,
+                'page' => $page,
+                'limit' => $limit,
+                'total_pages' => (int)ceil($total / $limit),
             ]
         ];
         jsonResponse(200, 'Category found', $response);
     } else {
-        logApiError($conn, [
-            'error_level'   => 'error',
-            'http_status'   => 404,
-            'endpoint'      => '/menu/category.php',
-            'method'        => 'GET',
-            'error_message' => 'Category not found',
-            'user_identifier' => $username ?? null,
-            'company_id'      => $decoded->company_id ?? null,
-        ]);
+        $stmt->close();
         jsonResponse(404, 'Category not found');
     }
 }
 
-function getDetailCategory($conn, $schema, $category_id){
-    $query = "SELECT * FROM {$schema}.category_menu WHERE category_id = '$category_id'";
-    $result = mysqli_query($conn, $query);
+function getDetailCategory($conn, $schema, $category_id) {
+    $stmt = $conn->prepare("SELECT * FROM {$schema}.category_menu WHERE category_id = ?");
+    if (!$stmt) {
+        jsonResponse(500, 'Database query error');
+    }
+    $stmt->bind_param('s', $category_id);
+    $stmt->execute();
+    $result = $stmt->get_result();
 
-    if ($result && mysqli_num_rows($result) > 0) {
-        $data = mysqli_fetch_all($result, MYSQLI_ASSOC);
+    if ($result && $result->num_rows > 0) {
+        $data = $result->fetch_all(MYSQLI_ASSOC);
+        $stmt->close();
         $response = [
             'data' => $data,
             'pagination' => [
@@ -115,159 +164,119 @@ function getDetailCategory($conn, $schema, $category_id){
         ];
         jsonResponse(200, 'Category found', $response);
     } else {
-        logApiError($conn, [
-            'error_level'   => 'error',
-            'http_status'   => 404,
-            'endpoint'      => '/menu/category.php',
-            'method'        => 'GET',
-            'error_message' => 'Category not found',
-            'user_identifier' => $username ?? null,
-            'company_id'      => $decoded->company_id ?? null,
-        ]);
+        $stmt->close();
         jsonResponse(404, 'Category not found');
     }
 }
 
-function updateCategory($conn, $schema, $input, $username){
-    if (!isset($input['category_id']) || !isset($input['category_name'])) {
-        logApiError($conn, [
-            'error_level'   => 'error',
-            'http_status'   => 400,
-            'endpoint'      => '/menu/category.php',
-            'method'        => 'PUT',
-            'error_message' => 'Missing required fields (category_id and category_name)',
-            'user_identifier' => $username ?? null,
-            'company_id'      => $decoded->company_id ?? null,
-        ]);
-        jsonResponse(400, 'Missing required fields (category_id and category_name)');
+function updateCategory($conn, $schema, $input, $username) {
+    $category_id   = trim((string)($input['category_id'] ?? ''));
+    $category_name = trim((string)($input['category_name'] ?? ''));
+
+    if ($category_id === '' || $category_name === '') {
+        apiReject($conn, '/menu/category.php', 'PUT', $username, 400, 'Missing required fields (category_id and category_name)');
     }
 
-    $category_id = mysqli_real_escape_string($conn, $input['category_id']);
-    $category_name = mysqli_real_escape_string($conn, $input['category_name']);
-
-    $query = "SELECT * FROM {$schema}.category_menu WHERE category_id = '$category_id'";
-    $result = mysqli_query($conn, $query);
-
-    if(mysqli_num_rows($result) > 0) {
-
-        $updateQuery = "UPDATE {$schema}.category_menu SET category_name = '$category_name' WHERE category_id = '$category_id'";
-
-        if (mysqli_query($conn, $updateQuery)) {
-            jsonResponse(200, 'Category menu updated successfully', ['category_id' => $category_id]);
-        } else {
-            logApiError($conn, [
-                'error_level'   => 'error',
-                'http_status'   => 500,
-                'endpoint'      => '/menu/category.php',
-                'method'        => 'PUT',
-                'error_message' => 'Failed to update category menu : '. mysqli_error($conn),
-                'user_identifier' => $username ?? null,
-                'company_id'      => $decoded->company_id ?? null,
-            ]);
-            jsonResponse(500, 'Failed to update category menu');
-        }
-
-    } else {
-        logApiError($conn, [
-            'error_level'   => 'error',
-            'http_status'   => 404,
-            'endpoint'      => '/menu/category.php',
-            'method'        => 'PUT',
-            'error_message' => 'Category not found',
-            'user_identifier' => $username ?? null,
-            'company_id'      => $decoded->company_id ?? null,
-        ]);
-        jsonResponse(404, 'Category menu is not registered in systems');
+    if (referenceCount($conn, "SELECT COUNT(*) FROM {$schema}.category_menu WHERE category_id = ?", $category_id) === 0) {
+        apiReject($conn, '/menu/category.php', 'PUT', $username, 404, 'Category menu is not registered in systems');
     }
+
+    $stmt = $conn->prepare("SELECT category_id FROM {$schema}.category_menu WHERE category_name = ? AND category_id <> ?");
+    if (!$stmt) {
+        jsonResponse(500, 'Database query error');
+    }
+    $stmt->bind_param('ss', $category_name, $category_id);
+    $stmt->execute();
+    $taken = $stmt->get_result()->num_rows > 0;
+    $stmt->close();
+    if ($taken) {
+        apiReject($conn, '/menu/category.php', 'PUT', $username, 400, 'Category already exists in database');
+    }
+
+    $now = getCurrentDateTimeJakarta();
+    $stmt = $conn->prepare("UPDATE {$schema}.category_menu SET category_name = ?, updated_by = ?, updated_at = ? WHERE category_id = ?");
+    if (!$stmt) {
+        jsonResponse(500, 'Database query error');
+    }
+    $stmt->bind_param('ssss', $category_name, $username, $now, $category_id);
+    $ok = $stmt->execute();
+    $stmt->close();
+
+    if (!$ok) {
+        apiReject($conn, '/menu/category.php', 'PUT', $username, 500, 'Failed to update category menu');
+    }
+    jsonResponse(200, 'Category menu updated successfully', ['category_id' => $category_id]);
 }
 
-function deleteCategory($conn, $schema, $category_id, $username){
-    if($category_id === null || $category_id === ''){
-        logApiError($conn, [
-            'error_level'   => 'error',
-            'http_status'   => 400,
-            'endpoint'      => '/menu/category.php',
-            'method'        => 'DELETE',
-            'error_message' => 'Missing required fields (category_id)',
-            'user_identifier' => $username ?? null,
-            'company_id'      => $decoded->company_id ?? null,
-        ]);
-        jsonResponse(400, 'Missing required fields (category_id)');
+function deleteCategory($conn, $schema, $category_id, $username) {
+    if ($category_id === null || $category_id === '') {
+        apiReject($conn, '/menu/category.php', 'DELETE', $username, 400, 'Missing required fields (category_id)');
     }
 
-    $query = "SELECT * FROM {$schema}.category_menu WHERE category_id = '$category_id'";
-    $result = mysqli_query($conn, $query);
+    if (referenceCount($conn, "SELECT COUNT(*) FROM {$schema}.category_menu WHERE category_id = ?", $category_id) === 0) {
+        apiReject($conn, '/menu/category.php', 'DELETE', $username, 404, 'Category menu is not registered in systems');
+    }
 
-    if(mysqli_num_rows($result) > 0) {
-        $query = "DELETE FROM {$schema}.category_menu WHERE category_id = '$category_id'";
+    $menus = referenceCount($conn, "SELECT COUNT(*) FROM {$schema}.menu WHERE category_id = ?", $category_id);
+    if ($menus > 0) {
+        apiReject($conn, '/menu/category.php', 'DELETE', $username, 409,
+            "Can't delete this category: $menus menu(s) still use it. Move or delete those menus first.");
+    }
 
-        if (mysqli_query($conn, $query)) {
-            jsonResponse(200, 'Category menu deleted successfully');
-        } else {
-            logApiError($conn, [
-                'error_level'   => 'error',
-                'http_status'   => 500,
-                'endpoint'      => '/menu/category.php',
-                'method'        => 'DELETE',
-                'error_message' => 'Failed to delete category menu : '. mysqli_error($conn),
-                'user_identifier' => $username ?? null,
-                'company_id'      => $decoded->company_id ?? null,
-            ]);
-            jsonResponse(500, 'Failed to delete category menu');
+    $promos = referenceCount($conn,
+        "SELECT COUNT(DISTINCT promo_id) FROM {$schema}.promo_condition WHERE condition_type = 'category' AND condition_value = ?", $category_id);
+    if ($promos > 0) {
+        apiReject($conn, '/menu/category.php', 'DELETE', $username, 409,
+            "Can't delete this category: $promos promo(s) still use it. Remove it from those promos first.");
+    }
+
+    $stmt = $conn->prepare("DELETE FROM {$schema}.category_menu WHERE category_id = ?");
+    if (!$stmt) {
+        jsonResponse(500, 'Database query error');
+    }
+    $stmt->bind_param('s', $category_id);
+    try {
+        $ok = $stmt->execute();
+    } catch (mysqli_sql_exception $e) {
+        $stmt->close();
+        if ($e->getCode() === 1451) { // a foreign key still points here
+            apiReject($conn, '/menu/category.php', 'DELETE', $username, 409, "Can't delete this category: it is still in use.");
         }
-
-    } else {
-        logApiError($conn, [
-            'error_level'   => 'error',
-            'http_status'   => 404,
-            'endpoint'      => '/menu/category.php',
-            'method'        => 'DELETE',
-            'error_message' => 'Category menu is not registered in systems',
-            'user_identifier' => $username ?? null,
-            'company_id'      => $decoded->company_id ?? null,
-        ]);
-        jsonResponse(404, 'Category menu is not registered in systems');
+        throw $e;
     }
+    $stmt->close();
+
+    if (!$ok) {
+        apiReject($conn, '/menu/category.php', 'DELETE', $username, 500, 'Failed to delete category menu');
+    }
+    jsonResponse(200, 'Category menu deleted successfully');
 }
 
-use Firebase\JWT\JWT;
-use Firebase\JWT\Key;
+$decoded = requireAuth();
 
-$headers = getallheaders();
-if (!isset($headers['Authorization'])) {
+$conn = DB::conn();
+$schema = DB_SCHEMA;
+
+$token_username = $decoded->username;
+$method = $_SERVER['REQUEST_METHOD'];
+
+if ($method !== 'GET' && !isMenuManager($decoded)) {
     logApiError($conn, [
-        'error_level'   => 'error',
-        'http_status'   => 401,
+        'error_level'   => 'warning',
+        'http_status'   => 403,
         'endpoint'      => '/menu/category.php',
-        'method'        => 'DELETE',
-        'error_message' => 'Authorization header not found',
-        'user_identifier' => $username ?? null,
-        'company_id'      => $decoded->company_id ?? null,
+        'method'        => $method,
+        'error_message' => 'Only the Owner can manage categories',
+        'user_identifier' => $token_username,
+        'company_id'      => null,
     ]);
-    jsonResponse(401, 'Authorization header not found');
-}
-
-if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-    header("Access-Control-Allow-Origin: *");
-    header("Access-Control-Allow-Methods: POST, GET, OPTIONS, PUT, DELETE");
-    header("Access-Control-Allow-Headers: Origin, X-Requested-With, Content-Type, Accept");
-    http_response_code(200);
-    exit();
+    jsonResponse(403, 'Only the Owner can manage categories');
 }
 
 try {
-    $token = str_replace('Bearer ', '', $headers['Authorization']);
-    $decoded = JWT::decode($token, new Key($_ENV['JWT_SECRET'], 'HS256'));
-
-    $conn = DB::conn();
-    $schema = DB_SCHEMA;
-
-    $token_username = $decoded->username;
-    $method = $_SERVER['REQUEST_METHOD'];
-
-    switch($method){
+    switch ($method) {
         case 'POST':
-            $input = json_decode(file_get_contents('php://input'), true);
+            $input = json_decode(file_get_contents('php://input'), true) ?? [];
             createCategory($conn, $schema, $input, $token_username);
             break;
         case 'GET':
@@ -275,36 +284,36 @@ try {
             $page = $_GET['page'] ?? 1;
             $limit = $_GET['limit'] ?? 10;
             $category_id = $_GET['category_id'] ?? null;
-            if($category_id != null){
-                getDetailCategory($conn,$schema, $category_id);
+            if ($category_id != null) {
+                getDetailCategory($conn, $schema, $category_id);
             } else {
                 getAllCategory($conn, $schema, $params, $page, $limit);
-             }
+            }
             break;
         case 'PUT':
-            $input = json_decode(file_get_contents('php://input'), true);
-            updateCategory($conn, $schema,$input, $token_username);
+            $input = json_decode(file_get_contents('php://input'), true) ?? [];
+            updateCategory($conn, $schema, $input, $token_username);
             break;
         case 'DELETE':
             $category_id = $_GET['category_id'] ?? null;
-            deleteCategory($conn, $schema,$category_id, $token_username);
+            deleteCategory($conn, $schema, $category_id, $token_username);
             break;
     }
 
-} catch (Exception $e){
+} catch (Exception $e) {
     $conn = DB::conn();
 
     logApiError($conn, [
         'error_level'   => 'error',
         'http_status'   => 500,
-        'endpoint'      => '/account/register.php',
-        'method'        => '',
+        'endpoint'      => '/menu/category.php',
+        'method'        => $method ?? '',
         'error_message' => $e->getMessage(),
-        'user_identifier' => $decoded->username ?? null,
-        'company_id'      => $decoded->company_id ?? null,
+        'user_identifier' => $token_username ?? null,
+        'company_id'      => null,
     ]);
-    
-    jsonResponse(500, 'Internal Server Error', ['error' => $e->getMessage()]);
+
+    jsonResponse(500, 'Internal Server Error');
 }
 
 ?>

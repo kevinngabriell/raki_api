@@ -7,60 +7,50 @@ require_once '../config.php';
 require_once '../log.php';
 
 function getAllCompany($conn){
-    $query = "SELECT company_id, company_name FROM app_company WHERE app_id = '06660e87-37e7-491b-92c3-c772130eb57c' AND company_id != 'company691b31b41ea7b' AND status = 'active'";
-    $result = mysqli_query($conn, $query);
+    $stmt = $conn->prepare("SELECT company_id, company_name FROM app_company WHERE app_id = '06660e87-37e7-491b-92c3-c772130eb57c' AND company_id != 'company691b31b41ea7b' AND status = 'active'");
 
-    if ($result && mysqli_num_rows($result) > 0) {
-        $data = mysqli_fetch_all($result, MYSQLI_ASSOC);
-        $response = [
-            'data' => $data
-        ];
-        jsonResponse(200, 'Company found', $response);
-    } else {
+    if (!$stmt) {
         logApiError($conn, [
             'error_level'   => 'error',
-            'http_status'   => 400,
-            'endpoint'      => '/dashoard/company.php',
+            'http_status'   => 500,
+            'endpoint'      => '/dashboard/company.php',
+            'method'        => 'GET',
+            'error_message' => 'Failed to prepare statement',
+            'user_identifier' => null,
+            'company_id'      => null,
+        ]);
+        jsonResponse(500, 'Failed to prepare statement');
+    }
+
+    $stmt->execute();
+    $result = $stmt->get_result();
+
+    if ($result && $result->num_rows > 0) {
+        $data = $result->fetch_all(MYSQLI_ASSOC);
+        $stmt->close();
+        jsonResponse(200, 'Company found', ['data' => $data]);
+    } else {
+        $stmt->close();
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 404,
+            'endpoint'      => '/dashboard/company.php',
             'method'        => 'GET',
             'error_message' => 'Company not found',
-            'user_identifier' => $username ?? null,
-            'company_id'      => $decoded->company_id ?? null,
+            'user_identifier' => null,
+            'company_id'      => null,
         ]);
         jsonResponse(404, 'Company not found');
     }
 }
 
-use Firebase\JWT\JWT;
-use Firebase\JWT\Key;
-
-$headers = getallheaders();
-if (!isset($headers['Authorization'])) {
-    $conn = DB::conn();
-
-    logApiError($conn, [
-        'error_level'   => 'error',
-        'http_status'   => 401,
-        'endpoint'      => '/dashoard/company.php',
-        'method'        => 'GET',
-        'error_message' => 'Authorization header not found',
-        'user_identifier' => $username ?? null,
-        'company_id'      => $decoded->company_id ?? null,
-    ]);
-
-    jsonResponse(401, 'Authorization header not found');
-}
-
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-    header("Access-Control-Allow-Origin: *");
-    header("Access-Control-Allow-Methods: POST, GET, OPTIONS, PUT, DELETE");
-    header("Access-Control-Allow-Headers: Origin, X-Requested-With, Content-Type, Accept, Authorization");
     http_response_code(200);
     exit();
 }
 
 try {
-    $token = str_replace('Bearer ', '', $headers['Authorization'] ?? '');
-    $decoded = JWT::decode($token, new Key($_ENV['JWT_SECRET'], 'HS256'));
+    $decoded = requireAuth();
 
     $conn = DB::conn();
 
@@ -93,11 +83,11 @@ try {
         'endpoint'      => '/dashboard/company.php',
         'method'        => '',
         'error_message' => $e->getMessage(),
-        'user_identifier' => $decoded->username ?? null,
-        'company_id'      => $decoded->company_id ?? null,
+        'user_identifier' => null,
+        'company_id'      => null,
     ]);
 
-    jsonResponse(500, 'Internal Server Error', ['error' => $e->getMessage()]);
+    jsonResponse(500, 'Internal Server Error');
 }
 
 ?>

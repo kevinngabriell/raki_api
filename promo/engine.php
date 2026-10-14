@@ -296,10 +296,11 @@ function promoParseCartLines($items): array {
 }
 
 function promoResolveRoleName(mysqli $conn, ?string $appRoleId): ?string {
+    $coreSchema = MOVIRA_CORE_SCHEMA;
     if ($appRoleId === null || $appRoleId === '') {
         return null;
     }
-    $stmt = $conn->prepare("SELECT role_name FROM movira_core.app_role WHERE app_role_id = ?");
+    $stmt = $conn->prepare("SELECT role_name FROM {$coreSchema}.app_role WHERE app_role_id = ?");
     if (!$stmt) {
         throw new Exception('Prepare role lookup failed: ' . $conn->error);
     }

@@ -22,7 +22,7 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     jsonResponse(405, 'Method Not Allowed');
 }
 
-$decoded = promoAuthenticate();
+$decoded = requireAuth();
 $conn = null;
 
 try {
@@ -59,5 +59,5 @@ try {
         'user_identifier' => $decoded->username ?? null,
         'company_id'      => $decoded->company_id ?? null,
     ]);
-    jsonResponse(500, 'Internal Server Error', ['error' => $e->getMessage()]);
+    jsonResponse(500, 'Internal Server Error');
 }

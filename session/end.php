@@ -6,8 +6,12 @@ require_once '../general.php';
 require_once '../config.php';
 require_once '../log.php';
 
-// Ensure consistent timezone (WIB)
 date_default_timezone_set('Asia/Jakarta');
+
+if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+    http_response_code(200);
+    exit();
+}
 
 function formatIndoDateTime($datetimeStr) {
     if (!$datetimeStr) return $datetimeStr;
@@ -27,16 +31,16 @@ function formatIndoDateTime($datetimeStr) {
     }
 }
 
-function endSession($conn, $schema, $input, $token_username, $decoded){
-    // Validate input
+function endSession($conn, $schema, $input, $token_username, $decoded) {
+    $coreSchema = MOVIRA_CORE_SCHEMA;
     if (!$input || !isset($input['cash_end'])) {
         logApiError($conn, [
             'error_level'   => 'error',
             'http_status'   => 400,
             'endpoint'      => '/session/end.php',
-            'method'        => '',
-            'error_message' =>'cash_end is required',
-            'user_identifier' => $username ?? null,
+            'method'        => 'POST',
+            'error_message' => 'cash_end is required',
+            'user_identifier' => $decoded->username ?? null,
             'company_id'      => $decoded->company_id ?? null,
         ]);
         jsonResponse(400, 'cash_end is required');
@@ -49,9 +53,9 @@ function endSession($conn, $schema, $input, $token_username, $decoded){
             'error_level'   => 'error',
             'http_status'   => 400,
             'endpoint'      => '/session/end.php',
-            'method'        => '',
-            'error_message' =>'cash_end must be >= 0',
-            'user_identifier' => $username ?? null,
+            'method'        => 'POST',
+            'error_message' => 'cash_end must be >= 0',
+            'user_identifier' => $decoded->username ?? null,
             'company_id'      => $decoded->company_id ?? null,
         ]);
         jsonResponse(400, 'cash_end must be >= 0');
@@ -63,36 +67,34 @@ function endSession($conn, $schema, $input, $token_username, $decoded){
             'error_level'   => 'error',
             'http_status'   => 400,
             'endpoint'      => '/session/end.php',
-            'method'        => '',
-            'error_message' =>'company_id not found in token',
-            'user_identifier' => $username ?? null,
-            'company_id'      => $decoded->company_id ?? null,
+            'method'        => 'POST',
+            'error_message' => 'company_id not found in token',
+            'user_identifier' => $decoded->username ?? null,
+            'company_id'      => null,
         ]);
         jsonResponse(400, 'company_id not found in token');
     }
 
-    $company_id_esc = mysqli_real_escape_string($conn, $company_id);
-    $user_esc = mysqli_real_escape_string($conn, $token_username);
-
     // Find active session
-    $qSess = "SELECT session_id, started_at, cash_start FROM {$schema}.work_session WHERE company_id='$company_id_esc' AND user_id='$user_esc' AND status='active' ORDER BY started_at DESC LIMIT 1";
-
-    $rSess = mysqli_query($conn, $qSess);
-    if (!$rSess) {
+    $stmtSess = $conn->prepare("SELECT session_id, started_at, cash_start FROM {$schema}.work_session WHERE company_id = ? AND user_id = ? AND status = 'active' ORDER BY started_at DESC LIMIT 1");
+    if (!$stmtSess) {
         logApiError($conn, [
             'error_level'   => 'error',
             'http_status'   => 500,
             'endpoint'      => '/session/end.php',
             'method'        => 'POST',
-            'error_message' => mysqli_error($conn),
+            'error_message' => 'Database query error',
             'user_identifier' => $decoded->username ?? null,
             'company_id'      => $decoded->company_id ?? null,
         ]);
-
-        jsonResponse(500, 'DB error', ['error' => mysqli_error($conn)]);
+        jsonResponse(500, 'Database query error');
     }
+    $stmtSess->bind_param('ss', $company_id, $token_username);
+    $stmtSess->execute();
+    $rSess = $stmtSess->get_result();
 
-    if (mysqli_num_rows($rSess) !== 1) {
+    if (!$rSess || $rSess->num_rows !== 1) {
+        $stmtSess->close();
         logApiError($conn, [
             'error_level'   => 'error',
             'http_status'   => 400,
@@ -102,11 +104,11 @@ function endSession($conn, $schema, $input, $token_username, $decoded){
             'user_identifier' => $decoded->username ?? null,
             'company_id'      => $decoded->company_id ?? null,
         ]);
-
         jsonResponse(400, 'No active session found');
     }
 
-    $session = mysqli_fetch_assoc($rSess);
+    $session = $rSess->fetch_assoc();
+    $stmtSess->close();
     $session_id = $session['session_id'];
     $started_at = $session['started_at'];
     $cash_start = (int)($session['cash_start'] ?? 0);
@@ -114,40 +116,47 @@ function endSession($conn, $schema, $input, $token_username, $decoded){
     // ---- Compute recap ----
 
     // Total cups brought
-    $qCupStart = "SELECT COALESCE(SUM(qty_start),0) AS total_cup_start FROM {$schema}.work_session_stock WHERE session_id='$session_id'";
-    $rCupStart = mysqli_query($conn, $qCupStart);
-    $total_cup_start = (int)(mysqli_fetch_assoc($rCupStart)['total_cup_start'] ?? 0);
+    $stmtCupStart = $conn->prepare("SELECT COALESCE(SUM(qty_start),0) AS total_cup_start FROM {$schema}.work_session_stock WHERE session_id = ?");
+    $stmtCupStart->bind_param('s', $session_id);
+    $stmtCupStart->execute();
+    $total_cup_start = (int)($stmtCupStart->get_result()->fetch_assoc()['total_cup_start'] ?? 0);
+    $stmtCupStart->close();
 
     // Total cups sold
-    $qCupSold = "SELECT COALESCE(SUM(td.quantity),0) AS total_cup_sold FROM {$schema}.transaction t JOIN {$schema}.transaction_detail td ON td.transaction_id=t.transaction_id WHERE t.session_id='$session_id'";
-    $rCupSold = mysqli_query($conn, $qCupSold);
-    $total_cup_sold = (int)(mysqli_fetch_assoc($rCupSold)['total_cup_sold'] ?? 0);
+    $stmtCupSold = $conn->prepare("SELECT COALESCE(SUM(td.quantity),0) AS total_cup_sold FROM {$schema}.transaction t JOIN {$schema}.transaction_detail td ON td.transaction_id=t.transaction_id WHERE t.session_id = ?");
+    $stmtCupSold->bind_param('s', $session_id);
+    $stmtCupSold->execute();
+    $total_cup_sold = (int)($stmtCupSold->get_result()->fetch_assoc()['total_cup_sold'] ?? 0);
+    $stmtCupSold->close();
 
     // Total transactions
-    $qTrx = "SELECT COUNT(*) AS total_trx FROM {$schema}.transaction WHERE session_id='$session_id'";
-    $rTrx = mysqli_query($conn, $qTrx);
-    $total_trx = (int)(mysqli_fetch_assoc($rTrx)['total_trx'] ?? 0);
+    $stmtTrx = $conn->prepare("SELECT COUNT(*) AS total_trx FROM {$schema}.transaction WHERE session_id = ?");
+    $stmtTrx->bind_param('s', $session_id);
+    $stmtTrx->execute();
+    $total_trx = (int)($stmtTrx->get_result()->fetch_assoc()['total_trx'] ?? 0);
+    $stmtTrx->close();
 
     // Payment breakdown
-    $qPay = "SELECT tp.payment_method, COALESCE(SUM(amount),0) AS total FROM {$schema}.transaction_payment tp JOIN {$schema}.transaction t ON t.transaction_id=tp.transaction_id WHERE t.session_id='$session_id' GROUP BY tp.payment_method";
-    $rPay = mysqli_query($conn, $qPay);
+    $stmtPay = $conn->prepare("SELECT tp.payment_method, COALESCE(SUM(amount),0) AS total FROM {$schema}.transaction_payment tp JOIN {$schema}.transaction t ON t.transaction_id=tp.transaction_id WHERE t.session_id = ? GROUP BY tp.payment_method");
+    $stmtPay->bind_param('s', $session_id);
+    $stmtPay->execute();
+    $rPay = $stmtPay->get_result();
+    $stmtPay->close();
 
     $total_cash = 0;
     $total_qris = 0;
 
-    while ($row = mysqli_fetch_assoc($rPay)) {
-        // EDC/Flazz is settled like cash for drawer reconciliation purposes.
+    while ($row = $rPay->fetch_assoc()) {
         if ($row['payment_method'] === 'cash' || $row['payment_method'] === 'edc_flazz') $total_cash += (int)$row['total'];
         if ($row['payment_method'] === 'qris') $total_qris += (int)$row['total'];
     }
 
     $total_sales = $total_cash + $total_qris;
 
-    // Duration (use WIB timezone and guard against negative values)
+    // Duration
     $ended_at = date('Y-m-d H:i:s');
     $duration_seconds = strtotime($ended_at) - strtotime($started_at);
     if ($duration_seconds < 0) {
-        // Fallback: treat duration as 0 if server timezone mismatch still occurs
         $duration_seconds = 0;
     }
     $duration_hours = floor($duration_seconds / 3600);
@@ -156,20 +165,16 @@ function endSession($conn, $schema, $input, $token_username, $decoded){
     // ---- Close session ----
     $conn->begin_transaction();
     try {
-        $qEnd = "UPDATE {$schema}.work_session SET ended_at='$ended_at', cash_end=$cash_end, status='closed' WHERE session_id='$session_id'";
-
-        if (!mysqli_query($conn, $qEnd)) {
-            logApiError($conn, [
-                'error_level'   => 'error',
-                'http_status'   => 500,
-                'endpoint'      => '/session/end.php',
-                'method'        => 'POST',
-                'error_message' => mysqli_error($conn),
-                'user_identifier' => $decoded->username ?? null,
-                'company_id'      => $decoded->company_id ?? null,
-            ]);
-            throw new Exception(mysqli_error($conn));
+        $stmtEnd = $conn->prepare("UPDATE {$schema}.work_session SET ended_at = ?, cash_end = ?, status = 'closed' WHERE session_id = ?");
+        if (!$stmtEnd) {
+            throw new Exception('Failed to prepare session update');
         }
+        $stmtEnd->bind_param('sis', $ended_at, $cash_end, $session_id);
+        if (!$stmtEnd->execute()) {
+            $stmtEnd->close();
+            throw new Exception('Failed to close session');
+        }
+        $stmtEnd->close();
 
         $conn->commit();
     } catch (Exception $e) {
@@ -183,14 +188,14 @@ function endSession($conn, $schema, $input, $token_username, $decoded){
             'user_identifier' => $decoded->username ?? null,
             'company_id'      => $decoded->company_id ?? null,
         ]);
-        jsonResponse(500, 'Failed to close session', ['error' => $e->getMessage()]);
+        jsonResponse(500, 'Failed to close session');
     }
 
     // ---- Send WhatsApp recap to PIC ----
     require_once '../notification/notification.php';
 
     $ownerPhone = null;
-    $stmtPhone = $conn->prepare("SELECT pic_contact FROM movira_core.app_company WHERE company_id = ?");
+    $stmtPhone = $conn->prepare("SELECT pic_contact FROM {$coreSchema}.app_company WHERE company_id = ?");
     if ($stmtPhone) {
         $stmtPhone->bind_param('s', $company_id);
         if ($stmtPhone->execute()) {
@@ -199,6 +204,7 @@ function endSession($conn, $schema, $input, $token_username, $decoded){
                 $ownerPhone = preg_replace('/[^0-9]/', '', $rowPhone['pic_contact']);
             }
         }
+        $stmtPhone->close();
     }
 
     if (!empty($ownerPhone)) {
@@ -240,85 +246,28 @@ function endSession($conn, $schema, $input, $token_username, $decoded){
     ]);
 }
 
-use Firebase\JWT\JWT;
-use Firebase\JWT\Key;
+$decoded = requireAuth();
 
-$rawHeaders = getallheaders();
-// normalisasi semua key ke lowercase
-$headers = array_change_key_case($rawHeaders, CASE_LOWER);
+$conn = DB::conn();
+$schema = DB_SCHEMA;
+$token_username = $decoded->username;
+$method = $_SERVER['REQUEST_METHOD'];
 
-if (!isset($headers['authorization'])) {
-    // untuk debug sementara, bisa log semua header:
-    // error_log('HEADERS: ' . print_r($rawHeaders, true));
-    logApiError($conn, [
-        'error_level'   => 'error',
-        'http_status'   => 401,
-        'endpoint'      => '/session/end.php',
-        'method'        => 'POST',
-        'error_message' => 'Authorization header not found',
-        'user_identifier' => $decoded->username ?? null,
-        'company_id'      => $decoded->company_id ?? null,
-    ]);
-    jsonResponse(401, 'Authorization header not found');
-}
-
-$authHeader = $headers['authorization'];
-$token = str_replace('Bearer ', '', $authHeader);
-
-
-if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-    header("Access-Control-Allow-Origin: *");
-    header("Access-Control-Allow-Methods: POST, GET, OPTIONS, PUT, DELETE");
-    header("Access-Control-Allow-Headers: Origin, X-Requested-With, Content-Type, Accept, Authorization");
-    http_response_code(200);
-    exit();
-}
-
-try {
-    $authHeader = $headers['authorization'];
-    $token = str_replace('Bearer ', '', $authHeader);
-    $decoded = JWT::decode($token, new Key($_ENV['JWT_SECRET'], 'HS256'));
-
-    $conn = DB::conn();
-    $schema = DB_SCHEMA;
-
-    $token_username = $decoded->username;
-    $method = $_SERVER['REQUEST_METHOD'];
-
-    switch($method){
-        case 'POST':
-            $input = json_decode(file_get_contents('php://input'), true);
-            endSession($conn, $schema, $input, $token_username, $decoded);
-            break;
-        default:
-            $conn = DB::conn();
-
-            logApiError($conn, [
-                'error_level'   => 'error',
-                'http_status'   => 401,
-                'endpoint'      => '/session/end.php',
-                'method'        => 'POST',
-                'error_message' => 'Method Not Allowed',
-                'user_identifier' => $decoded->username ?? null,
-                'company_id'      => $decoded->company_id ?? null,
-            ]);
-
-            jsonResponse(405, 'Method Not Allowed');
-
-            break;
-    }
-
-} catch (Exception $e){
-    $conn = DB::conn();
-
-    logApiError($conn, [
-        'error_level'   => 'error',
-        'http_status'   => 500,
-        'endpoint'      => '/session/end.php',
-        'method'        => 'POST',
-        'error_message' => $e->getMessage(),
-        'user_identifier' => $decoded->username ?? null,
-        'company_id'      => $decoded->company_id ?? null,
-    ]);    
-    jsonResponse(500, 'Internal Server Error', ['error' => $e->getMessage()]);
+switch ($method) {
+    case 'POST':
+        $input = json_decode(file_get_contents('php://input'), true);
+        endSession($conn, $schema, $input, $token_username, $decoded);
+        break;
+    default:
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 405,
+            'endpoint'      => '/session/end.php',
+            'method'        => 'POST',
+            'error_message' => 'Method Not Allowed',
+            'user_identifier' => $decoded->username ?? null,
+            'company_id'      => $decoded->company_id ?? null,
+        ]);
+        jsonResponse(405, 'Method Not Allowed');
+        break;
 }

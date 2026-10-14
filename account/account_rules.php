@@ -12,7 +12,7 @@ const ACCOUNT_RAKI_APP_ID = '06660e87-37e7-491b-92c3-c772130eb57c';
 // self-registration have NULL (or whatever the column default is) and count as
 // active, so only these two states ever block a login.
 const ACCOUNT_STATUS_PENDING  = 'pending';
-const ACCOUNT_STATUS_ACTIVE   = 'active';
+const ACCOUNT_STATUS_ACTIVE   = 'verified';
 const ACCOUNT_STATUS_REJECTED = 'rejected';
 
 // Roles an Owner may grant when approving a sign-up (matched on app_role.role_name).
@@ -110,6 +110,94 @@ function accountValidateRegistration($input): array {
     ]];
 }
 
+// Languages the app can show.
+const ACCOUNT_LANGUAGES = ['id', 'en'];
+
+// Profile fields that change how the user signs in, so they need current_password.
+const ACCOUNT_SENSITIVE_PROFILE_FIELDS = ['username', 'email', 'phone_number'];
+
+// Validates a PATCH account/profile.php body against the user's current row. Only fields
+// present in the body are touched, and a value equal to the current one is not a change.
+// Returns ['error' => message] (Indonesian, shown as-is) or
+// ['changes' => [column => new value], 'needs_password' => bool].
+function accountValidateProfileUpdate($input, array $current): array {
+    if (!is_array($input)) {
+        return ['error' => 'Data profil tidak valid.'];
+    }
+
+    $changes = [];
+
+    if (array_key_exists('first_name', $input)) {
+        $firstName = is_string($input['first_name']) ? trim($input['first_name']) : '';
+        if ($firstName === '') {
+            return ['error' => 'Nama depan wajib diisi.'];
+        }
+        if (mb_strlen($firstName) > 100) {
+            return ['error' => 'Nama depan maksimal 100 karakter.'];
+        }
+        if ($firstName !== (string)($current['first_name'] ?? '')) {
+            $changes['first_name'] = $firstName;
+        }
+    }
+
+    if (array_key_exists('username', $input)) {
+        $username = is_string($input['username']) ? trim($input['username']) : '';
+        if ($username === '') {
+            return ['error' => 'Username wajib diisi.'];
+        }
+        if (!preg_match('/^[a-z0-9.]+$/', $username)) {
+            return ['error' => 'Username hanya boleh berisi huruf kecil, angka, dan titik.'];
+        }
+        if (strlen($username) > 50) {
+            return ['error' => 'Username maksimal 50 karakter.'];
+        }
+        if ($username !== (string)($current['username'] ?? '')) {
+            $changes['username'] = $username;
+        }
+    }
+
+    if (array_key_exists('email', $input)) {
+        $email = is_string($input['email']) ? trim($input['email']) : '';
+        if ($email === '' || strlen($email) > 100 || filter_var($email, FILTER_VALIDATE_EMAIL) === false) {
+            return ['error' => 'Format email tidak valid.'];
+        }
+        if ($email !== (string)($current['email'] ?? '')) {
+            $changes['email'] = $email;
+        }
+    }
+
+    if (array_key_exists('phone_number', $input)) {
+        $phone = accountNormalizePhone(is_string($input['phone_number']) ? $input['phone_number'] : '');
+        if ($phone === null) {
+            return ['error' => 'Nomor HP tidak valid. Gunakan nomor Indonesia yang diawali 62, 10–15 digit.'];
+        }
+        // Older rows may hold 08… or +62…; the same number in another format is not a change.
+        $currentPhone = accountNormalizePhone($current['phone_number'] ?? '');
+        if ($phone !== $currentPhone) {
+            $changes['phone_number'] = $phone;
+        }
+    }
+
+    if (array_key_exists('language', $input)) {
+        $language = is_string($input['language']) ? strtolower(trim($input['language'])) : '';
+        if (!in_array($language, ACCOUNT_LANGUAGES, true)) {
+            return ['error' => "Bahasa harus 'id' atau 'en'."];
+        }
+        if ($language !== (string)($current['language'] ?? '')) {
+            $changes['language'] = $language;
+        }
+    }
+
+    if (!$changes) {
+        return ['error' => 'Tidak ada perubahan untuk disimpan.'];
+    }
+
+    return [
+        'changes'        => $changes,
+        'needs_password' => count(array_intersect(array_keys($changes), ACCOUNT_SENSITIVE_PROFILE_FIELDS)) > 0,
+    ];
+}
+
 function accountIsGrantableRole(?string $roleName): bool {
     return $roleName !== null && preg_match(ACCOUNT_GRANTABLE_ROLE_PATTERN, $roleName) === 1;
 }
@@ -122,10 +210,11 @@ function accountIsManagerRole(?string $roleName): bool {
 
 // app_role.role_name for a RAKI app_role_id (the JWT's `role` claim), or null.
 function accountRoleName(mysqli $conn, ?string $appRoleId): ?string {
+    $coreSchema = MOVIRA_CORE_SCHEMA;
     if ($appRoleId === null || $appRoleId === '') {
         return null;
     }
-    $stmt = $conn->prepare("SELECT role_name FROM movira_core.app_role WHERE app_role_id = ? AND app_id = ?");
+    $stmt = $conn->prepare("SELECT role_name FROM {$coreSchema}.app_role WHERE app_role_id = ? AND app_id = ?");
     if (!$stmt) {
         return null;
     }

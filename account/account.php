@@ -6,39 +6,36 @@ require_once '../general.php';
 require_once '../config.php';
 require_once '../log.php';
 
-use Firebase\JWT\JWT;
-use Firebase\JWT\Key;
+function getDriverNextBonus($conn, $schemaDB, $username){
 
-function getDriverNextBonus($conn, $schemaDB, $username, $company){
-
-    // tentukan minggu ini (Senin-Sabtu, bonus dibayar tiap Sabtu)
     $start = date('Y-m-d', strtotime('monday this week'));
     $end   = date('Y-m-d', strtotime('saturday this week'));
 
-    // 1️⃣ total item minggu ini
-    $trxQuery = "SELECT COALESCE(SUM(total_item),0) as total_item
+    $stmt = $conn->prepare("SELECT COALESCE(SUM(total_item),0) as total_item
         FROM {$schemaDB}.transaction
-        WHERE created_by = '$username'
-        AND DATE(transaction_date) BETWEEN '$start' AND '$end'
-    ";
+        WHERE created_by = ?
+        AND DATE(transaction_date) BETWEEN ? AND ?");
+    $stmt->bind_param('sss', $username, $start, $end);
+    $stmt->execute();
+    $trxResult = $stmt->get_result();
+    $stmt->close();
 
-    $trxResult = mysqli_query($conn, $trxQuery);
-    $trxData = mysqli_fetch_assoc($trxResult);
-
+    $trxData = $trxResult->fetch_assoc();
     $current_total = (int)$trxData['total_item'];
 
-    // 2️⃣ cari current bonus (tier yang sudah tercapai)
-    $currentSchemaQuery = "SELECT *
+    $stmt = $conn->prepare("SELECT schema_id, schema_name, qty, bonus_nominal
         FROM {$schemaDB}.bonus_schema
         WHERE frequency = 'weekly'
         AND is_active = 1
-        AND qty <= $current_total
+        AND qty <= ?
         ORDER BY qty DESC
-        LIMIT 1
-    ";
+        LIMIT 1");
+    $stmt->bind_param('i', $current_total);
+    $stmt->execute();
+    $currentSchemaResult = $stmt->get_result();
+    $stmt->close();
 
-    $currentSchemaResult = mysqli_query($conn, $currentSchemaQuery);
-    $currentSchema = mysqli_num_rows($currentSchemaResult) > 0 ? mysqli_fetch_assoc($currentSchemaResult) : null;
+    $currentSchema = $currentSchemaResult->num_rows > 0 ? $currentSchemaResult->fetch_assoc() : null;
 
     $current_bonus = null;
     if ($currentSchema) {
@@ -50,20 +47,20 @@ function getDriverNextBonus($conn, $schemaDB, $username, $company){
         ];
     }
 
-    // 3️⃣ cari next schema
-    $schemaQuery = "SELECT *
+    $stmt = $conn->prepare("SELECT schema_id, schema_name, qty, bonus_nominal
         FROM {$schemaDB}.bonus_schema
         WHERE frequency = 'weekly'
         AND is_active = 1
-        AND qty > $current_total
+        AND qty > ?
         ORDER BY qty ASC
-        LIMIT 1
-    ";
+        LIMIT 1");
+    $stmt->bind_param('i', $current_total);
+    $stmt->execute();
+    $schemaResult = $stmt->get_result();
+    $stmt->close();
 
-    $schemaResult = mysqli_query($conn, $schemaQuery);
-
-    if (mysqli_num_rows($schemaResult) === 0) {
-        jsonResponse(200, 'All bonus tiers completed 🎉', [
+    if ($schemaResult->num_rows === 0) {
+        jsonResponse(200, 'All bonus tiers completed', [
             'current_total_item' => $current_total,
             'current_bonus'      => $current_bonus,
             'next_target'        => null,
@@ -74,7 +71,7 @@ function getDriverNextBonus($conn, $schemaDB, $username, $company){
         ]);
     }
 
-    $nextSchema = mysqli_fetch_assoc($schemaResult);
+    $nextSchema = $schemaResult->fetch_assoc();
 
     $remaining = $nextSchema['qty'] - $current_total;
     $percentage = round(($current_total / $nextSchema['qty']) * 100);
@@ -97,54 +94,19 @@ function getDriverNextBonus($conn, $schemaDB, $username, $company){
     ]);
 }
 
-$headers = getallheaders();
-if (!isset($headers['Authorization'])) {
-    logApiError($conn, [
-        'error_level'   => 'error',
-        'http_status'   => 401,
-        'endpoint'      => '/account/company.php',
-        'method'        => '',
-        'error_message' => 'Authorization header not found',
-        'user_identifier' => $username ?? null,
-        'company_id'      => $company_id ?? null,
-    ]);
-    jsonResponse(401, 'Authorization header not found');
-}
-
-if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-    header("Access-Control-Allow-Origin: *");
-    header("Access-Control-Allow-Methods: POST, GET, OPTIONS, PUT, DELETE");
-    header("Access-Control-Allow-Headers: Origin, X-Requested-With, Content-Type, Accept");
-    http_response_code(200);
-    exit();
-}
-
 try {
-    $token = str_replace('Bearer ', '', $headers['Authorization']);
-    $decoded = JWT::decode($token, new Key($_ENV['JWT_SECRET'], 'HS256'));
-
+    $decoded = requireAuth();
     $conn = DB::conn();
     $schema = DB_SCHEMA;
-    
     $token_username = $decoded->username;
-    $token_company = $decoded->company_id;
 
     $method = $_SERVER['REQUEST_METHOD'];
 
     switch($method){
         case 'GET':
-            getDriverNextBonus($conn, $schema, $token_username, $token_company);
+            getDriverNextBonus($conn, $schema, $token_username);
             break;
-        default: 
-            logApiError($conn, [
-                'error_level'   => 'error',
-                'http_status'   => 405,
-                'endpoint'      => '/account/account.php',
-                'method'        => $method,
-                'error_message' => 'Method Not Allowed',
-                'user_identifier' => $decoded->username ?? null,
-                'company_id'      => $decoded->company_id ?? null,
-            ]);
+        default:
             jsonResponse(405, 'Method Not Allowed');
             break;
     }
@@ -155,15 +117,12 @@ try {
     logApiError($conn, [
         'error_level'   => 'error',
         'http_status'   => 500,
-        'endpoint'      => '/account/company.php',
+        'endpoint'      => '/account/account.php',
         'method'        => '',
         'error_message' => $e->getMessage(),
-        'user_identifier' => $decoded->username ?? null,
-        'company_id'      => $decoded->company_id ?? null,
     ]);
 
-    jsonResponse(500, 'Internal Server Error', ['error' => $e->getMessage()]);
+    jsonResponse(500, 'Internal Server Error');
 }
-
 
 ?>

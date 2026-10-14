@@ -6,13 +6,15 @@ require_once '../general.php';
 require_once '../config.php';
 require_once '../log.php';
 
-function createBonusSchema($conn, $schema, $input, $username, $company){
-    $schema_name = $input['schema_name'];
-    $frequency = $input['frequency'];
-    $qty = $input['qty'];
-    $bonus_nominal = $input['bonus_nominal'];
+function createBonusSchema($conn, $schema, $input, $username, $company_id){
+    $schema_name = $input['schema_name'] ?? null;
+    $frequency = $input['frequency'] ?? null;
+    $qty = $input['qty'] ?? null;
+    $bonus_nominal = $input['bonus_nominal'] ?? null;
 
-    if ($schema_name === null || $schema_name === "" || $qty === null || $qty < 1 || $bonus_nominal === null || $bonus_nominal < 1 ) {
+    $allowed_frequencies = ['daily', 'weekly', 'monthly'];
+
+    if ($schema_name === null || $schema_name === "" || $qty === null || $qty < 1 || $bonus_nominal === null || $bonus_nominal < 1) {
         logApiError($conn, [
             'error_level'   => 'error',
             'http_status'   => 400,
@@ -20,66 +22,92 @@ function createBonusSchema($conn, $schema, $input, $username, $company){
             'method'        => 'POST',
             'error_message' => 'schema_name, qty, bonus_nominal are required',
             'user_identifier' => $username ?? null,
-            'company_id'      => $decoded->company_id ?? null,
+            'company_id'      => $company_id ?? null,
         ]);
         jsonResponse(400, 'Schema name, qty, bonus nominal are required');
     }
 
-    $schema_name = mysqli_real_escape_string($conn, $schema_name);
-    $qty = (int)$input['qty'];
-    $bonus_nominal = (int)$input['bonus_nominal'];
-
-    $check_app_query = "SELECT * FROM {$schema}.bonus_schema WHERE schema_name = '$schema_name' OR qty = '$qty'";
-    $check_app_result = mysqli_query($conn, $check_app_query);
-
-    if (mysqli_num_rows($check_app_result) > 0) {
+    if (!in_array($frequency, $allowed_frequencies, true)) {
         logApiError($conn, [
             'error_level'   => 'error',
             'http_status'   => 400,
             'endpoint'      => '/bonus/schema.php',
             'method'        => 'POST',
-            'error_message' => 'Bonus schema has already exists in database !!',
+            'error_message' => 'frequency must be one of: daily, weekly, monthly',
             'user_identifier' => $username ?? null,
-            'company_id'      => $decoded->company_id ?? null,
+            'company_id'      => $company_id ?? null,
         ]);
-        jsonResponse(400, 'Bonus schema has already exists in database !!');    
+        jsonResponse(400, 'frequency must be one of: daily, weekly, monthly');
+    }
+
+    $qty = (int)$qty;
+    $bonus_nominal = (int)$bonus_nominal;
+
+    $check_stmt = $conn->prepare("SELECT schema_id FROM {$schema}.bonus_schema WHERE schema_name = ? OR qty = ?");
+    $check_stmt->bind_param('si', $schema_name, $qty);
+    $check_stmt->execute();
+    $check_result = $check_stmt->get_result();
+
+    if ($check_result->num_rows > 0) {
+        $check_stmt->close();
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 400,
+            'endpoint'      => '/bonus/schema.php',
+            'method'        => 'POST',
+            'error_message' => 'Bonus schema has already exists in database',
+            'user_identifier' => $username ?? null,
+            'company_id'      => $company_id ?? null,
+        ]);
+        jsonResponse(400, 'Bonus schema has already exists in database');
+    }
+    $check_stmt->close();
+
+    $schema_id = "schema" . uniqid();
+    $now = getCurrentDateTimeJakarta();
+    $is_active = 1;
+
+    $insert_stmt = $conn->prepare("INSERT INTO {$schema}.bonus_schema (schema_id, schema_name, qty, bonus_nominal, frequency, is_active, company_id, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
+    $insert_stmt->bind_param('ssiisisss', $schema_id, $schema_name, $qty, $bonus_nominal, $frequency, $is_active, $company_id, $username, $now);
+
+    if ($insert_stmt->execute()) {
+        $insert_stmt->close();
+        jsonResponse(201, 'New bonus schema has been created successfully', ['schema_name' => $schema_name]);
     } else {
-        $schema_id = "schema" . uniqid();
-        $now = getCurrentDateTimeJakarta();
-
-        $bonus_query = "INSERT INTO {$schema}.bonus_schema (schema_id, schema_name, qty, bonus_nominal, frequency, is_active, company_id, created_by, created_at) 
-        VALUES ('$schema_id', '$schema_name', $qty, $bonus_nominal, '$frequency', 1, '$company', '$username', '$now')";
-
-        if (mysqli_query($conn, $bonus_query)) {
-            jsonResponse(201, 'New bonus schema has been created successfully', ['schema_name' => $schema_name]);
-        } else {
-            logApiError($conn, [
-                'error_level'   => 'error',
-                'http_status'   => 500,
-                'endpoint'      => '/bonus/schema.php',
-                'method'        => 'POST',
-                'error_message' => 'Failed to create a new schema: ' . mysqli_error($conn),
-                'user_identifier' => $username ?? null,
-                'company_id'      => $decoded->company_id ?? null,
-            ]);
-            jsonResponse(500, 'Failed to create a new schema: ' . mysqli_error($conn));
-        }
+        $insert_stmt->close();
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 500,
+            'endpoint'      => '/bonus/schema.php',
+            'method'        => 'POST',
+            'error_message' => 'Failed to create a new schema',
+            'user_identifier' => $username ?? null,
+            'company_id'      => $company_id ?? null,
+        ]);
+        jsonResponse(500, 'Failed to create a new schema');
     }
 }
 
-function getAllBonusSchema($conn, $params, $schema, $page = 1, $limit = 10){
+function getAllBonusSchema($conn, $schema, $params, $company_id, $page = 1, $limit = 10){
     $offset = ($page - 1) * $limit;
+    $search = '%' . ($params ?? '') . '%';
 
-    $countQuery = "SELECT COUNT(*) as total FROM {$schema}.bonus_schema WHERE (schema_name LIKE '%$params%')";
-    $countResult = mysqli_query($conn, $countQuery);
-    $totalRow = mysqli_fetch_assoc($countResult);
+    $count_stmt = $conn->prepare("SELECT COUNT(*) as total FROM {$schema}.bonus_schema WHERE company_id = ? AND (schema_name LIKE ?)");
+    $count_stmt->bind_param('ss', $company_id, $search);
+    $count_stmt->execute();
+    $count_result = $count_stmt->get_result();
+    $totalRow = $count_result->fetch_assoc();
     $total = $totalRow['total'];
+    $count_stmt->close();
 
-    $query = "SELECT * FROM {$schema}.bonus_schema WHERE (schema_name LIKE '%$params%') LIMIT $limit OFFSET $offset";
-    $result = mysqli_query($conn, $query);
+    $query_stmt = $conn->prepare("SELECT * FROM {$schema}.bonus_schema WHERE company_id = ? AND (schema_name LIKE ?) LIMIT ? OFFSET ?");
+    $query_stmt->bind_param('ssii', $company_id, $search, $limit, $offset);
+    $query_stmt->execute();
+    $result = $query_stmt->get_result();
 
-    if ($result && mysqli_num_rows($result) > 0) {
-        $data = mysqli_fetch_all($result, MYSQLI_ASSOC);
+    if ($result && $result->num_rows > 0) {
+        $data = $result->fetch_all(MYSQLI_ASSOC);
+        $query_stmt->close();
         $response = [
             'data' => $data,
             'pagination' => [
@@ -91,25 +119,29 @@ function getAllBonusSchema($conn, $params, $schema, $page = 1, $limit = 10){
         ];
         jsonResponse(200, 'Bonus schema found', $response);
     } else {
+        $query_stmt->close();
         logApiError($conn, [
             'error_level'   => 'error',
             'http_status'   => 404,
             'endpoint'      => '/bonus/schema.php',
             'method'        => 'GET',
             'error_message' => 'Bonus schema not found',
-            'user_identifier' => $username ?? null,
-            'company_id'      => $decoded->company_id ?? null,
+            'user_identifier' => null,
+            'company_id'      => $company_id ?? null,
         ]);
         jsonResponse(404, 'Bonus schema not found');
     }
 }
 
-function getDetailBonusSchema($conn, $schema, $schema_id){
-    $query = "SELECT * FROM {$schema}.bonus_schema WHERE schema_id = '$schema_id'";
-    $result = mysqli_query($conn, $query);
+function getDetailBonusSchema($conn, $schema, $schema_id, $company_id){
+    $stmt = $conn->prepare("SELECT * FROM {$schema}.bonus_schema WHERE schema_id = ? AND company_id = ?");
+    $stmt->bind_param('ss', $schema_id, $company_id);
+    $stmt->execute();
+    $result = $stmt->get_result();
 
-    if ($result && mysqli_num_rows($result) > 0) {
-        $data = mysqli_fetch_all($result, MYSQLI_ASSOC);
+    if ($result && $result->num_rows > 0) {
+        $data = $result->fetch_all(MYSQLI_ASSOC);
+        $stmt->close();
         $response = [
             'data' => $data,
             'pagination' => [
@@ -121,22 +153,23 @@ function getDetailBonusSchema($conn, $schema, $schema_id){
         ];
         jsonResponse(200, 'Bonus schema found', $response);
     } else {
+        $stmt->close();
         logApiError($conn, [
             'error_level'   => 'error',
             'http_status'   => 404,
             'endpoint'      => '/bonus/schema.php',
             'method'        => 'GET',
             'error_message' => 'Bonus schema not found',
-            'user_identifier' => $username ?? null,
-            'company_id'      => $decoded->company_id ?? null,
+            'user_identifier' => null,
+            'company_id'      => $company_id ?? null,
         ]);
         jsonResponse(404, 'Bonus schema not found');
     }
 }
 
-function updateBonusSchema($conn, $schema, $input, $username, $company){
+function updateBonusSchema($conn, $schema, $input, $username, $company_id){
     $schema_id = $input['schema_id'] ?? null;
-    $schema_name = isset($input['schema_name']) ? mysqli_real_escape_string($conn, $input['schema_name']) : null;
+    $schema_name = $input['schema_name'] ?? null;
     $frequency = $input['frequency'] ?? null;
     $qty = isset($input['qty']) ? (int)$input['qty'] : null;
     $bonus_nominal = isset($input['bonus_nominal']) ? (int)$input['bonus_nominal'] : null;
@@ -146,122 +179,147 @@ function updateBonusSchema($conn, $schema, $input, $username, $company){
         jsonResponse(400, 'schema_id is required');
     }
 
-    $checkQuery = "SELECT * FROM {$schema}.bonus_schema WHERE schema_id = '$schema_id' AND company_id = '$company'";
-    $checkResult = mysqli_query($conn, $checkQuery);
+    $allowed_frequencies = ['daily', 'weekly', 'monthly'];
+    if ($frequency !== null && !in_array($frequency, $allowed_frequencies, true)) {
+        jsonResponse(400, 'frequency must be one of: daily, weekly, monthly');
+    }
 
-    if (!$checkResult || mysqli_num_rows($checkResult) === 0) {
+    $check_stmt = $conn->prepare("SELECT schema_id FROM {$schema}.bonus_schema WHERE schema_id = ? AND company_id = ?");
+    $check_stmt->bind_param('ss', $schema_id, $company_id);
+    $check_stmt->execute();
+    $check_result = $check_stmt->get_result();
+
+    if (!$check_result || $check_result->num_rows === 0) {
+        $check_stmt->close();
         jsonResponse(404, 'Bonus schema not found');
     }
+    $check_stmt->close();
 
-    $fields = [];
+    $setFields = [];
+    $setTypes = '';
+    $setValues = [];
 
     if ($schema_name !== null) {
-        $fields[] = "schema_name = '$schema_name'";
+        $setFields[] = "schema_name = ?";
+        $setTypes .= 's';
+        $setValues[] = $schema_name;
     }
-
     if ($qty !== null) {
-        $fields[] = "qty = $qty";
+        $setFields[] = "qty = ?";
+        $setTypes .= 'i';
+        $setValues[] = $qty;
     }
-
     if ($bonus_nominal !== null) {
-        $fields[] = "bonus_nominal = $bonus_nominal";
+        $setFields[] = "bonus_nominal = ?";
+        $setTypes .= 'i';
+        $setValues[] = $bonus_nominal;
     }
-
     if ($frequency !== null) {
-        $fields[] = "frequency = '$frequency'";
+        $setFields[] = "frequency = ?";
+        $setTypes .= 's';
+        $setValues[] = $frequency;
     }
-
     if ($is_active !== null) {
-        $fields[] = "is_active = $is_active";
+        $setFields[] = "is_active = ?";
+        $setTypes .= 'i';
+        $setValues[] = $is_active;
     }
 
-    if (empty($fields)) {
+    if (empty($setFields)) {
         jsonResponse(400, 'No fields provided for update');
     }
 
-    $updateQuery = "UPDATE {$schema}.bonus_schema 
-                    SET " . implode(', ', $fields) . "
-                    WHERE schema_id = '$schema_id' AND company_id = '$company'";
+    $setClause = implode(', ', $setFields);
+    $allTypes = $setTypes . 'ss';
+    $allValues = array_merge($setValues, [$schema_id, $company_id]);
 
-    if (mysqli_query($conn, $updateQuery)) {
+    $update_stmt = $conn->prepare("UPDATE {$schema}.bonus_schema SET {$setClause} WHERE schema_id = ? AND company_id = ?");
+    $update_stmt->bind_param($allTypes, ...$allValues);
+
+    if ($update_stmt->execute()) {
+        $update_stmt->close();
         jsonResponse(200, 'Bonus schema updated successfully');
     } else {
-        jsonResponse(500, 'Failed to update schema: ' . mysqli_error($conn));
+        $update_stmt->close();
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 500,
+            'endpoint'      => '/bonus/schema.php',
+            'method'        => 'PUT',
+            'error_message' => 'Failed to update schema',
+            'user_identifier' => $username ?? null,
+            'company_id'      => $company_id ?? null,
+        ]);
+        jsonResponse(500, 'Failed to update schema');
     }
 }
 
-function deleteBonusSchema($conn, $schema, $schema_id, $company){
+function deleteBonusSchema($conn, $schema, $schema_id, $company_id){
     if (!$schema_id) {
         jsonResponse(400, 'schema_id is required');
     }
 
-    $checkQuery = "SELECT * FROM {$schema}.bonus_schema WHERE schema_id = '$schema_id' AND company_id = '$company'";
-    $checkResult = mysqli_query($conn, $checkQuery);
+    $check_stmt = $conn->prepare("SELECT schema_id FROM {$schema}.bonus_schema WHERE schema_id = ? AND company_id = ?");
+    $check_stmt->bind_param('ss', $schema_id, $company_id);
+    $check_stmt->execute();
+    $check_result = $check_stmt->get_result();
 
-    if (!$checkResult || mysqli_num_rows($checkResult) === 0) {
+    if (!$check_result || $check_result->num_rows === 0) {
+        $check_stmt->close();
         jsonResponse(404, 'Bonus schema not found');
     }
+    $check_stmt->close();
 
-    $deleteQuery = "DELETE FROM {$schema}.bonus_schema WHERE schema_id = '$schema_id' AND company_id = '$company'";
+    $delete_stmt = $conn->prepare("DELETE FROM {$schema}.bonus_schema WHERE schema_id = ? AND company_id = ?");
+    $delete_stmt->bind_param('ss', $schema_id, $company_id);
 
-    if (mysqli_query($conn, $deleteQuery)) {
+    if ($delete_stmt->execute()) {
+        $delete_stmt->close();
         jsonResponse(200, 'Bonus schema deleted successfully');
     } else {
-        jsonResponse(500, 'Failed to delete schema: ' . mysqli_error($conn));
+        $delete_stmt->close();
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 500,
+            'endpoint'      => '/bonus/schema.php',
+            'method'        => 'DELETE',
+            'error_message' => 'Failed to delete schema',
+            'user_identifier' => null,
+            'company_id'      => $company_id ?? null,
+        ]);
+        jsonResponse(500, 'Failed to delete schema');
     }
-}
-
-use Firebase\JWT\JWT;
-use Firebase\JWT\Key;
-
-$headers = getallheaders();
-if (!isset($headers['Authorization'])) {
-    logApiError($conn, [
-        'error_level'   => 'error',
-        'http_status'   => 401,
-        'endpoint'      => '/menu/category.php',
-        'method'        => 'DELETE',
-        'error_message' => 'Authorization header not found',
-        'user_identifier' => $username ?? null,
-        'company_id'      => $decoded->company_id ?? null,
-    ]);
-    jsonResponse(401, 'Authorization header not found');
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-    header("Access-Control-Allow-Origin: *");
-    header("Access-Control-Allow-Methods: POST, GET, OPTIONS, PUT, DELETE");
-    header("Access-Control-Allow-Headers: Origin, X-Requested-With, Content-Type, Accept");
     http_response_code(200);
     exit();
 }
 
+$decoded = requireAuth();
+$conn = DB::conn();
+$schema = DB_SCHEMA;
+
+$token_username = $decoded->username;
+$token_company = $decoded->company_id;
+
+$method = $_SERVER['REQUEST_METHOD'];
+
 try {
-    $token = str_replace('Bearer ', '', $headers['Authorization']);
-    $decoded = JWT::decode($token, new Key($_ENV['JWT_SECRET'], 'HS256'));
-
-    $conn = DB::conn();
-    $schema = DB_SCHEMA;
-
-    $token_username = $decoded->username;
-    $token_company = $decoded->company_id;
-
-    $method = $_SERVER['REQUEST_METHOD'];
-    
     switch($method){
         case 'POST':
             $input = json_decode(file_get_contents('php://input'), true);
             createBonusSchema($conn, $schema, $input, $token_username, $token_company);
             break;
         case 'GET':
-            $params = $_GET['params'] ?? null;
-            $page = $_GET['page'] ?? 1;
-            $limit = $_GET['limit'] ?? 10;
+            $params = $_GET['params'] ?? '';
+            $page = (int)($_GET['page'] ?? 1);
+            $limit = (int)($_GET['limit'] ?? 10);
             $schema_id = $_GET['schema_id'] ?? null;
             if($schema_id != null){
-                getDetailBonusSchema($conn, $schema, $schema_id);
+                getDetailBonusSchema($conn, $schema, $schema_id, $token_company);
             } else {
-                getAllBonusSchema($conn, $params, $schema, $page, $limit);
+                getAllBonusSchema($conn, $schema, $params, $token_company, $page, $limit);
             }
             break;
         case 'PUT':
@@ -272,7 +330,7 @@ try {
             $schema_id = $_GET['schema_id'] ?? null;
             deleteBonusSchema($conn, $schema, $schema_id, $token_company);
             break;
-        default: 
+        default:
             logApiError($conn, [
                 'error_level'   => 'error',
                 'http_status'   => 405,
@@ -287,19 +345,17 @@ try {
     }
 
 } catch (Exception $e){
-    $conn = DB::conn();
-
     logApiError($conn, [
         'error_level'   => 'error',
         'http_status'   => 500,
-        'endpoint'      => '/account/register.php',
-        'method'        => '',
+        'endpoint'      => '/bonus/schema.php',
+        'method'        => $method ?? '',
         'error_message' => $e->getMessage(),
         'user_identifier' => $decoded->username ?? null,
         'company_id'      => $decoded->company_id ?? null,
     ]);
-    
-    jsonResponse(500, 'Internal Server Error', ['error' => $e->getMessage()]);
+
+    jsonResponse(500, 'Internal Server Error');
 }
 
 ?>

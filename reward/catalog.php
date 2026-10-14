@@ -6,39 +6,53 @@ require_once '../general.php';
 require_once '../config.php';
 require_once '../log.php';
 
-use Firebase\JWT\JWT;
-use Firebase\JWT\Key;
-
 function getCatalog($conn, $schema, $company_id, $params) {
-    $company_id = mysqli_real_escape_string($conn, $company_id);
-    $today      = date('Y-m-d');
-
-    $search = '';
-    if (!empty($params['search'])) {
-        $kw     = mysqli_real_escape_string($conn, $params['search']);
-        $search = " AND (reward_name LIKE '%$kw%' OR description LIKE '%$kw%')";
-    }
+    $today = date('Y-m-d');
 
     $page   = isset($params['page'])  ? max(1, (int)$params['page'])  : 1;
     $limit  = isset($params['limit']) ? max(1, (int)$params['limit']) : 10;
     $offset = ($page - 1) * $limit;
 
-    $base = "FROM {$schema}.reward_catalog
-             WHERE company_id = '$company_id'
+    $searchSql = '';
+    $types     = 'sss';
+    $bindVals  = [$company_id, $today, $today];
+
+    if (!empty($params['search'])) {
+        $kw = '%' . $params['search'] . '%';
+        $searchSql = " AND (reward_name LIKE ? OR description LIKE ?)";
+        $types .= 'ss';
+        $bindVals[] = $kw;
+        $bindVals[] = $kw;
+    }
+
+    $whereClause = "WHERE company_id = ?
                AND is_active = 1
-               AND (valid_from IS NULL OR valid_from <= '$today')
-               AND (valid_until IS NULL OR valid_until >= '$today')
-               $search";
+               AND (valid_from IS NULL OR valid_from <= ?)
+               AND (valid_until IS NULL OR valid_until >= ?)
+               $searchSql";
 
-    $count_res   = mysqli_query($conn, "SELECT COUNT(*) as total $base");
-    $total_data  = (int)mysqli_fetch_assoc($count_res)['total'];
+    $countStmt = $conn->prepare("SELECT COUNT(*) as total FROM {$schema}.reward_catalog $whereClause");
+    if (!$countStmt) jsonResponse(500, 'Internal Server Error');
+    $countStmt->bind_param($types, ...$bindVals);
+    $countStmt->execute();
+    $countRes = $countStmt->get_result();
+    $total_data = (int)$countRes->fetch_assoc()['total'];
+    $countStmt->close();
 
-    $result = mysqli_query($conn, "SELECT * $base ORDER BY created_at DESC LIMIT $limit OFFSET $offset");
+    $dataTypes = $types . 'ii';
+    $dataVals  = array_merge($bindVals, [$limit, $offset]);
+
+    $dataStmt = $conn->prepare("SELECT * FROM {$schema}.reward_catalog $whereClause ORDER BY created_at DESC LIMIT ? OFFSET ?");
+    if (!$dataStmt) jsonResponse(500, 'Internal Server Error');
+    $dataStmt->bind_param($dataTypes, ...$dataVals);
+    $dataStmt->execute();
+    $result = $dataStmt->get_result();
 
     $data = [];
     while ($row = mysqli_fetch_assoc($result)) {
         $data[] = $row;
     }
+    $dataStmt->close();
 
     jsonResponse(200, 'Reward catalog', [
         'data' => $data,
@@ -52,20 +66,24 @@ function getCatalog($conn, $schema, $company_id, $params) {
 }
 
 function getCatalogDetail($conn, $schema, $reward_id, $company_id) {
-    $reward_id  = mysqli_real_escape_string($conn, $reward_id);
-    $company_id = mysqli_real_escape_string($conn, $company_id);
-
-    $result = mysqli_query($conn,
+    $stmt = $conn->prepare(
         "SELECT * FROM {$schema}.reward_catalog
-         WHERE reward_id = '$reward_id' AND company_id = '$company_id'
+         WHERE reward_id = ? AND company_id = ?
          LIMIT 1"
     );
+    if (!$stmt) jsonResponse(500, 'Internal Server Error');
+    $stmt->bind_param('ss', $reward_id, $company_id);
+    $stmt->execute();
+    $result = $stmt->get_result();
 
-    if (!$result || mysqli_num_rows($result) === 0) {
+    if (!$result || $result->num_rows === 0) {
+        $stmt->close();
         jsonResponse(404, 'Reward not found');
     }
 
-    jsonResponse(200, 'Reward detail', mysqli_fetch_assoc($result));
+    $data = $result->fetch_assoc();
+    $stmt->close();
+    jsonResponse(200, 'Reward detail', $data);
 }
 
 function createCatalog($conn, $schema, $input, $username, $company_id) {
@@ -76,16 +94,14 @@ function createCatalog($conn, $schema, $input, $username, $company_id) {
         }
     }
 
-    $reward_name = mysqli_real_escape_string($conn, trim($input['reward_name']));
-    $description = isset($input['description']) ? mysqli_real_escape_string($conn, $input['description']) : null;
+    $reward_name = trim($input['reward_name']);
+    $description = isset($input['description']) ? $input['description'] : null;
     $point_cost  = (int)$input['point_cost'];
-    $image_url   = isset($input['image_url'])  ? mysqli_real_escape_string($conn, $input['image_url'])  : null;
+    $image_url   = isset($input['image_url'])  ? $input['image_url']  : null;
     $stock       = isset($input['stock'])      ? (int)$input['stock'] : null;
     $is_active   = isset($input['is_active'])  ? (int)$input['is_active'] : 1;
-    $valid_from  = isset($input['valid_from'])  && $input['valid_from']  !== '' ? mysqli_real_escape_string($conn, $input['valid_from'])  : null;
-    $valid_until = isset($input['valid_until']) && $input['valid_until'] !== '' ? mysqli_real_escape_string($conn, $input['valid_until']) : null;
-    $company_id  = mysqli_real_escape_string($conn, $company_id);
-    $username    = mysqli_real_escape_string($conn, $username);
+    $valid_from  = isset($input['valid_from'])  && $input['valid_from']  !== '' ? $input['valid_from']  : null;
+    $valid_until = isset($input['valid_until']) && $input['valid_until'] !== '' ? $input['valid_until'] : null;
 
     if ($point_cost <= 0) jsonResponse(400, 'point_cost must be greater than 0');
     if (!in_array($is_active, [0, 1])) jsonResponse(400, 'is_active must be 0 or 1');
@@ -93,65 +109,124 @@ function createCatalog($conn, $schema, $input, $username, $company_id) {
     $reward_id = 'reward' . uniqid();
     $now       = getCurrentDateTimeJakarta();
 
-    $desc_sql  = $description  !== null ? "'$description'"  : 'NULL';
-    $img_sql   = $image_url    !== null ? "'$image_url'"    : 'NULL';
-    $stock_sql = $stock        !== null ? $stock            : 'NULL';
-    $vf_sql    = $valid_from   !== null ? "'$valid_from'"   : 'NULL';
-    $vu_sql    = $valid_until  !== null ? "'$valid_until'"  : 'NULL';
-
-    $insert = "INSERT INTO {$schema}.reward_catalog
-                   (reward_id, company_id, reward_name, description, point_cost, image_url, stock, is_active, valid_from, valid_until, created_by, created_at)
-               VALUES
-                   ('$reward_id', '$company_id', '$reward_name', $desc_sql, $point_cost, $img_sql, $stock_sql, $is_active, $vf_sql, $vu_sql, '$username', '$now')";
-
-    if (!mysqli_query($conn, $insert)) {
-        jsonResponse(500, 'Failed to create reward: ' . mysqli_error($conn));
+    $stmt = $conn->prepare(
+        "INSERT INTO {$schema}.reward_catalog
+            (reward_id, company_id, reward_name, description, point_cost, image_url, stock, is_active, valid_from, valid_until, created_by, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    );
+    if (!$stmt) jsonResponse(500, 'Internal Server Error');
+    $stmt->bind_param(
+        'ssssisiissss',
+        $reward_id,
+        $company_id,
+        $reward_name,
+        $description,
+        $point_cost,
+        $image_url,
+        $stock,
+        $is_active,
+        $valid_from,
+        $valid_until,
+        $username,
+        $now
+    );
+    if (!$stmt->execute()) {
+        $stmt->close();
+        jsonResponse(500, 'Failed to create reward');
     }
+    $stmt->close();
 
     jsonResponse(201, 'Reward created successfully', ['reward_id' => $reward_id]);
 }
 
 function updateCatalog($conn, $schema, $input, $username, $company_id) {
-    $reward_id  = $input['reward_id'] ?? null;
+    $reward_id = $input['reward_id'] ?? null;
     if (!$reward_id) jsonResponse(400, 'reward_id is required');
 
-    $reward_id  = mysqli_real_escape_string($conn, $reward_id);
-    $company_id = mysqli_real_escape_string($conn, $company_id);
-
-    $check = mysqli_query($conn,
+    $checkStmt = $conn->prepare(
         "SELECT reward_id FROM {$schema}.reward_catalog
-         WHERE reward_id = '$reward_id' AND company_id = '$company_id' LIMIT 1"
+         WHERE reward_id = ? AND company_id = ? LIMIT 1"
     );
-    if (!$check || mysqli_num_rows($check) === 0) jsonResponse(404, 'Reward not found');
+    if (!$checkStmt) jsonResponse(500, 'Internal Server Error');
+    $checkStmt->bind_param('ss', $reward_id, $company_id);
+    $checkStmt->execute();
+    $checkRes = $checkStmt->get_result();
+    if (!$checkRes || $checkRes->num_rows === 0) {
+        $checkStmt->close();
+        jsonResponse(404, 'Reward not found');
+    }
+    $checkStmt->close();
 
-    $fields = [];
-    if (isset($input['reward_name'])) $fields[] = "reward_name = '" . mysqli_real_escape_string($conn, $input['reward_name']) . "'";
-    if (isset($input['description'])) $fields[] = "description = '" . mysqli_real_escape_string($conn, $input['description']) . "'";
-    if (isset($input['point_cost']))  {
+    $setParts = [];
+    $types    = '';
+    $values   = [];
+
+    if (isset($input['reward_name'])) {
+        $setParts[] = "reward_name = ?";
+        $types .= 's';
+        $values[] = trim($input['reward_name']);
+    }
+    if (isset($input['description'])) {
+        $setParts[] = "description = ?";
+        $types .= 's';
+        $values[] = $input['description'];
+    }
+    if (isset($input['point_cost'])) {
         $pc = (int)$input['point_cost'];
         if ($pc <= 0) jsonResponse(400, 'point_cost must be greater than 0');
-        $fields[] = "point_cost = $pc";
+        $setParts[] = "point_cost = ?";
+        $types .= 'i';
+        $values[] = $pc;
     }
-    if (isset($input['image_url']))   $fields[] = "image_url = '" . mysqli_real_escape_string($conn, $input['image_url']) . "'";
+    if (isset($input['image_url'])) {
+        $setParts[] = "image_url = ?";
+        $types .= 's';
+        $values[] = $input['image_url'];
+    }
     if (array_key_exists('stock', $input)) {
-        $fields[] = $input['stock'] !== null ? "stock = " . (int)$input['stock'] : "stock = NULL";
+        $setParts[] = "stock = ?";
+        $types .= 'i';
+        $values[] = $input['stock'] !== null ? (int)$input['stock'] : null;
     }
     if (isset($input['is_active'])) {
         $ia = (int)$input['is_active'];
         if (!in_array($ia, [0, 1])) jsonResponse(400, 'is_active must be 0 or 1');
-        $fields[] = "is_active = $ia";
+        $setParts[] = "is_active = ?";
+        $types .= 'i';
+        $values[] = $ia;
     }
-    if (isset($input['valid_from']))  $fields[] = $input['valid_from']  !== '' ? "valid_from = '"  . mysqli_real_escape_string($conn, $input['valid_from'])  . "'" : "valid_from = NULL";
-    if (isset($input['valid_until'])) $fields[] = $input['valid_until'] !== '' ? "valid_until = '" . mysqli_real_escape_string($conn, $input['valid_until']) . "'" : "valid_until = NULL";
-
-    if (empty($fields)) jsonResponse(400, 'No fields provided for update');
-
-    $fields[] = "updated_by = '" . mysqli_real_escape_string($conn, $username) . "'";
-
-    $update = "UPDATE {$schema}.reward_catalog SET " . implode(', ', $fields) . " WHERE reward_id = '$reward_id' AND company_id = '$company_id'";
-    if (!mysqli_query($conn, $update)) {
-        jsonResponse(500, 'Failed to update reward: ' . mysqli_error($conn));
+    if (isset($input['valid_from'])) {
+        $setParts[] = "valid_from = ?";
+        $types .= 's';
+        $values[] = $input['valid_from'] !== '' ? $input['valid_from'] : null;
     }
+    if (isset($input['valid_until'])) {
+        $setParts[] = "valid_until = ?";
+        $types .= 's';
+        $values[] = $input['valid_until'] !== '' ? $input['valid_until'] : null;
+    }
+
+    if (empty($setParts)) jsonResponse(400, 'No fields provided for update');
+
+    $setParts[] = "updated_by = ?";
+    $types .= 's';
+    $values[] = $username;
+
+    $types .= 'ss';
+    $values[] = $reward_id;
+    $values[] = $company_id;
+
+    $setClause = implode(', ', $setParts);
+    $updateSql = "UPDATE {$schema}.reward_catalog SET {$setClause} WHERE reward_id = ? AND company_id = ?";
+
+    $updateStmt = $conn->prepare($updateSql);
+    if (!$updateStmt) jsonResponse(500, 'Internal Server Error');
+    $updateStmt->bind_param($types, ...$values);
+    if (!$updateStmt->execute()) {
+        $updateStmt->close();
+        jsonResponse(500, 'Failed to update reward');
+    }
+    $updateStmt->close();
 
     jsonResponse(200, 'Reward updated successfully');
 }
@@ -159,75 +234,57 @@ function updateCatalog($conn, $schema, $input, $username, $company_id) {
 function deleteCatalog($conn, $schema, $reward_id, $company_id) {
     if (!$reward_id) jsonResponse(400, 'reward_id is required');
 
-    $reward_id  = mysqli_real_escape_string($conn, $reward_id);
-    $company_id = mysqli_real_escape_string($conn, $company_id);
-
-    $check = mysqli_query($conn,
+    $checkStmt = $conn->prepare(
         "SELECT reward_id FROM {$schema}.reward_catalog
-         WHERE reward_id = '$reward_id' AND company_id = '$company_id' LIMIT 1"
+         WHERE reward_id = ? AND company_id = ? LIMIT 1"
     );
-    if (!$check || mysqli_num_rows($check) === 0) jsonResponse(404, 'Reward not found');
-
-    if (!mysqli_query($conn, "DELETE FROM {$schema}.reward_catalog WHERE reward_id = '$reward_id' AND company_id = '$company_id'")) {
-        jsonResponse(500, 'Failed to delete reward: ' . mysqli_error($conn));
+    if (!$checkStmt) jsonResponse(500, 'Internal Server Error');
+    $checkStmt->bind_param('ss', $reward_id, $company_id);
+    $checkStmt->execute();
+    $checkRes = $checkStmt->get_result();
+    if (!$checkRes || $checkRes->num_rows === 0) {
+        $checkStmt->close();
+        jsonResponse(404, 'Reward not found');
     }
+    $checkStmt->close();
+
+    $deleteStmt = $conn->prepare(
+        "DELETE FROM {$schema}.reward_catalog WHERE reward_id = ? AND company_id = ?"
+    );
+    if (!$deleteStmt) jsonResponse(500, 'Internal Server Error');
+    $deleteStmt->bind_param('ss', $reward_id, $company_id);
+    if (!$deleteStmt->execute()) {
+        $deleteStmt->close();
+        jsonResponse(500, 'Failed to delete reward');
+    }
+    $deleteStmt->close();
 
     jsonResponse(200, 'Reward deleted successfully');
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-    header("Access-Control-Allow-Origin: *");
-    header("Access-Control-Allow-Methods: POST, GET, PUT, DELETE, OPTIONS");
-    header("Access-Control-Allow-Headers: Origin, X-Requested-With, Content-Type, Accept, Authorization");
     http_response_code(200);
     exit();
 }
 
-$method = $_SERVER['REQUEST_METHOD'];
+$decoded = requireAuth();
+$conn    = DB::conn();
+$schema  = DB_SCHEMA;
+$method  = $_SERVER['REQUEST_METHOD'];
 
-// ── Public GET (no auth required) ────────────────────────────────────────────
-if ($method === 'GET') {
-    $conn       = DB::conn();
-    $schema     = DB_SCHEMA;
-    $company_id = $_GET['company_id'] ?? null;
-    $reward_id  = $_GET['reward_id']  ?? null;
-
-    if (!$company_id) jsonResponse(400, 'company_id is required');
-
-    if ($reward_id) {
-        getCatalogDetail($conn, $schema, $reward_id, $company_id);
-    } else {
-        getCatalog($conn, $schema, $company_id, $_GET);
-    }
-    exit;
-}
-
-// ── Protected: POST, PUT, DELETE ─────────────────────────────────────────────
-$headers = getallheaders();
-if (!isset($headers['Authorization'])) {
-    $conn = DB::conn();
-    logApiError($conn, [
-        'error_level'     => 'error',
-        'http_status'     => 401,
-        'endpoint'        => '/reward/catalog.php',
-        'method'          => $method,
-        'error_message'   => 'Authorization header not found',
-        'user_identifier' => null,
-        'company_id'      => null,
-    ]);
-    jsonResponse(401, 'Authorization header not found');
-}
+$token_username = $decoded->username;
+$token_company  = $decoded->company_id;
 
 try {
-    $token   = str_replace('Bearer ', '', $headers['Authorization']);
-    $decoded = JWT::decode($token, new Key($_ENV['JWT_SECRET'], 'HS256'));
-
-    $conn           = DB::conn();
-    $schema         = DB_SCHEMA;
-    $token_username = $decoded->username;
-    $token_company  = $decoded->company_id;
-
     switch ($method) {
+        case 'GET':
+            $reward_id = $_GET['reward_id'] ?? null;
+            if ($reward_id) {
+                getCatalogDetail($conn, $schema, $reward_id, $token_company);
+            } else {
+                getCatalog($conn, $schema, $token_company, $_GET);
+            }
+            break;
         case 'POST':
             $input = json_decode(file_get_contents('php://input'), true);
             createCatalog($conn, $schema, $input, $token_username, $token_company);
@@ -253,19 +310,17 @@ try {
             jsonResponse(405, 'Method Not Allowed');
             break;
     }
-
 } catch (Exception $e) {
-    $conn = DB::conn();
     logApiError($conn, [
         'error_level'     => 'error',
         'http_status'     => 500,
         'endpoint'        => '/reward/catalog.php',
         'method'          => $method,
         'error_message'   => $e->getMessage(),
-        'user_identifier' => $decoded->username ?? null,
-        'company_id'      => $decoded->company_id ?? null,
+        'user_identifier' => null,
+        'company_id'      => null,
     ]);
-    jsonResponse(500, 'Internal Server Error', ['error' => $e->getMessage()]);
+    jsonResponse(500, 'Internal Server Error');
 }
 
 ?>

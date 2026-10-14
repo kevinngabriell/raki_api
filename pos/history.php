@@ -8,11 +8,6 @@ require_once '../log.php';
 require_once __DIR__ . '/../account/account_rules.php';
 require_once __DIR__ . '/history_lines.php';
 
-use Firebase\JWT\JWT;
-use Firebase\JWT\Key;
-
-// GET /pos/history.php — the POS "Riwayat Transaksi" modal.
-// Cashiers only see their own sales; Owner/Mitra may pass `username` to look at a cashier.
 function getPosHistory($conn, $schema, $params, $decoded){
     $company_id = trim((string)($params['company_id'] ?? ''));
     if ($company_id === '') {
@@ -167,38 +162,13 @@ function getPosHistory($conn, $schema, $params, $decoded){
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-    header("Access-Control-Allow-Origin: *");
-    header("Access-Control-Allow-Methods: GET, OPTIONS");
-    header("Access-Control-Allow-Headers: Origin, X-Requested-With, Content-Type, Accept, Authorization");
     http_response_code(200);
     exit();
 }
 
-$headers = function_exists('getallheaders') ? getallheaders() : [];
-
-// Case-insensitive Authorization lookup (some servers return 'authorization')
-$authHeader = null;
-foreach ($headers as $k => $v) {
-    if (strtolower($k) === 'authorization') {
-        $authHeader = $v;
-        break;
-    }
-}
-if (!$authHeader) {
-    $authHeader = $_SERVER['HTTP_AUTHORIZATION'] ?? ($_SERVER['REDIRECT_HTTP_AUTHORIZATION'] ?? null);
-}
-if (!$authHeader) {
-    jsonResponse(401, 'Authorization header not found');
-}
+$decoded = requireAuth();
 
 try {
-    $token = preg_replace('/^Bearer\s+/i', '', trim($authHeader));
-    try {
-        $decoded = JWT::decode($token, new Key($_ENV['JWT_SECRET'], 'HS256'));
-    } catch (Exception $e) {
-        jsonResponse(401, 'Invalid or expired token', ['error' => $e->getMessage()]);
-    }
-
     $conn = DB::conn();
     $schema = DB_SCHEMA;
 
@@ -209,9 +179,7 @@ try {
     getPosHistory($conn, $schema, $_GET, $decoded);
 
 } catch (Exception $e) {
-    $conn = DB::conn();
-
-    logApiError($conn, [
+    logApiError($conn ?? null, [
         'error_level'   => 'error',
         'http_status'   => 500,
         'endpoint'      => '/pos/history.php',
@@ -221,5 +189,5 @@ try {
         'company_id'      => $decoded->company_id ?? null,
     ]);
 
-    jsonResponse(500, 'Internal Server Error', ['error' => $e->getMessage()]);
+    jsonResponse(500, 'Internal Server Error');
 }

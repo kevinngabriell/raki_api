@@ -6,9 +6,6 @@ require_once '../general.php';
 require_once '../config.php';
 require_once '../log.php';
 
-use Firebase\JWT\JWT;
-use Firebase\JWT\Key;
-
 function getNextQueueNumber($conn, $schema, $company_id, $username){
     if (!$company_id || trim($company_id) === '') {
         logApiError($conn, [
@@ -47,47 +44,13 @@ function getNextQueueNumber($conn, $schema, $company_id, $username){
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-    header("Access-Control-Allow-Origin: *");
-    header("Access-Control-Allow-Methods: POST, GET, OPTIONS, PUT, DELETE");
-    header("Access-Control-Allow-Headers: Origin, X-Requested-With, Content-Type, Accept, Authorization");
     http_response_code(200);
     exit();
 }
 
-$headers = function_exists('getallheaders') ? getallheaders() : [];
-
-// Case-insensitive Authorization lookup (some servers return 'authorization')
-$authHeader = null;
-foreach ($headers as $k => $v) {
-    if (strtolower($k) === 'authorization') {
-        $authHeader = $v;
-        break;
-    }
-}
-
-// Fallbacks for different SAPIs / proxies
-if (!$authHeader) {
-    $authHeader = $_SERVER['HTTP_AUTHORIZATION'] ?? null;
-}
-if (!$authHeader) {
-    $authHeader = $_SERVER['REDIRECT_HTTP_AUTHORIZATION'] ?? null;
-}
-
-if (!$authHeader) {
-    logApiError($conn ?? null, [
-        'error_level'   => 'error',
-        'http_status'   => 401,
-        'endpoint'      => '/pos/queue-next.php',
-        'method'        => 'POST',
-        'error_message' => 'Authorization header not found',
-    ]);
-    jsonResponse(401, 'Authorization header not found');
-}
+$decoded = requireAuth();
 
 try {
-    $token = preg_replace('/^Bearer\s+/i', '', trim($authHeader));
-    $decoded = JWT::decode($token, new Key($_ENV['JWT_SECRET'], 'HS256'));
-
     $conn = DB::conn();
     $schema = DB_SCHEMA;
 
@@ -101,9 +64,6 @@ try {
                 jsonResponse(400, 'Invalid JSON body');
             }
 
-            // Prefer client-supplied company_id, but fall back to the company_id mapped
-            // to this authenticated user in the JWT (mirrors transaction/index.php's
-            // resolution order).
             $company_id = $input['company_id'] ?? ($decoded->company_id ?? null);
 
             getNextQueueNumber($conn, $schema, $company_id, $token_username);
@@ -123,19 +83,17 @@ try {
     }
 
 } catch (Exception $e) {
-    $conn = DB::conn();
-
-    logApiError($conn, [
+    logApiError($conn ?? null, [
         'error_level'   => 'error',
         'http_status'   => 500,
         'endpoint'      => '/pos/queue-next.php',
         'method'        => $_SERVER['REQUEST_METHOD'] ?? null,
         'error_message' => $e->getMessage(),
-        'user_identifier' => $token_username ?? null,
+        'user_identifier' => $decoded->username ?? null,
         'company_id'      => $decoded->company_id ?? null,
     ]);
 
-    jsonResponse(500, 'Internal Server Error', ['error' => $e->getMessage()]);
+    jsonResponse(500, 'Internal Server Error');
 }
 
 ?>

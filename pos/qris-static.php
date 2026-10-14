@@ -6,12 +6,25 @@ require_once '../general.php';
 require_once '../config.php';
 require_once '../log.php';
 
-use Firebase\JWT\JWT;
-use Firebase\JWT\Key;
-
 function showStaticQRIS($conn, $company_id, $username){
-    $query = "SELECT * FROM movira_core.app_static_payment WHERE company_id = '$company_id'";
-    $result = mysqli_query($conn, $query);
+    $coreSchema = MOVIRA_CORE_SCHEMA;
+    $query = "SELECT * FROM {$coreSchema}.app_static_payment WHERE company_id = ?";
+    $stmt = $conn->prepare($query);
+    if (!$stmt) {
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 500,
+            'endpoint'      => '/pos/qris-static.php',
+            'method'        => '',
+            'error_message' => 'Prepare query failed: ' . $conn->error,
+            'user_identifier' => $username ?? null,
+            'company_id'      => $company_id ?? null,
+        ]);
+        jsonResponse(500, 'Database error');
+    }
+    $stmt->bind_param('s', $company_id);
+    $stmt->execute();
+    $result = $stmt->get_result();
 
     if ($result && mysqli_num_rows($result) > 0) {
         $data = mysqli_fetch_all($result, MYSQLI_ASSOC);
@@ -24,64 +37,20 @@ function showStaticQRIS($conn, $company_id, $username){
             'method'        => '',
             'error_message' => 'Static QRIS not found',
             'user_identifier' => $username ?? null,
-            'company_id'      => $decoded->company_id ?? null,
+            'company_id'      => $company_id ?? null,
         ]);
         jsonResponse(404, 'Static QRIS not found');
     }
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-    header("Access-Control-Allow-Origin: *");
-    header("Access-Control-Allow-Methods: POST, GET, OPTIONS, PUT, DELETE");
-    header("Access-Control-Allow-Headers: Origin, X-Requested-With, Content-Type, Accept");
     http_response_code(200);
     exit();
 }
 
-$headers = function_exists('getallheaders') ? getallheaders() : [];
-
-// Case-insensitive Authorization lookup (some servers return 'authorization')
-$authHeader = null;
-foreach ($headers as $k => $v) {
-    if (strtolower($k) === 'authorization') {
-        $authHeader = $v;
-        break;
-    }
-}
-
-// Fallbacks for different SAPIs / proxies
-if (!$authHeader) {
-    $authHeader = $_SERVER['HTTP_AUTHORIZATION'] ?? null;
-}
-if (!$authHeader) {
-    $authHeader = $_SERVER['REDIRECT_HTTP_AUTHORIZATION'] ?? null;
-}
-
-if (!$authHeader) {
-    logApiError($conn, [
-        'error_level'   => 'error',
-        'http_status'   => 401,
-        'endpoint'      => '/pos/qris-static.php',
-        'method'        => '',
-        'error_message' => 'Authorization header not found',
-        'user_identifier' => $username ?? null,
-        'company_id'      => $decoded->company_id ?? null,
-    ]);
-    jsonResponse(401, 'Authorization header not found');
-}
-
-if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-    header("Access-Control-Allow-Origin: *");
-    header("Access-Control-Allow-Methods: POST, GET, OPTIONS, PUT, DELETE");
-    header("Access-Control-Allow-Headers: Origin, X-Requested-With, Content-Type, Accept, Authorization");
-    http_response_code(200);
-    exit();
-}
+$decoded = requireAuth();
 
 try {
-    $token = preg_replace('/^Bearer\s+/i', '', trim($authHeader));
-    $decoded = JWT::decode($token, new Key($_ENV['JWT_SECRET'], 'HS256'));
-
     $conn = DB::conn();
 
     $token_username = $decoded->username;
@@ -89,7 +58,6 @@ try {
 
     switch($method){
         case 'GET':
-            // company_id now comes from query param (?company_id=...)
             $company_id = $_GET['company_id'] ?? null;
 
             if (!$company_id || trim($company_id) === '') {
@@ -104,16 +72,16 @@ try {
     }
 
 } catch (Exception $e){
-    logApiError($conn, [
+    logApiError($conn ?? null, [
         'error_level'   => 'error',
         'http_status'   => 500,
         'endpoint'      => '/pos/qris-static.php',
         'method'        => '',
         'error_message' => $e->getMessage(),
-        'user_identifier' => $username ?? null,
+        'user_identifier' => $decoded->username ?? null,
         'company_id'      => $decoded->company_id ?? null,
     ]);
-    jsonResponse(500, 'Internal Server Error', ['error' => $e->getMessage()]);
+    jsonResponse(500, 'Internal Server Error');
 }
 
 ?>

@@ -178,7 +178,8 @@ function promoParseConditions(mysqli $conn, string $schema, array $input, string
 
 // The outlet types a promo can target = the role names of the RAKI app.
 function promoOutletTypes(mysqli $conn): array {
-    $stmt = $conn->prepare("SELECT role_name FROM movira_core.app_role WHERE app_id = ? ORDER BY role_name");
+    $coreSchema = MOVIRA_CORE_SCHEMA;
+    $stmt = $conn->prepare("SELECT role_name FROM {$coreSchema}.app_role WHERE app_id = ? ORDER BY role_name");
     $appId = PROMO_APP_ID;
     $stmt->bind_param('s', $appId);
     $stmt->execute();
@@ -414,7 +415,7 @@ function listPromos(mysqli $conn, string $schema, array $query, string $companyI
     ]);
 }
 
-$decoded = promoAuthenticate();
+$decoded = requireAuth();
 $conn = null;
 
 try {
@@ -471,5 +472,5 @@ try {
         'user_identifier' => $decoded->username ?? null,
         'company_id'      => $decoded->company_id ?? null,
     ]);
-    jsonResponse(500, 'Internal Server Error', ['error' => $e->getMessage()]);
+    jsonResponse(500, 'Internal Server Error');
 }

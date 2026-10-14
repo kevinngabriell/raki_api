@@ -1,77 +1,60 @@
 <?php
 
-require_once 'connection/db.php';
-require_once 'vendor/autoload.php';
-require_once 'general.php';
-require_once 'config.php';
-// require_once 'notification/notification.php';
+require_once __DIR__ . '/connection/db.php';
+require_once __DIR__ . '/vendor/autoload.php';
+require_once __DIR__ . '/general.php';
+require_once __DIR__ . '/config.php';
 
-function logApiError(
-    ?mysqli $conn,
-    array $params
-) {
-    if (!$conn instanceof mysqli) {
-        return false;
+function logApiError($conn, array $params): ?string
+{
+    $httpStatus = (int)($params['http_status'] ?? 500);
+    $endpoint   = $params['endpoint'] ?? '';
+    $method     = $params['method'] ?? '';
+    $errorMsg   = $params['error_message'] ?? '';
+    $level      = $params['error_level'] ?? 'error';
+    $username   = $params['user_identifier'] ?? null;
+    $companyId  = $params['company_id'] ?? null;
+
+    try {
+        $errorId = 'ERR' . uniqid();
+        $requestId = RequestLogger::requestId();
+        $now = getCurrentDateTimeJakarta();
+
+        $logDb = MOVIRA_CORE_SCHEMA;
+        $conn = DB::conn($logDb);
+
+        $stmt = $conn->prepare(
+            "INSERT INTO log_request
+                (request_id, timestamp, endpoint, http_method, status_code, outcome, level,
+                 error_message, username, company_id, ip_address, user_agent, db_connected)
+             VALUES
+                (?, ?, ?, ?, ?, 'error', ?, ?, ?, ?, ?, ?, 1)"
+        );
+
+        $ip = getUserIP();
+        $ua = mb_substr($_SERVER['HTTP_USER_AGENT'] ?? '', 0, 500);
+
+        $stmt->bind_param(
+            'ssssissssss',
+            $requestId,
+            $now,
+            $endpoint,
+            $method,
+            $httpStatus,
+            $level,
+            $errorMsg,
+            $username,
+            $companyId,
+            $ip,
+            $ua,
+        );
+
+        $stmt->execute();
+        $stmt->close();
+
+        return $errorId;
+    } catch (Throwable $e) {
+        error_log('[logApiError] Failed to write log: ' . $e->getMessage());
+        return null;
     }
-    /*
-    Required keys:
-    - http_status (int)
-    - endpoint (string)
-    - error_message (string)
-
-    Optional:
-    - error_level (critical|error|warning)
-    - method
-    - file
-    - line
-    - user_identifier
-    - company_id
-    - request_id
-    */
-
-    $error_id = 'ERR' . uniqid();
-    $error_level = $params['error_level'] ?? 'error';
-    $http_status = (int)$params['http_status'];
-    $endpoint = $params['endpoint'];
-    $method = $params['method'] ?? $_SERVER['REQUEST_METHOD'] ?? null;
-    $error_message = $params['error_message'];
-
-    $file = $params['file'] ?? null;
-    $line = $params['line'] ?? null;
-    $user_identifier = $params['user_identifier'] ?? null;
-    $company_id = $params['company_id'] ?? null;
-    $request_id = $params['request_id'] ?? null;
-
-    $ip_address = $_SERVER['REMOTE_ADDR'] ?? null;
-    $user_agent = $_SERVER['HTTP_USER_AGENT'] ?? null;
-
-    $sql = "INSERT INTO raki_dev.api_error_log (error_id, error_level, http_status, endpoint, method, error_message, file, line, user_identifier, company_id, request_id, ip_address, user_agent, created_at) 
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())";
-
-    $stmt = $conn->prepare($sql);
-    if (!$stmt) {
-        // jangan bikin infinite loop error logging
-        return false;
-    }
-
-    $stmt->bind_param(
-        'ssissssisisss',
-        $error_id,
-        $error_level,
-        $http_status,
-        $endpoint,
-        $method,
-        $error_message,
-        $file,
-        $line,
-        $user_identifier,
-        $company_id, $request_id, $ip_address, $user_agent
-    );
-
-    $stmt->execute();
-    $stmt->close();
-
-    return $error_id;
 }
-
-?>

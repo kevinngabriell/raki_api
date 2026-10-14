@@ -14,6 +14,7 @@ require_once '../promo/engine.php';
 const QUEUE_NUMBER_ROLES = ['Outlet'];
 
 function createTransaction($conn, $schema, $input, $username, $role = null, $token_company_id = null){
+    $coreSchema = MOVIRA_CORE_SCHEMA;
     // Basic validation
     if (!$input || !isset($input['items']) || !is_array($input['items']) || count($input['items']) === 0) {
         logApiError($conn, [
@@ -45,7 +46,6 @@ function createTransaction($conn, $schema, $input, $username, $role = null, $tok
         jsonResponse(400, 'company_id is required (not found in payload or token).');
     }
 
-    $total_items = $input['total_items'];
     // Jakarta explicitly: the promo day check is judged on this date, and PHP's default timezone isn't guaranteed to be Asia/Jakarta.
     $transaction_date = isset($input['transaction_date']) && !empty($input['transaction_date']) ? $input['transaction_date'] : getCurrentDateTimeJakarta();
 
@@ -507,7 +507,7 @@ function createTransaction($conn, $schema, $input, $username, $role = null, $tok
         try {
             if ($creatorRoleName !== 'Outlet') {
                 // Fetch PIC contact from app_company
-                $sqlPhone = "SELECT pic_contact FROM movira_core.app_company WHERE company_id = ?";
+                $sqlPhone = "SELECT pic_contact FROM {$coreSchema}.app_company WHERE company_id = ?";
                 $stmtPhone = $conn->prepare($sqlPhone);
 
                 if ($stmtPhone) {
@@ -537,7 +537,7 @@ function createTransaction($conn, $schema, $input, $username, $role = null, $tok
                         error_log('Gagal kirim WhatsApp: ' . ($waResult['raw'] ?? ''));
 
                         // Fallback: send email to business owner
-                        $sqlOwnerEmail = "SELECT u.email FROM movira_core.app_user u JOIN movira_core.app_role r ON r.app_role_id = u.app_role_id WHERE u.company_id = ? AND r.role_name = 'Owner' AND u.email IS NOT NULL AND u.email != '' LIMIT 1";
+                        $sqlOwnerEmail = "SELECT u.email FROM {$coreSchema}.app_user u JOIN {$coreSchema}.app_role r ON r.app_role_id = u.app_role_id WHERE u.company_id = ? AND r.role_name = 'Owner' AND u.email IS NOT NULL AND u.email != '' LIMIT 1";
                         $stmtOwnerEmail = $conn->prepare($sqlOwnerEmail);
                         if ($stmtOwnerEmail) {
                             $stmtOwnerEmail->bind_param('s', $company_id);
@@ -591,9 +591,9 @@ function createTransaction($conn, $schema, $input, $username, $role = null, $tok
             'method'        => 'POST',
             'error_message' =>  $e->getMessage(),
             'user_identifier' => $username ?? null,
-            'company_id'      => $decoded->company_id ?? null,
+            'company_id'      => $company_id ?? null,
          ]);
-        jsonResponse(500, 'Failed to create transaction', ['error' => $e->getMessage()]);
+        jsonResponse(500, 'Failed to create transaction');
     }
 }
 
@@ -707,6 +707,7 @@ function getDetailTransaction($conn, $schema, $trx_id, $username){
 }
 
 function getAllTransaction($conn, $schema, $company_id = null, $username = null, $page = 1, $limit = 10){
+    $coreSchema = MOVIRA_CORE_SCHEMA;
     $page = (int)$page;
     $limit = (int)$limit;
     if ($page < 1) { $page = 1; }
@@ -815,7 +816,7 @@ function getAllTransaction($conn, $schema, $company_id = null, $username = null,
     $total = (int)($totalRow['total'] ?? 0);
 
     // --- Query data transaksi + nama company ---
-    $baseSelect = "SELECT t.transaction_id, t.company_id, t.transaction_date, t.total_amount, t.created_at, t.created_by, t.updated_at, t.updated_by, t.total_item, ac.company_name FROM {$schema}.transaction t LEFT JOIN movira_core.app_company ac ON ac.company_id = t.company_id";
+    $baseSelect = "SELECT t.transaction_id, t.company_id, t.transaction_date, t.total_amount, t.created_at, t.created_by, t.updated_at, t.updated_by, t.total_item, ac.company_name FROM {$schema}.transaction t LEFT JOIN {$coreSchema}.app_company ac ON ac.company_id = t.company_id";
 
     if ($hasCompanyFilter && $hasUsernameFilter) {
         $sql = $baseSelect . " WHERE t.company_id = ? AND t.created_by = ? ORDER BY t.transaction_date DESC, t.created_at DESC LIMIT ?, ?";
@@ -886,114 +887,81 @@ function getAllTransaction($conn, $schema, $company_id = null, $username = null,
     jsonResponse(200, 'Success', $response);
 }
 
-function deleteTransaction ($conn, $schema, $transaction_id){
+function deleteTransaction ($conn, $schema, $transaction_id, $company_id){
     if($transaction_id === null || $transaction_id === ''){
-        logApiError($conn, [
-            'error_level'   => 'error',
-            'http_status'   => 400,
-            'endpoint'      => '/transaction/index.php',
-            'method'        => 'DELETE',
-            'error_message' =>  'Missing required fields (transaction_id)',
-            'user_identifier' => $username ?? null,
-            'company_id'      => $decoded->company_id ?? null,
-        ]);
         jsonResponse(400, 'Missing required fields (transaction_id)');
     }
 
-    $query = "SELECT * FROM {$schema}.transaction WHERE transaction_id = '$transaction_id'";
-    $result = mysqli_query($conn, $query);
+    $stmt = $conn->prepare("SELECT company_id FROM {$schema}.transaction WHERE transaction_id = ? LIMIT 1");
+    $stmt->bind_param('s', $transaction_id);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    $stmt->close();
 
-    if(mysqli_num_rows($result) > 0) {
-        $query_one =  "DELETE FROM {$schema}.transaction_detail WHERE transaction_id = '$transaction_id'";
-        $query = "DELETE FROM {$schema}.transaction WHERE transaction_id = '$transaction_id'";
+    if ($result->num_rows === 0) {
+        jsonResponse(404, 'Transaction not found');
+    }
 
-        if (mysqli_query($conn, $query_one)) {
-            if (mysqli_query($conn, $query)) {
-                jsonResponse(200, 'Transaction deleted successfully');
-            } else {
-                logApiError($conn, [
-                    'error_level'   => 'error',
-                    'http_status'   => 400,
-                    'endpoint'      => '/transaction/index.php',
-                    'method'        => 'DELETE',
-                    'error_message' =>  mysqli_error($conn),
-                    'user_identifier' => $username ?? null,
-                    'company_id'      => $decoded->company_id ?? null,
-                ]);
-                jsonResponse(500, 'Failed to delete transaction');
-            }
-        } else {
-            logApiError($conn, [
-                'error_level'   => 'error',
-                'http_status'   => 500,
-                'endpoint'      => '/transaction/index.php',
-                'method'        => 'DELETE',
-                'error_message' =>  'Failed to delete transaction detail',
-                'user_identifier' => $username ?? null,
-                'company_id'      => $decoded->company_id ?? null,
-            ]);
-            jsonResponse(500, 'Failed to delete transaction detail');
-        }
-    } else {
+    $trx = $result->fetch_assoc();
+    if ($company_id !== null && $trx['company_id'] !== $company_id) {
+        jsonResponse(403, 'You do not have permission to delete this transaction');
+    }
+
+    $conn->begin_transaction();
+
+    try {
+        $stmt = $conn->prepare("DELETE FROM {$schema}.transaction_detail WHERE transaction_id = ?");
+        $stmt->bind_param('s', $transaction_id);
+        $stmt->execute();
+        $stmt->close();
+
+        $stmt = $conn->prepare("DELETE FROM {$schema}.transaction WHERE transaction_id = ?");
+        $stmt->bind_param('s', $transaction_id);
+        $stmt->execute();
+        $stmt->close();
+
+        $conn->commit();
+        jsonResponse(200, 'Transaction deleted successfully');
+    } catch (Exception $e) {
+        $conn->rollback();
         logApiError($conn, [
             'error_level'   => 'error',
             'http_status'   => 500,
             'endpoint'      => '/transaction/index.php',
             'method'        => 'DELETE',
-            'error_message' =>  'Transaction is not registered in systems',
-            'user_identifier' => $username ?? null,
-            'company_id'      => $decoded->company_id ?? null,
+            'error_message' => 'Failed to delete transaction: ' . $e->getMessage(),
         ]);
-        jsonResponse(404, 'Transaction is not registered in systems');
+        jsonResponse(500, 'Failed to delete transaction');
     }
 }
 
 use Firebase\JWT\JWT;
 use Firebase\JWT\Key;
 
-$headers = getallheaders();
-if (!isset($headers['Authorization'])) {
-    logApiError($conn, [
-        'error_level'   => 'error',
-        'http_status'   => 500,
-        'endpoint'      => '/transaction/index.php',
-        'method'        => '',
-        'error_message' =>  'Authorization header not found',
-        'user_identifier' => $username ?? null,
-        'company_id'      => $decoded->company_id ?? null,
-    ]);
-    jsonResponse(401, 'Authorization header not found');
-}
-
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-    header("Access-Control-Allow-Origin: *");
-    header("Access-Control-Allow-Methods: POST, GET, OPTIONS, PUT, DELETE");
-    header("Access-Control-Allow-Headers: Origin, X-Requested-With, Content-Type, Accept");
     http_response_code(200);
     exit();
 }
 
 try {
-    $token = str_replace('Bearer ', '', $headers['Authorization']);
-    $decoded = JWT::decode($token, new Key($_ENV['JWT_SECRET'], 'HS256'));
+    $decoded = requireAuth();
 
     $conn = DB::conn();
     $schema = DB_SCHEMA;
 
     $token_username = $decoded->username;
+    $token_company = $decoded->company_id ?? null;
     $method = $_SERVER['REQUEST_METHOD'];
 
     switch($method){
         case 'POST':
             if (stripos($_SERVER['CONTENT_TYPE'] ?? '', 'application/json') === false) {
-                // Not fatal, but helps clients send correct header
-                // continue anyway as we read raw body
             }
             $input = json_decode(file_get_contents('php://input'), true);
             if (json_last_error() !== JSON_ERROR_NONE) {
                 jsonResponse(400, 'Invalid JSON body');
             }
-            createTransaction($conn, $schema, $input, $token_username, $decoded->role ?? null, $decoded->company_id ?? null);
+            createTransaction($conn, $schema, $input, $token_username, $decoded->role ?? null, $token_company);
             break;
         case 'GET':
             $company_id = $_GET['company_id'] ?? null;
@@ -1009,20 +977,9 @@ try {
             break;
         case 'DELETE':
             $transaction_id = $_GET['transaction_id'] ?? null;
-            deleteTransaction($conn, $schema, $transaction_id);
+            deleteTransaction($conn, $schema, $transaction_id, $token_company);
             break;
         default:
-            $conn = DB::conn();
-
-            logApiError($conn, [
-                'error_level'   => 'error',
-                'http_status'   => 405,
-                'endpoint'      => '/transaction/index.php',
-                'method'        => 'POST',
-                'error_message' => 'Method Not Allowed',
-                'user_identifier' => $decoded->username ?? null,
-                'company_id'      => $decoded->company_id ?? null,
-            ]);
             jsonResponse(405, 'Method Not Allowed');
             break;
     }
@@ -1032,15 +989,13 @@ try {
 
     logApiError($conn, [
         'error_level'   => 'error',
-        'http_status'   => 401,
+        'http_status'   => 500,
         'endpoint'      => '/transaction/index.php',
-        'method'        => 'POST',
+        'method'        => $_SERVER['REQUEST_METHOD'] ?? '',
         'error_message' => $e->getMessage(),
-        'user_identifier' => $username ?? null,
-        'company_id'      => $decoded->company_id ?? null,
     ]);
 
-    jsonResponse(500, 'Internal Server Error', ['error' => $e->getMessage()]);
+    jsonResponse(500, 'Internal Server Error');
 }
 
 ?>

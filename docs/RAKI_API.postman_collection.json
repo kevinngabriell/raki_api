@@ -1,0 +1,2699 @@
+{
+  "info": {
+    "name": "RAKI API",
+    "_postman_id": "raki-api-collection",
+    "description": "RAKI API - Coffee cart management platform.\n\n## Authentication\n- Login via password, OTP, or SSO to get a JWT Bearer token\n- Add the token to the Authorization header: `Bearer {{token}}`\n- Token expiry: 8h (password/SSO login), 30 days (OTP login)\n\n## Variables\n- `base_url`: API base URL (default: https://getmovira.com/raki-api)\n- `token`: JWT token (auto-set by login scripts)\n- `company_id`: Your company ID (set after login)\n- `cron_secret`: Secret for cron endpoints (from .env CRON_SECRET)\n- `username`: Username for session queries",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "https://getmovira.com/raki-api",
+      "description": "API base URL"
+    },
+    {
+      "key": "local_url",
+      "value": "http://localhost:8000",
+      "description": "Local dev URL. Set base_url to this value, or use the Local environment"
+    },
+    {
+      "key": "token",
+      "value": "",
+      "description": "JWT auth token (auto-set by login)"
+    },
+    {
+      "key": "company_id",
+      "value": "",
+      "description": "Company ID (from JWT)"
+    },
+    {
+      "key": "cron_secret",
+      "value": "movira_raki_cron",
+      "description": "Secret for cron endpoints (from .env CRON_SECRET)"
+    },
+    {
+      "key": "username",
+      "value": "",
+      "description": "Username for session/history queries (auto-set by login)"
+    }
+  ],
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{token}}",
+        "type": "string"
+      }
+    ]
+  },
+  "item": [
+    {
+      "name": "Auth",
+      "description": "Authentication endpoints - login, register, OTP, forgot password, SSO",
+      "item": [
+        {
+          "name": "Login (Password)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"your_username\",\n  \"password\": \"your_password\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/account/login.php",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "account",
+                "login.php"
+              ]
+            },
+            "description": "Authenticate with username and password. Returns JWT token (8h expiry)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var json;",
+                  "try { json = pm.response.json(); } catch (e) { json = {}; }",
+                  "if (json.success && json.data && json.data.token) {",
+                  "    var user = json.data.user || {};",
+                  "    // Store in the active environment too, otherwise an env variable with the same name shadows the collection one",
+                  "    var setVar = function (k, v) {",
+                  "        pm.collectionVariables.set(k, v);",
+                  "        if (pm.environment.name) pm.environment.set(k, v);",
+                  "    };",
+                  "    setVar('token', json.data.token);",
+                  "    if (user.company_id) setVar('company_id', user.company_id);",
+                  "    if (user.username) setVar('username', user.username);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Register",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"newuser\",\n  \"password\": \"password123\",\n  \"full_name\": \"John Doe\",\n  \"phone_number\": \"6281234567890\",\n  \"email\": \"john@example.com\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/account/register.php",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "account",
+                "register.php"
+              ]
+            },
+            "description": "Self-register a new account. Account starts as 'pending' and must be approved by an Owner before login."
+          }
+        },
+        {
+          "name": "OTP - Request",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phone_number\": \"6281234567890\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/account/otp.php",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "account",
+                "otp.php"
+              ]
+            },
+            "description": "Request an OTP sent via WhatsApp. User must already be registered and approved. Rate limited: 3 min between requests, max 10 per 24h."
+          }
+        },
+        {
+          "name": "OTP - Verify",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phone_number\": \"6281234567890\",\n  \"otp\": \"123456\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/account/otp.php",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "account",
+                "otp.php"
+              ]
+            },
+            "description": "Verify OTP and get JWT token (30 day expiry). Max 5 verification attempts before OTP is invalidated."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var json;",
+                  "try { json = pm.response.json(); } catch (e) { json = {}; }",
+                  "if (json.success && json.data && json.data.token) {",
+                  "    var user = json.data.user || {};",
+                  "    // Store in the active environment too, otherwise an env variable with the same name shadows the collection one",
+                  "    var setVar = function (k, v) {",
+                  "        pm.collectionVariables.set(k, v);",
+                  "        if (pm.environment.name) pm.environment.set(k, v);",
+                  "    };",
+                  "    setVar('token', json.data.token);",
+                  "    if (user.company_id) setVar('company_id', user.company_id);",
+                  "    if (user.username) setVar('username', user.username);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Forgot Password - Request OTP",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"your_username\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/account/forgot_password.php",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "account",
+                "forgot_password.php"
+              ]
+            },
+            "description": "Request a password reset OTP sent via WhatsApp. Does not reveal whether username exists. Rate limited: 3 min between requests, max 10 per 24h."
+          }
+        },
+        {
+          "name": "Forgot Password - Verify OTP",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"your_username\",\n  \"otp\": \"123456\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/account/forgot_password.php",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "account",
+                "forgot_password.php"
+              ]
+            },
+            "description": "Verify the reset OTP and get a short-lived reset token (10 min expiry). Max 5 verification attempts."
+          }
+        },
+        {
+          "name": "Forgot Password - Reset Password",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reset_token\": \"<reset_token_from_verify_step>\",\n  \"new_password\": \"newpassword123\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/account/forgot_password.php",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "account",
+                "forgot_password.php"
+              ]
+            },
+            "description": "Reset password using the reset token from the verify step. Password must be at least 6 characters."
+          }
+        },
+        {
+          "name": "SSO Login",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"assertion\": \"<JWT_assertion_from_Movira_Core>\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/account/sso.php",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "account",
+                "sso.php"
+              ]
+            },
+            "description": "Single sign-on via Movira Core assertion. Returns JWT token (8h expiry)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var json;",
+                  "try { json = pm.response.json(); } catch (e) { json = {}; }",
+                  "if (json.success && json.data && json.data.token) {",
+                  "    var user = json.data.user || {};",
+                  "    // Store in the active environment too, otherwise an env variable with the same name shadows the collection one",
+                  "    var setVar = function (k, v) {",
+                  "        pm.collectionVariables.set(k, v);",
+                  "        if (pm.environment.name) pm.environment.set(k, v);",
+                  "    };",
+                  "    setVar('token', json.data.token);",
+                  "    if (user.company_id) setVar('company_id', user.company_id);",
+                  "    if (user.username) setVar('username', user.username);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Profile",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/account/profile.php",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "account",
+                "profile.php"
+              ]
+            },
+            "description": "Get the authenticated user's profile. To change it, see Update Profile."
+          }
+        },
+        {
+          "name": "Update Profile (No Password)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"first_name\": \"Adi Pratama\",\n  \"language\": \"id\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/account/profile.php",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "account",
+                "profile.php"
+              ]
+            },
+            "description": "Update the authenticated user's own profile. Send only the fields you want to change.\n\nNo password needed for: first_name, language ('id' or 'en').\n\nResponse: { changed: [...], user: {...} }."
+          }
+        },
+        {
+          "name": "Update Profile (Needs Password)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"new.username\",\n  \"email\": \"new@email.com\",\n  \"phone_number\": \"081234567890\",\n  \"current_password\": \"your_password\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/account/profile.php",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "account",
+                "profile.php"
+              ]
+            },
+            "description": "Changing username, email or phone_number requires current_password (only when the value actually changes). Can be combined with first_name / language in one request.\n\n- username: lowercase letters, digits and dots, max 50. Unique across all apps (409 if taken).\n- phone_number: Indonesian number, stored as 62xxxxxxxxxx. Unique within RAKI (409 if taken).\n- email: valid email, max 100.\n- Wrong current_password: 403 (not 401, so the app does not sign out).\n\nIf username changes, the response includes a fresh `token` and `expires_in` (same expiry as the old token). The old token stops working for profile lookups, so the app must replace it. This request's test script saves the new token automatically.\n\nNote: sessions/transactions created before the change keep the old username in created_by."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var json;",
+                  "try { json = pm.response.json(); } catch (e) { json = {}; }",
+                  "if (json.success && json.data && json.data.token) {",
+                  "    var user = json.data.user || {};",
+                  "    // Store in the active environment too, otherwise an env variable with the same name shadows the collection one",
+                  "    var setVar = function (k, v) {",
+                  "        pm.collectionVariables.set(k, v);",
+                  "        if (pm.environment.name) pm.environment.set(k, v);",
+                  "    };",
+                  "    setVar('token', json.data.token);",
+                  "    if (user.company_id) setVar('company_id', user.company_id);",
+                  "    if (user.username) setVar('username', user.username);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Company Details",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/account/company.php?company_id={{company_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "account",
+                "company.php"
+              ],
+              "query": [
+                {
+                  "key": "company_id",
+                  "value": "{{company_id}}"
+                }
+              ]
+            },
+            "description": "Get company details by ID."
+          }
+        },
+        {
+          "name": "Get Driver Bonus Progress",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/account/account.php",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "account",
+                "account.php"
+              ]
+            },
+            "description": "Get the driver's current bonus progress for the week (Mon-Sat)."
+          }
+        },
+        {
+          "name": "List Pending Accounts",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/account/pending.php?page=1&limit=20",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "account",
+                "pending.php"
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "limit",
+                  "value": "20"
+                }
+              ]
+            },
+            "description": "List pending self-registered accounts awaiting approval. Owner role only."
+          }
+        },
+        {
+          "name": "Approve/Reject Account",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"user_id\": \"user123\",\n  \"action\": \"approve\",\n  \"app_role_id\": \"app_role690a9cda69b46\",\n  \"company_id\": \"{{company_id}}\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/account/pending.php",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "account",
+                "pending.php"
+              ]
+            },
+            "description": "Approve or reject a pending account. Owner role only.\n\n- action: 'approve' or 'reject'\n- app_role_id: required when approve (must be a grantable role: mitra, franchise, abang, outlet)\n- company_id: optional when approve (defaults to owner's company)\n- reason: optional when reject"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Menu",
+      "description": "Menu items, categories, packages, ingredients management",
+      "item": [
+        {
+          "name": "List Menus",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/menu/menu.php?page=1&limit=50&params=&show_all=1",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "menu",
+                "menu.php"
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "limit",
+                  "value": "50"
+                },
+                {
+                  "key": "params",
+                  "value": "",
+                  "description": "Search keyword",
+                  "disabled": true
+                },
+                {
+                  "key": "show_all",
+                  "value": "1",
+                  "description": "Include inactive menus. Needs the Owner token",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "List active menus. Public, no token needed (landing page). With show_all=1 it also returns inactive menus and needs the Owner token. Ordered by creation time; limit is capped at 200."
+          }
+        },
+        {
+          "name": "Get Menu Detail",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/menu/menu.php?menu_id=menu001&show_all=1",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "menu",
+                "menu.php"
+              ],
+              "query": [
+                {
+                  "key": "menu_id",
+                  "value": "menu001"
+                },
+                {
+                  "key": "show_all",
+                  "value": "1",
+                  "description": "Needed to open an inactive menu. Owner token",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "Single menu with category, audit fields and photo URLs. Public for active menus."
+          },
+          "response": []
+        },
+        {
+          "name": "Create Menu",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"menu_name\": \"Es Kopi Susu\",\n  \"category_id\": \"cat001\",\n  \"price\": 18000\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/menu/menu.php",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "menu",
+                "menu.php"
+              ]
+            },
+            "description": "Create a menu item (JSON, no photo). Owner role only (app_role6902bbb67a429); other roles get 403. category_id must exist; menu_name must be unique; price >= 0."
+          }
+        },
+        {
+          "name": "Create Menu (with photo)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "menu_name",
+                  "value": "Es Kopi Susu",
+                  "type": "text"
+                },
+                {
+                  "key": "category_id",
+                  "value": "cat001",
+                  "type": "text"
+                },
+                {
+                  "key": "price",
+                  "value": "18000",
+                  "type": "text"
+                },
+                {
+                  "key": "image",
+                  "type": "file",
+                  "src": [],
+                  "description": "JPG, PNG or WEBP, max 10 MB, max 4000px per side"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/menu/menu.php",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "menu",
+                "menu.php"
+              ]
+            },
+            "description": "Create a menu with a photo (multipart/form-data). The original and a 600px WEBP thumbnail are stored in the cloud bucket; the response returns image_url and thumb_url. Owner role only (app_role6902bbb67a429); other roles get 403. Over-limit uploads return 413."
+          },
+          "response": []
+        },
+        {
+          "name": "Update Menu",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"menu_id\": \"menu001\",\n  \"menu_name\": \"Es Kopi Susu Special\",\n  \"price\": 20000,\n  \"is_active\": 1\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/menu/menu.php",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "menu",
+                "menu.php"
+              ]
+            },
+            "description": "Update a menu (JSON, no photo). is_active: 1 active, 0 hidden from POS and the public list. Sets updated_by / updated_at. Owner role only (app_role6902bbb67a429); other roles get 403."
+          }
+        },
+        {
+          "name": "Update Menu (with photo)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "menu_id",
+                  "value": "menu001",
+                  "type": "text"
+                },
+                {
+                  "key": "menu_name",
+                  "value": "Es Kopi Susu Special",
+                  "type": "text",
+                  "disabled": true
+                },
+                {
+                  "key": "price",
+                  "value": "20000",
+                  "type": "text",
+                  "disabled": true
+                },
+                {
+                  "key": "is_active",
+                  "value": "1",
+                  "type": "text",
+                  "disabled": true
+                },
+                {
+                  "key": "image",
+                  "type": "file",
+                  "src": [],
+                  "description": "New photo. The previous one is removed from the bucket"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/menu/menu.php",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "menu",
+                "menu.php"
+              ]
+            },
+            "description": "Update a menu with a new photo. Must be POST with menu_id, because PHP does not parse multipart bodies on PUT. Owner role only (app_role6902bbb67a429); other roles get 403."
+          },
+          "response": []
+        },
+        {
+          "name": "Delete Menu",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/menu/menu.php?menu_id=menu001",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "menu",
+                "menu.php"
+              ],
+              "query": [
+                {
+                  "key": "menu_id",
+                  "value": "menu001"
+                }
+              ]
+            },
+            "description": "Delete a menu and remove its photos from the bucket. Owner role only (app_role6902bbb67a429); other roles get 403. To hide a menu but keep its sales history, set is_active = 0 instead."
+          }
+        },
+        {
+          "name": "List Categories",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/menu/category.php?page=1&limit=10",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "menu",
+                "category.php"
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "limit",
+                  "value": "10"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Category",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"category_name\": \"Coffee\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/menu/category.php",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "menu",
+                "category.php"
+              ]
+            },
+            "description": "Owner role only (app_role6902bbb67a429); other roles get 403."
+          }
+        },
+        {
+          "name": "Update Category",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/menu/category.php",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "menu",
+                "category.php"
+              ]
+            },
+            "description": "Rename a category. Name is trimmed and must be unique; sets updated_by / updated_at. Owner role only (app_role6902bbb67a429); other roles get 403.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"category_id\": \"cat001\",\n  \"category_name\": \"Hot Coffee\"\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Delete Category",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/menu/category.php?category_id=cat001",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "menu",
+                "category.php"
+              ],
+              "query": [
+                {
+                  "key": "category_id",
+                  "value": "cat001"
+                }
+              ]
+            },
+            "description": "Delete a category. 409 \"Can't delete this category: N menu(s) still use it\" while any menu (active or not) is in it, and 409 while a promo still targets it. Owner role only (app_role6902bbb67a429); other roles get 403."
+          },
+          "response": []
+        },
+        {
+          "name": "List Packages",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/menu/package.php?page=1&limit=20",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "menu",
+                "package.php"
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "limit",
+                  "value": "20"
+                }
+              ]
+            },
+            "description": "List all menu packages. Public endpoint."
+          }
+        },
+        {
+          "name": "Create Package",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"package_name\": \"Combo Hemat\",\n  \"package_price\": 25000,\n  \"menu_ids\": [\"menu001\", \"menu002\"]\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/menu/package.php",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "menu",
+                "package.php"
+              ]
+            },
+            "description": "Owner role only (app_role6902bbb67a429); other roles get 403."
+          }
+        },
+        {
+          "name": "Update Package",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/menu/package.php",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "menu",
+                "package.php"
+              ]
+            },
+            "description": "Update name, price and/or menu list (JSON). Name must be unique, price >= 0, menu_ids a non-empty list of active menus. To change the photo, POST multipart with package_id. Owner role only (app_role6902bbb67a429); other roles get 403.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"package_id\": \"pkg001\",\n  \"package_name\": \"Bundle Hemat\",\n  \"package_price\": 25000,\n  \"menu_ids\": [\n    \"menu001\",\n    \"menu002\"\n  ]\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Delete Package",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/menu/package.php?package_id=pkg001",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "menu",
+                "package.php"
+              ],
+              "query": [
+                {
+                  "key": "package_id",
+                  "value": "pkg001"
+                }
+              ]
+            },
+            "description": "Delete a package and its photos. 409 once the package has been sold (sales history needs it). Owner role only (app_role6902bbb67a429); other roles get 403."
+          },
+          "response": []
+        },
+        {
+          "name": "List Ingredients",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/menu/ingredient.php?page=1&limit=10",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "menu",
+                "ingredient.php"
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "limit",
+                  "value": "10"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Ingredient",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"ingredient_name\": \"Susu Full Cream\",\n  \"ingredient_category\": \"cat001\",\n  \"uom\": \"uom001\",\n  \"price\": 5000,\n  \"sku\": \"SFC-001\",\n  \"is_active\": 1\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/menu/ingredient.php",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "menu",
+                "ingredient.php"
+              ]
+            },
+            "description": "Owner role only (app_role6902bbb67a429); other roles get 403."
+          }
+        },
+        {
+          "name": "Update Ingredient",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/menu/ingredient.php",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "menu",
+                "ingredient.php"
+              ]
+            },
+            "description": "Update any of the fields. Name unique within the ingredient's company; category and UOM must exist; price >= 0; is_active 0/1. Owner role only (app_role6902bbb67a429); other roles get 403.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"ingredient_id\": \"ingredients001\",\n  \"ingredient_name\": \"Susu Full Cream\",\n  \"ingredient_category\": \"category6abc\",\n  \"uom\": \"uom6abc\",\n  \"sku\": \"SKU-001\",\n  \"price\": 18000,\n  \"is_active\": 1\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Delete Ingredient",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/menu/ingredient.php?ingredient_id=ingredients001",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "menu",
+                "ingredient.php"
+              ],
+              "query": [
+                {
+                  "key": "ingredient_id",
+                  "value": "ingredients001"
+                }
+              ]
+            },
+            "description": "Delete an ingredient. 409 while it is used in a supply order. Owner role only (app_role6902bbb67a429); other roles get 403."
+          },
+          "response": []
+        },
+        {
+          "name": "List Ingredient Categories",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/menu/ingredient_category.php?page=1&limit=10",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "menu",
+                "ingredient_category.php"
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "limit",
+                  "value": "10"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Ingredient Category",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/menu/ingredient_category.php",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "menu",
+                "ingredient_category.php"
+              ]
+            },
+            "description": "Create an ingredient category. Owner role only (app_role6902bbb67a429); other roles get 403.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"category_name\": \"Dairy\"\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Update Ingredient Category",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/menu/ingredient_category.php",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "menu",
+                "ingredient_category.php"
+              ]
+            },
+            "description": "Rename. Name is trimmed and must be unique. Owner role only (app_role6902bbb67a429); other roles get 403.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"category_id\": \"category001\",\n  \"category_name\": \"Dairy & Cream\"\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Delete Ingredient Category",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/menu/ingredient_category.php?category_id=category001",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "menu",
+                "ingredient_category.php"
+              ],
+              "query": [
+                {
+                  "key": "category_id",
+                  "value": "category001"
+                }
+              ]
+            },
+            "description": "Delete. 409 while any ingredient uses it. Owner role only (app_role6902bbb67a429); other roles get 403."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Session",
+      "description": "Work session management for drivers (abang)",
+      "item": [
+        {
+          "name": "Start Session",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"cash_start\": 50000,\n  \"stock\": [\n    {\"menu_id\": \"menu001\", \"qty_start\": 20},\n    {\"menu_id\": \"menu002\", \"qty_start\": 15}\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/session/start.php",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "session",
+                "start.php"
+              ]
+            },
+            "description": "Start a work session with opening cash and stock."
+          }
+        },
+        {
+          "name": "Check Active Session",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/session/active.php?company_id={{company_id}}&username={{username}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "session",
+                "active.php"
+              ],
+              "query": [
+                {
+                  "key": "company_id",
+                  "value": "{{company_id}}"
+                },
+                {
+                  "key": "username",
+                  "value": "{{username}}"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "End Session",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"cash_end\": 150000\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/session/end.php",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "session",
+                "end.php"
+              ]
+            },
+            "description": "End the active work session. Sends WhatsApp recap to company PIC."
+          }
+        },
+        {
+          "name": "Find Nearby Drivers",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/session/nearby-abang.php?lat=-6.200000&lng=106.816666&radius=3",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "session",
+                "nearby-abang.php"
+              ],
+              "query": [
+                {
+                  "key": "lat",
+                  "value": "-6.200000"
+                },
+                {
+                  "key": "lng",
+                  "value": "106.816666"
+                },
+                {
+                  "key": "radius",
+                  "value": "3",
+                  "description": "Search radius in km (max 50)"
+                }
+              ]
+            },
+            "description": "Find nearby active drivers by GPS coordinates. Public endpoint."
+          }
+        },
+        {
+          "name": "List Active Drivers",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/session/active-drivers.php",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "session",
+                "active-drivers.php"
+              ]
+            },
+            "description": "List all active drivers for the authenticated user's company."
+          }
+        },
+        {
+          "name": "Driver Stats",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/session/driver-stats.php",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "session",
+                "driver-stats.php"
+              ]
+            },
+            "description": "Get weekly driver performance stats."
+          }
+        }
+      ]
+    },
+    {
+      "name": "POS",
+      "description": "Point of sale transactions and queue management",
+      "item": [
+        {
+          "name": "Create POS Transaction",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"items\": [\n    {\"menu_id\": \"menu001\", \"quantity\": 2, \"unit_price\": 18000}\n  ],\n  \"payments\": [\n    {\"payment_method\": \"cash\", \"amount\": 36000}\n  ],\n  \"latitude\": -6.2,\n  \"longitude\": 106.8\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/pos/transaction.php",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "pos",
+                "transaction.php"
+              ]
+            },
+            "description": "Create a POS transaction linked to an active work session. Payments must match total."
+          }
+        },
+        {
+          "name": "POS History",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/pos/history.php?company_id={{company_id}}&page=1&limit=10",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "pos",
+                "history.php"
+              ],
+              "query": [
+                {
+                  "key": "company_id",
+                  "value": "{{company_id}}"
+                },
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "limit",
+                  "value": "10"
+                },
+                {
+                  "key": "start_date",
+                  "value": "",
+                  "disabled": true
+                },
+                {
+                  "key": "end_date",
+                  "value": "",
+                  "disabled": true
+                },
+                {
+                  "key": "username",
+                  "value": "",
+                  "description": "Filter by cashier (managers only)",
+                  "disabled": true
+                },
+                {
+                  "key": "search",
+                  "value": "",
+                  "disabled": true
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Static QRIS",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/pos/qris-static.php?company_id={{company_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "pos",
+                "qris-static.php"
+              ],
+              "query": [
+                {
+                  "key": "company_id",
+                  "value": "{{company_id}}"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Next Queue Number",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/pos/queue-next.php",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "pos",
+                "queue-next.php"
+              ]
+            },
+            "description": "Get the next queue number for the company (atomic counter, per day)."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Transaction",
+      "description": "Sales transactions with multi-item, multi-payment, and promo support",
+      "item": [
+        {
+          "name": "List Transactions",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/transaction/index.php?company_id={{company_id}}&page=1&limit=10",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "transaction",
+                "index.php"
+              ],
+              "query": [
+                {
+                  "key": "company_id",
+                  "value": "{{company_id}}"
+                },
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "limit",
+                  "value": "10"
+                },
+                {
+                  "key": "trx_id",
+                  "value": "",
+                  "description": "Get detail by transaction ID",
+                  "disabled": true
+                },
+                {
+                  "key": "username",
+                  "value": "",
+                  "disabled": true
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Transaction",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"items\": [\n    {\"menu_id\": \"menu001\", \"quantity\": 2, \"unit_price\": 18000}\n  ],\n  \"payments\": [\n    {\"payment_method\": \"cash\", \"amount\": 36000}\n  ],\n  \"apply_promo\": false\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/transaction/index.php",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "transaction",
+                "index.php"
+              ]
+            },
+            "description": "Create a sales transaction. Supports items, multiple payments (cash/qris/edc_flazz), and promo application. Sends WhatsApp notification to company PIC."
+          }
+        },
+        {
+          "name": "Delete Transaction",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/transaction/index.php?transaction_id=trx001",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "transaction",
+                "index.php"
+              ],
+              "query": [
+                {
+                  "key": "transaction_id",
+                  "value": "trx001"
+                }
+              ]
+            },
+            "description": "Delete a transaction. Verifies company ownership before deleting. Atomic (wrapped in transaction)."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Dashboard",
+      "description": "Analytics, reports, and company overview",
+      "item": [
+        {
+          "name": "Monthly + Today Dashboard",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/dashboard/index.php?company_id={{company_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "dashboard",
+                "index.php"
+              ],
+              "query": [
+                {
+                  "key": "company_id",
+                  "value": "{{company_id}}"
+                },
+                {
+                  "key": "action",
+                  "value": "",
+                  "description": "Optional: 'payment_method_summary' or 'all_outlets_summary'",
+                  "disabled": true
+                },
+                {
+                  "key": "start_date",
+                  "value": "",
+                  "description": "Required when action=payment_method_summary",
+                  "disabled": true
+                },
+                {
+                  "key": "end_date",
+                  "value": "",
+                  "description": "Required when action=payment_method_summary",
+                  "disabled": true
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Advanced Statistics",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/dashboard/statistic.php",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "dashboard",
+                "statistic.php"
+              ],
+              "query": [
+                {
+                  "key": "company_id",
+                  "value": "{{company_id}}",
+                  "disabled": true
+                },
+                {
+                  "key": "start_date",
+                  "value": "",
+                  "disabled": true
+                },
+                {
+                  "key": "end_date",
+                  "value": "",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "Payment breakdown, menu revenue, cashier performance, revenue trends, supply purchases."
+          }
+        },
+        {
+          "name": "List Companies",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/dashboard/company.php",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "dashboard",
+                "company.php"
+              ]
+            },
+            "description": "List all active companies (excludes dev company)."
+          }
+        },
+        {
+          "name": "Weekly Report",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/dashboard/weekly_report.php?company_id={{company_id}}&start_date=2026-01-06&end_date=2026-01-11",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "dashboard",
+                "weekly_report.php"
+              ],
+              "query": [
+                {
+                  "key": "company_id",
+                  "value": "{{company_id}}"
+                },
+                {
+                  "key": "start_date",
+                  "value": "2026-01-06"
+                },
+                {
+                  "key": "end_date",
+                  "value": "2026-01-11"
+                }
+              ]
+            },
+            "description": "Weekly sales report: company summary, payment breakdown, cashier performance, top products, week-over-week growth."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Reward",
+      "description": "Reward points, catalog, and redemption management",
+      "item": [
+        {
+          "name": "Get Points Balance",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/reward/points.php",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "reward",
+                "points.php"
+              ]
+            },
+            "description": "Get the authenticated user's point balance and ledger (last 50 entries)."
+          }
+        },
+        {
+          "name": "Add/Deduct Points",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"user_id\": \"user001\",\n  \"company_id\": \"{{company_id}}\",\n  \"points\": 100,\n  \"notes\": \"Bonus loyalty points\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/reward/points.php",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "reward",
+                "points.php"
+              ]
+            },
+            "description": "Manually add (positive) or deduct (negative) points for a user."
+          }
+        },
+        {
+          "name": "List Reward Catalog",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/reward/catalog.php?page=1&limit=10",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "reward",
+                "catalog.php"
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "limit",
+                  "value": "10"
+                },
+                {
+                  "key": "search",
+                  "value": "",
+                  "disabled": true
+                },
+                {
+                  "key": "reward_id",
+                  "value": "",
+                  "description": "Get detail by ID",
+                  "disabled": true
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Reward",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reward_name\": \"Free Coffee\",\n  \"point_cost\": 500,\n  \"description\": \"Get a free coffee\",\n  \"stock\": 100,\n  \"is_active\": 1,\n  \"valid_from\": \"2026-01-01\",\n  \"valid_until\": \"2026-12-31\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/reward/catalog.php",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "reward",
+                "catalog.php"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Redemption History",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/reward/redeem.php",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "reward",
+                "redeem.php"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Redemption",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reward_id\": \"reward001\",\n  \"notes\": \"Birthday reward\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/reward/redeem.php",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "reward",
+                "redeem.php"
+              ]
+            },
+            "description": "Redeem a reward. Deducts points and decrements stock atomically."
+          }
+        },
+        {
+          "name": "Update Redemption Status",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"redemption_id\": \"redeem001\",\n  \"status\": \"claimed\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/reward/redeem.php",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "reward",
+                "redeem.php"
+              ]
+            },
+            "description": "Update redemption status. Manager role only (Owner/Mitra/Franchise).\n\nAllowed statuses: approved, rejected, claimed, expired. Rejected redemptions refund points."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Voucher",
+      "description": "Discount voucher management",
+      "item": [
+        {
+          "name": "List Vouchers",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/voucher/voucher.php?page=1&limit=10",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "voucher",
+                "voucher.php"
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "limit",
+                  "value": "10"
+                },
+                {
+                  "key": "search",
+                  "value": "",
+                  "disabled": true
+                },
+                {
+                  "key": "voucher_id",
+                  "value": "",
+                  "description": "Get detail by ID",
+                  "disabled": true
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Voucher",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"voucher_code\": \"HEMAT10\",\n  \"voucher_name\": \"Diskon Hemat 10rb\",\n  \"discount_type\": \"nominal\",\n  \"discount_value\": 10000,\n  \"min_transaction\": 50000,\n  \"max_discount\": null,\n  \"usage_type\": \"multi_use\",\n  \"max_total_usage\": 100,\n  \"start_date\": \"2026-01-01\",\n  \"end_date\": \"2026-12-31\",\n  \"is_active\": 1\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/voucher/voucher.php",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "voucher",
+                "voucher.php"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Update Voucher",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"voucher_id\": \"voucher001\",\n  \"discount_value\": 15000,\n  \"is_active\": 0\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/voucher/voucher.php",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "voucher",
+                "voucher.php"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete Voucher",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/voucher/voucher.php?voucher_id=voucher001",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "voucher",
+                "voucher.php"
+              ],
+              "query": [
+                {
+                  "key": "voucher_id",
+                  "value": "voucher001"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Promo",
+      "description": "Automatic discount promos configuration and preview",
+      "item": [
+        {
+          "name": "List Promos",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/promo/promo.php?page=1&limit=10",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "promo",
+                "promo.php"
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "limit",
+                  "value": "10"
+                },
+                {
+                  "key": "promo_id",
+                  "value": "",
+                  "description": "Get detail by ID",
+                  "disabled": true
+                },
+                {
+                  "key": "is_active",
+                  "value": "",
+                  "disabled": true
+                },
+                {
+                  "key": "search",
+                  "value": "",
+                  "disabled": true
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Promo",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"promo_name\": \"Monday Bestie Day\",\n  \"promo_type\": \"buy_n_nominal_off\",\n  \"buy_quantity\": 2,\n  \"discount_amount\": 3000,\n  \"max_applications\": null,\n  \"is_active\": true,\n  \"days_of_week\": [1],\n  \"menu_ids\": [],\n  \"exclude_menu_ids\": [],\n  \"category_ids\": [],\n  \"outlet_types\": [\"outlet\"]\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/promo/promo.php",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "promo",
+                "promo.php"
+              ]
+            },
+            "description": "Create a promo. Owner role only."
+          }
+        },
+        {
+          "name": "Update Promo",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"promo_id\": \"promo001\",\n  \"is_active\": false\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/promo/promo.php",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "promo",
+                "promo.php"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete Promo",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/promo/promo.php?promo_id=promo001",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "promo",
+                "promo.php"
+              ],
+              "query": [
+                {
+                  "key": "promo_id",
+                  "value": "promo001"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Preview Promo (POS)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"items\": [\n    {\"menu_id\": \"menu001\", \"quantity\": 2, \"unit_price\": 18000}\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/promo/check.php",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "promo",
+                "check.php"
+              ]
+            },
+            "description": "Stateless promo preview for POS cart. Returns eligibility, discount amount, and next reward nudge."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Bonus Schema",
+      "description": "Driver bonus tier configuration",
+      "item": [
+        {
+          "name": "List Bonus Schemas",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/bonus/schema.php?page=1&limit=10",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "bonus",
+                "schema.php"
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "limit",
+                  "value": "10"
+                },
+                {
+                  "key": "params",
+                  "value": "",
+                  "description": "Search term",
+                  "disabled": true
+                },
+                {
+                  "key": "schema_id",
+                  "value": "",
+                  "description": "Get detail by ID",
+                  "disabled": true
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Bonus Schema",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"schema_name\": \"Weekly Bonus 50 cups\",\n  \"frequency\": \"weekly\",\n  \"qty\": 50,\n  \"bonus_nominal\": 50000\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/bonus/schema.php",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "bonus",
+                "schema.php"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Update Bonus Schema",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"schema_id\": \"schema001\",\n  \"bonus_nominal\": 75000,\n  \"is_active\": 1\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/bonus/schema.php",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "bonus",
+                "schema.php"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete Bonus Schema",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/bonus/schema.php?schema_id=schema001",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "bonus",
+                "schema.php"
+              ],
+              "query": [
+                {
+                  "key": "schema_id",
+                  "value": "schema001"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Abang (Driver)",
+      "description": "Driver status and bonus tracking",
+      "item": [
+        {
+          "name": "Driver Status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/abang/status.php",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "abang",
+                "status.php"
+              ],
+              "query": [
+                {
+                  "key": "company_id",
+                  "value": "{{company_id}}",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "Get online/offline status and last-seen for all drivers in the company."
+          }
+        },
+        {
+          "name": "Driver Weekly Bonus",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/abang/bonus.php",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "abang",
+                "bonus.php"
+              ],
+              "query": [
+                {
+                  "key": "company_id",
+                  "value": "{{company_id}}",
+                  "disabled": true
+                },
+                {
+                  "key": "start",
+                  "value": "",
+                  "description": "Start date (default: Monday this week)",
+                  "disabled": true
+                },
+                {
+                  "key": "end",
+                  "value": "",
+                  "description": "End date (default: Saturday this week)",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "Calculate weekly bonus achievement for all drivers in the company."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Member",
+      "description": "Member loyalty card and profile",
+      "item": [
+        {
+          "name": "Member Card",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/member/card.php",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "member",
+                "card.php"
+              ]
+            },
+            "description": "Get member loyalty card with points and rewards."
+          }
+        },
+        {
+          "name": "Member Profile",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/member/profile.php",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "member",
+                "profile.php"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Points History",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/member/points-history.php?page=1&limit=20",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "member",
+                "points-history.php"
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "limit",
+                  "value": "20"
+                },
+                {
+                  "key": "type",
+                  "value": "",
+                  "description": "Filter by ledger type",
+                  "disabled": true
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Settings",
+      "description": "Units of measurement and app settings",
+      "item": [
+        {
+          "name": "List UOMs",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/settings/uom.php?page=1&limit=10",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "settings",
+                "uom.php"
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "limit",
+                  "value": "10"
+                },
+                {
+                  "key": "params",
+                  "value": "",
+                  "description": "Search term",
+                  "disabled": true
+                },
+                {
+                  "key": "uom_id",
+                  "value": "",
+                  "description": "Get detail by ID",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "List units of measurement. Public endpoint."
+          }
+        },
+        {
+          "name": "Create UOM",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"uom_name\": \"Pcs\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/settings/uom.php",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "settings",
+                "uom.php"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Notification",
+      "description": "Notification preferences and cron-triggered summaries",
+      "item": [
+        {
+          "name": "Get Notification Settings",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/notification/settings.php",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "notification",
+                "settings.php"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Update Notification Settings",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"general_notif\": true\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/notification/settings.php",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "notification",
+                "settings.php"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Daily Summary (Cron)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/notification/daily_summary.php?debug=1",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "notification",
+                "daily_summary.php"
+              ],
+              "query": [
+                {
+                  "key": "debug",
+                  "value": "1",
+                  "description": "Set to 1 to bypass 23:00 WIB time restriction"
+                },
+                {
+                  "key": "company_id",
+                  "value": "{{company_id}}",
+                  "description": "Optional: send for one company only",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "Cron endpoint. Sends WhatsApp daily sales summary to company PICs. Runs at 23:00 WIB. Use debug=1 for testing."
+          }
+        },
+        {
+          "name": "Outlet Daily Recap (Cron)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/notification/outlet_daily_recap.php?debug=1",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "notification",
+                "outlet_daily_recap.php"
+              ],
+              "query": [
+                {
+                  "key": "debug",
+                  "value": "1",
+                  "description": "Set to 1 to bypass 18:00 WIB time restriction"
+                },
+                {
+                  "key": "company_id",
+                  "value": "{{company_id}}",
+                  "description": "Optional: send for one company only",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "Cron endpoint. Sends WhatsApp + email fallback daily recap for Outlet-role transactions. Runs at 18:00 WIB. Use debug=1 for testing."
+          }
+        },
+        {
+          "name": "Weekly Report Email (Cron)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/notification/weekly_report_cron.php?secret={{cron_secret}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "notification",
+                "weekly_report_cron.php"
+              ],
+              "query": [
+                {
+                  "key": "secret",
+                  "value": "{{cron_secret}}",
+                  "description": "Must match CRON_SECRET env var"
+                }
+              ]
+            },
+            "description": "Cron endpoint. Sends weekly report emails to business owners. Requires secret query param."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Public",
+      "description": "Public endpoints (no authentication required)",
+      "item": [
+        {
+          "name": "Active Driver Stocks",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/public/active-driver-stocks.php",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "public",
+                "active-driver-stocks.php"
+              ],
+              "query": [
+                {
+                  "key": "company_id",
+                  "value": "{{company_id}}",
+                  "description": "Optional: filter by company",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "Get active driver sessions and their remaining stock. Public endpoint, phone numbers are masked."
+          }
+        }
+      ]
+    }
+  ]
+}

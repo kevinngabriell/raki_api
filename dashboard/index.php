@@ -32,7 +32,7 @@ function getPaymentMethodSummary($conn, $schema, $company_id, $start_date, $end_
             'user_identifier' => $username ?? null,
             'company_id'      => $company_id ?? null,
         ]);
-        jsonResponse(500, 'Failed to prepare statement', ['error' => $conn->error]);
+        jsonResponse(500, 'Failed to prepare statement');
     }
 
     $stmt->bind_param('sss', $start_date, $end_date, $company_id);
@@ -55,10 +55,11 @@ function getPaymentMethodSummary($conn, $schema, $company_id, $start_date, $end_
 }
 
 function getCompanyOutletSnapshot($conn, $schema, $company_id){
+    $coreSchema = MOVIRA_CORE_SCHEMA;
     $start_month = date('Y-m-01');
     $next_month  = date('Y-m-01', strtotime('+1 month', strtotime($start_month)));
 
-    $stmtName = $conn->prepare("SELECT company_name FROM movira_core.app_company WHERE company_id = ? AND status = 'active' LIMIT 1");
+    $stmtName = $conn->prepare("SELECT company_name FROM {$coreSchema}.app_company WHERE company_id = ? AND status = 'active' LIMIT 1");
     $stmtName->bind_param('s', $company_id);
     $stmtName->execute();
     $company_name = $stmtName->get_result()->fetch_assoc()['company_name'] ?? null;
@@ -76,7 +77,7 @@ function getCompanyOutletSnapshot($conn, $schema, $company_id){
     $cups = (int)($stmtCups->get_result()->fetch_assoc()['cups'] ?? 0);
     $stmtCups->close();
 
-    $stmtDrivers = $conn->prepare("SELECT COUNT(*) AS c FROM movira_core.app_user WHERE company_id = ? AND app_role_id = 'app_role6902bc0cbb991' AND account_status = 'verified'");
+    $stmtDrivers = $conn->prepare("SELECT COUNT(*) AS c FROM {$coreSchema}.app_user WHERE company_id = ? AND app_role_id = 'app_role6902bc0cbb991' AND account_status = 'verified'");
     $stmtDrivers->bind_param('s', $company_id);
     $stmtDrivers->execute();
     $driver_count = (int)($stmtDrivers->get_result()->fetch_assoc()['c'] ?? 0);
@@ -99,6 +100,7 @@ function getCompanyOutletSnapshot($conn, $schema, $company_id){
 }
 
 function getAllOutletsSummary($conn, $schema, $token_username, $token_role, $token_company_id, $username){
+    $coreSchema = MOVIRA_CORE_SCHEMA;
     if (!$token_company_id) {
         logApiError($conn, [
             'error_level'   => 'error',
@@ -115,7 +117,7 @@ function getAllOutletsSummary($conn, $schema, $token_username, $token_role, $tok
     // Multi-outlet owners are separate app_user rows (one per outlet) that share
     // the same email address. Resolve every company_id tied to this owner's email
     // so the dashboard can fetch all outlets in a single call instead of N+1.
-    $stmtSelf = $conn->prepare("SELECT email FROM movira_core.app_user WHERE username = ? LIMIT 1");
+    $stmtSelf = $conn->prepare("SELECT email FROM {$coreSchema}.app_user WHERE username = ? LIMIT 1");
     $stmtSelf->bind_param('s', $token_username);
     $stmtSelf->execute();
     $email = trim($stmtSelf->get_result()->fetch_assoc()['email'] ?? '');
@@ -124,8 +126,8 @@ function getAllOutletsSummary($conn, $schema, $token_username, $token_role, $tok
     $company_ids = [];
     if ($email !== '') {
         $stmtCompanies = $conn->prepare("SELECT DISTINCT AU.company_id 
-            FROM movira_core.app_user AU
-            LEFT JOIN movira_core.app_company AC ON AU.company_id = AC.company_id
+            FROM {$coreSchema}.app_user AU
+            LEFT JOIN {$coreSchema}.app_company AC ON AU.company_id = AC.company_id
             WHERE AU.email = ? AND AU.app_role_id = ? AND AU.company_id IS NOT NULL AND AU.company_id <> '' AND AC.status = 'active'");
         $stmtCompanies->bind_param('ss', $email, $token_role);
         $stmtCompanies->execute();
@@ -149,6 +151,7 @@ function getAllOutletsSummary($conn, $schema, $token_username, $token_role, $tok
 }
 
 function getDashboard($conn, $schema, $company_id, $username){
+    $coreSchema = MOVIRA_CORE_SCHEMA;
     //Check is company id parameter exists or not
     if (!$company_id) {
         logApiError($conn, [
@@ -177,11 +180,11 @@ function getDashboard($conn, $schema, $company_id, $username){
             'http_status'   => 500,
             'endpoint'      => '/dashboard/index.php',
             'method'        => 'GET',
-            'error_message' => 'Failed to prepare statement for revenue this month : ' + $conn-> error,
+            'error_message' => 'Failed to prepare statement for revenue this month : ' . $conn->error,
             'user_identifier' => $username ?? null,
             'company_id'      => $company_id ?? null,
         ]);
-        jsonResponse(500, 'Failed to prepare statement', ['error'=>$conn->error]); 
+        jsonResponse(500, 'Failed to prepare statement'); 
     }
 
     $stmt1->bind_param('sss', $company_id, $start_month, $next_month);
@@ -198,11 +201,11 @@ function getDashboard($conn, $schema, $company_id, $username){
             'http_status'   => 500,
             'endpoint'      => '/dashboard/index.php',
             'method'        => 'GET',
-            'error_message' => 'Failed to prepare statement for total cups this month : ' + $conn-> error,
+            'error_message' => 'Failed to prepare statement for total cups this month : ' . $conn->error,
             'user_identifier' => $username ?? null,
             'company_id'      => $company_id ?? null,
         ]);
-        jsonResponse(500, 'Failed to prepare statement', ['error'=>$conn->error]); 
+        jsonResponse(500, 'Failed to prepare statement'); 
     }
     $stmt2->bind_param('sss', $company_id, $start_month, $next_month);
     $stmt2->execute();
@@ -229,7 +232,7 @@ function getDashboard($conn, $schema, $company_id, $username){
             'user_identifier' => $username ?? null,
             'company_id'      => $company_id ?? null,
         ]);
-        jsonResponse(500, 'Failed to prepare statement', ['error'=>$conn->error]);
+        jsonResponse(500, 'Failed to prepare statement');
     }
 
     $stmtToday->bind_param('sss', $company_id, $today, $tomorrow);
@@ -246,7 +249,7 @@ function getDashboard($conn, $schema, $company_id, $username){
     $cups_today = (int)($stmtCupsToday->get_result()->fetch_assoc()['cups_today'] ?? 0);
     $stmtCupsToday->close();
 
-    $stmtActiveDrivers = $conn->prepare("SELECT COUNT(DISTINCT user_id) AS c FROM movira_core.app_user WHERE company_id = ? AND account_status = 'verified';");
+    $stmtActiveDrivers = $conn->prepare("SELECT COUNT(DISTINCT user_id) AS c FROM {$coreSchema}.app_user WHERE company_id = ? AND account_status = 'verified';");
     $stmtActiveDrivers->bind_param('s', $company_id);
     $stmtActiveDrivers->execute();
     $active_drivers_today = (int)($stmtActiveDrivers->get_result()->fetch_assoc()['c'] ?? 0);
@@ -262,11 +265,11 @@ function getDashboard($conn, $schema, $company_id, $username){
             'http_status'   => 500,
             'endpoint'      => '/dashboard/index.php',
             'method'        => 'GET',
-            'error_message' => 'Failed to prepare statement for top 3 menus : ' + $conn-> error,
+            'error_message' => 'Failed to prepare statement for top 3 menus : ' . $conn->error,
             'user_identifier' => $username ?? null,
             'company_id'      => $company_id ?? null,
         ]);
-        jsonResponse(500, 'Failed to prepare statement', ['error'=>$conn->error]); 
+        jsonResponse(500, 'Failed to prepare statement'); 
     }
 
     $stmt4->bind_param('sss', $company_id, $start_month, $next_month);
@@ -294,11 +297,11 @@ function getDashboard($conn, $schema, $company_id, $username){
             'http_status'   => 500,
             'endpoint'      => '/dashboard/index.php',
             'method'        => 'GET',
-            'error_message' => 'Failed to prepare statement for performance per menus : ' + $conn-> error,
+            'error_message' => 'Failed to prepare statement for performance per menus : ' . $conn->error,
             'user_identifier' => $username ?? null,
             'company_id'      => $company_id ?? null,
         ]);
-        jsonResponse(500, 'Failed to prepare statement', ['error'=>$conn->error]); 
+        jsonResponse(500, 'Failed to prepare statement'); 
     }
 
     $stmt5->bind_param('sss', $company_id, $start_month, $next_month);
@@ -328,37 +331,13 @@ function getDashboard($conn, $schema, $company_id, $username){
     ]);
 }
 
-use Firebase\JWT\JWT;
-use Firebase\JWT\Key;
-
-$headers = getallheaders();
-if (!isset($headers['Authorization'])) {
-    $conn = DB::conn();
-
-    logApiError($conn, [
-        'error_level'   => 'error',
-        'http_status'   => 401,
-        'endpoint'      => '/dashboard/index.php',
-        'method'        => 'GET',
-        'error_message' => 'Authorization header not found',
-        'user_identifier' => $decoded->username ?? null,
-        'company_id'      => $decoded->company_id ?? null,
-    ]);
-
-    jsonResponse(401, 'Authorization header not found');
-}
-
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-    header("Access-Control-Allow-Origin: *");
-    header("Access-Control-Allow-Methods: POST, GET, OPTIONS, PUT, DELETE");
-    header("Access-Control-Allow-Headers: Origin, X-Requested-With, Content-Type, Accept");
     http_response_code(200);
     exit();
 }
 
 try {
-    $token = str_replace('Bearer ', '', $headers['Authorization']);
-    $decoded = JWT::decode($token, new Key($_ENV['JWT_SECRET'], 'HS256'));
+    $decoded = requireAuth();
 
     $conn = DB::conn();
     $schema = DB_SCHEMA;
@@ -403,11 +382,11 @@ try {
         'endpoint'      => '/dashboard/index.php',
         'method'        => '',
         'error_message' => $e->getMessage(),
-        'user_identifier' => $decoded->username ?? null,
-        'company_id'      => $decoded->company_id ?? null,
+        'user_identifier' => null,
+        'company_id'      => null,
     ]);
-    
-    jsonResponse(500, 'Internal Server Error', ['error' => $e->getMessage()]);
+
+    jsonResponse(500, 'Internal Server Error');
 }
 
 ?>

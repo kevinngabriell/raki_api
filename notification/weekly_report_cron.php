@@ -34,7 +34,7 @@ if ($isHttp) {
     $cronSecret = $_ENV['CRON_SECRET'] ?? '';
     $provided   = $_GET['secret'] ?? '';
 
-    if (empty($cronSecret) || $provided !== $cronSecret) {
+    if (empty($cronSecret) || !hash_equals($cronSecret, (string)$provided)) {
         http_response_code(403);
         echo json_encode(['status_code' => 403, 'status_message' => 'Forbidden.']);
         exit;
@@ -77,8 +77,8 @@ $sql = "SELECT
             au.first_name,
             au.email,
             au.company_id
-        FROM movira_core.app_user au
-        JOIN movira_core.app_role ar ON ar.app_role_id = au.app_role_id
+        FROM {$coreSchema}.app_user au
+        JOIN {$coreSchema}.app_role ar ON ar.app_role_id = au.app_role_id
         WHERE au.app_id          = ?
           AND au.company_id      IS NOT NULL
           AND au.email           IS NOT NULL
@@ -88,7 +88,16 @@ $sql = "SELECT
 
 $stmt = $conn->prepare($sql);
 if (!$stmt) {
-    $msg = 'Failed to prepare owner query: ' . $conn->error;
+    $msg = 'Failed to prepare owner query.';
+    logApiError($conn, [
+        'error_level'     => 'error',
+        'http_status'     => 500,
+        'endpoint'        => '/notification/weekly_report_cron.php',
+        'method'          => '',
+        'error_message'   => 'Failed to prepare owner query',
+        'user_identifier' => null,
+        'company_id'      => null,
+    ]);
     if ($isCli) {
         echo '[' . $now->format('Y-m-d H:i:s') . '] ERROR: ' . $msg . PHP_EOL;
     } else {

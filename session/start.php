@@ -6,12 +6,15 @@ require_once '../general.php';
 require_once '../config.php';
 require_once '../log.php';
 
-function startSession($conn, $schema, $input, $token_username, $decoded){
+if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+    http_response_code(200);
+    exit();
+}
 
-    // Use company_id from payload if provided, otherwise fallback to token
+function startSession($conn, $schema, $input, $token_username, $decoded) {
     $company_id = $input['company_id'] ?? ($decoded->company_id ?? null);
     $cash_start = $input['cash_start'] ?? null;
-    $stock      = $input['stock'] ?? null; // array of {menu_id, qty_start}
+    $stock      = $input['stock'] ?? null;
 
     if (!$company_id) {
         logApiError($conn, [
@@ -52,31 +55,29 @@ function startSession($conn, $schema, $input, $token_username, $decoded){
         jsonResponse(400, 'stock is required (array)');
     }
 
-    $company_id_esc = mysqli_real_escape_string($conn, $company_id);
-    $user_id_esc    = mysqli_real_escape_string($conn, $token_username);
     $cash_start_int = (int)$cash_start;
 
     // 1) check active session first
-    $check = "SELECT session_id FROM {$schema}.work_session WHERE company_id='$company_id_esc' AND user_id='$user_id_esc' AND status='active' ORDER BY started_at DESC LIMIT 1";
-    $rc = mysqli_query($conn, $check);
-
-    if (!$rc) {
+    $stmtCheck = $conn->prepare("SELECT session_id FROM {$schema}.work_session WHERE company_id = ? AND user_id = ? AND status = 'active' ORDER BY started_at DESC LIMIT 1");
+    if (!$stmtCheck) {
         logApiError($conn, [
             'error_level'   => 'error',
             'http_status'   => 500,
             'endpoint'      => '/session/start.php',
             'method'        => 'POST',
-            'error_message' => mysqli_error($conn),
+            'error_message' => 'Database query error',
             'user_identifier' => $decoded->username ?? null,
             'company_id'      => $decoded->company_id ?? null,
         ]);
-
-
-        jsonResponse(500, 'DB error', ['error' => mysqli_error($conn)]);
+        jsonResponse(500, 'Database query error');
     }
+    $stmtCheck->bind_param('ss', $company_id, $token_username);
+    $stmtCheck->execute();
+    $rc = $stmtCheck->get_result();
 
-    if (mysqli_num_rows($rc) === 1) {
-        $row = mysqli_fetch_assoc($rc);
+    if ($rc && $rc->num_rows === 1) {
+        $row = $rc->fetch_assoc();
+        $stmtCheck->close();
 
         logApiError($conn, [
             'error_level'   => 'error',
@@ -90,6 +91,7 @@ function startSession($conn, $schema, $input, $token_username, $decoded){
 
         jsonResponse(409, 'You already have an active session', ['session_id' => $row['session_id']]);
     }
+    $stmtCheck->close();
 
     // 2) begin transaction
     mysqli_begin_transaction($conn);
@@ -97,24 +99,23 @@ function startSession($conn, $schema, $input, $token_username, $decoded){
     try {
         $session_id = 'ses_' . bin2hex(random_bytes(10));
 
-        $ins = "INSERT INTO {$schema}.work_session (session_id, company_id, user_id, started_at, cash_start, status, created_at) VALUES ('$session_id', '$company_id_esc', '$user_id_esc', NOW(), $cash_start_int, 'active', NOW())";
-
-        if (!mysqli_query($conn, $ins)) {
-            
-            logApiError($conn, [
-                'error_level'   => 'error',
-                'http_status'   => 400,
-                'endpoint'      => '/session/start.php',
-                'method'        => 'POST',
-                'error_message' => mysqli_error($conn),
-                'user_identifier' => $decoded->username ?? null,
-                'company_id'      => $decoded->company_id ?? null,
-            ]);
-
-            throw new Exception('Failed to insert work_session: ' . mysqli_error($conn));
+        $stmtIns = $conn->prepare("INSERT INTO {$schema}.work_session (session_id, company_id, user_id, started_at, cash_start, status, created_at) VALUES (?, ?, ?, NOW(), ?, 'active', NOW())");
+        if (!$stmtIns) {
+            throw new Exception('Failed to prepare work_session insert');
         }
+        $stmtIns->bind_param('sssi', $session_id, $company_id, $token_username, $cash_start_int);
+        if (!$stmtIns->execute()) {
+            $stmtIns->close();
+            throw new Exception('Failed to insert work_session');
+        }
+        $stmtIns->close();
 
         // Insert stock snapshot
+        $stmtStock = $conn->prepare("INSERT INTO {$schema}.work_session_stock (session_stock_id, session_id, menu_id, qty_start, created_at) VALUES (?, ?, ?, ?, NOW())");
+        if (!$stmtStock) {
+            throw new Exception('Failed to prepare stock insert');
+        }
+
         foreach ($stock as $it) {
             if (!is_array($it)) continue;
 
@@ -125,44 +126,38 @@ function startSession($conn, $schema, $input, $token_username, $decoded){
                 continue;
             }
 
-            $menu_id_esc = mysqli_real_escape_string($conn, $menu_id);
-            $qty_int     = (int)$qty;
-
+            $qty_int = (int)$qty;
             $ssid = 'wss_' . bin2hex(random_bytes(10));
 
-            $insS = "INSERT INTO {$schema}.work_session_stock (session_stock_id, session_id, menu_id, qty_start, created_at) VALUES ('$ssid', '$session_id', '$menu_id_esc', $qty_int, NOW())";
-
-            if (!mysqli_query($conn, $insS)) {
-                
-                logApiError($conn, [
-                    'error_level'   => 'error',
-                    'http_status'   => 400,
-                    'endpoint'      => '/session/start.php',
-                    'method'        => 'POST',
-                    'error_message' => mysqli_error($conn),
-                    'user_identifier' => $decoded->username ?? null,
-                    'company_id'      => $decoded->company_id ?? null,
-                ]);
-
-                throw new Exception('Failed to insert stock: ' . mysqli_error($conn));
+            $stmtStock->bind_param('sssi', $ssid, $session_id, $menu_id, $qty_int);
+            if (!$stmtStock->execute()) {
+                $stmtStock->close();
+                throw new Exception('Failed to insert stock');
             }
         }
+        $stmtStock->close();
 
         mysqli_commit($conn);
 
         // Load back session + stock
-        $qsess = "SELECT session_id, company_id, user_id, started_at, ended_at, cash_start, cash_end, status FROM {$schema}.work_session WHERE session_id='$session_id' LIMIT 1";
-        $rsess = mysqli_query($conn, $qsess);
-        $session = $rsess ? mysqli_fetch_assoc($rsess) : null;
+        $stmtSess = $conn->prepare("SELECT session_id, company_id, user_id, started_at, ended_at, cash_start, cash_end, status FROM {$schema}.work_session WHERE session_id = ? LIMIT 1");
+        $stmtSess->bind_param('s', $session_id);
+        $stmtSess->execute();
+        $rsess = $stmtSess->get_result();
+        $session = $rsess ? $rsess->fetch_assoc() : null;
+        $stmtSess->close();
 
-        $qstock = "SELECT s.menu_id, m.menu_name, s.qty_start, s.qty_end FROM {$schema}.work_session_stock s LEFT JOIN {$schema}.menu m ON m.menu_id = s.menu_id WHERE s.session_id='$session_id' ORDER BY m.menu_name ASC";
-        $rstock = mysqli_query($conn, $qstock);
+        $stmtStockList = $conn->prepare("SELECT s.menu_id, m.menu_name, s.qty_start, s.qty_end FROM {$schema}.work_session_stock s LEFT JOIN {$schema}.menu m ON m.menu_id = s.menu_id WHERE s.session_id = ? ORDER BY m.menu_name ASC");
+        $stmtStockList->bind_param('s', $session_id);
+        $stmtStockList->execute();
+        $rstock = $stmtStockList->get_result();
         $stockList = [];
         if ($rstock) {
-            while ($row = mysqli_fetch_assoc($rstock)) {
+            while ($row = $rstock->fetch_assoc()) {
                 $stockList[] = $row;
             }
         }
+        $stmtStockList->close();
 
         if (is_array($session)) {
             $session['stock'] = $stockList;
@@ -183,88 +178,32 @@ function startSession($conn, $schema, $input, $token_username, $decoded){
             'company_id'      => $decoded->company_id ?? null,
         ]);
 
-        jsonResponse(500, 'Failed to start session', ['error' => $e->getMessage()]);
-
+        jsonResponse(500, 'Failed to start session');
     }
 }
 
-use Firebase\JWT\JWT;
-use Firebase\JWT\Key;
+$decoded = requireAuth();
 
-$rawHeaders = getallheaders();
-// normalisasi semua key ke lowercase
-$headers = array_change_key_case($rawHeaders, CASE_LOWER);
+$conn = DB::conn();
+$schema = DB_SCHEMA;
+$token_username = $decoded->username;
+$method = $_SERVER['REQUEST_METHOD'];
 
-if (!isset($headers['authorization'])) {
-    logApiError($conn, [
-        'error_level'   => 'error',
-        'http_status'   => 400,
-        'endpoint'      => '/session/start.php',
-        'method'        => 'POST',
-        'error_message' => 'Authorization header not found',
-        'user_identifier' => $decoded->username ?? null,
-        'company_id'      => $decoded->company_id ?? null,
-    ]);
-    jsonResponse(401, 'Authorization header not found');
+switch ($method) {
+    case 'POST':
+        $input = json_decode(file_get_contents('php://input'), true);
+        startSession($conn, $schema, $input, $token_username, $decoded);
+        break;
+    default:
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 405,
+            'endpoint'      => '/session/start.php',
+            'method'        => 'POST',
+            'error_message' => 'Method Not Allowed',
+            'user_identifier' => $decoded->username ?? null,
+            'company_id'      => $decoded->company_id ?? null,
+        ]);
+        jsonResponse(405, 'Method Not Allowed');
+        break;
 }
-
-$authHeader = $headers['authorization'];
-$token = str_replace('Bearer ', '', $authHeader);
-
-
-if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-    header("Access-Control-Allow-Origin: *");
-    header("Access-Control-Allow-Methods: POST, GET, OPTIONS, PUT, DELETE");
-    header("Access-Control-Allow-Headers: Origin, X-Requested-With, Content-Type, Accept, Authorization");
-    http_response_code(200);
-    exit();
-}
-
-try {
-    $authHeader = $headers['authorization'];
-    $token = str_replace('Bearer ', '', $authHeader);
-    $decoded = JWT::decode($token, new Key($_ENV['JWT_SECRET'], 'HS256'));
-
-    $conn = DB::conn();
-    $schema = DB_SCHEMA;
-    
-    $token_username = $decoded->username;
-    $method = $_SERVER['REQUEST_METHOD'];
-
-    switch($method){
-        case 'POST':
-            $input = json_decode(file_get_contents('php://input'), true);
-            startSession($conn, $schema, $input, $token_username, $decoded);
-            break;
-        default:
-            $conn = DB::conn();
-
-            logApiError($conn, [
-                'error_level'   => 'error',
-                'http_status'   => 405,
-                'endpoint'      => '/session/start.php',
-                'method'        => 'POST',
-                'error_message' => 'Method Not Allowed',
-                'user_identifier' => $decoded->username ?? null,
-                'company_id'      => $decoded->company_id ?? null,
-            ]);
-
-            jsonResponse(405, 'Method Not Allowed');
-            break;
-    }
-
-} catch (Exception $e){
-    $conn = DB::conn();
-    logApiError($conn, [
-        'error_level'   => 'error',
-        'http_status'   => 405,
-        'endpoint'      => '/session/start.php',
-        'method'        => 'POST',
-        'error_message' => $e->getMessage(),
-        'user_identifier' => $decoded->username ?? null,
-        'company_id'      => $decoded->company_id ?? null,
-    ]);
-    jsonResponse(500, 'Internal Server Error', ['error' => $e->getMessage()]);
-}
-
-?>

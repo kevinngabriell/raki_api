@@ -31,12 +31,11 @@ jobs:
           cd "$APP_DIR"
           export NODE_ENV=production
 
-          # kalau belum pernah di-start
-          if ! pm2 list | grep -q "raki_api"; then
-            pm2 start php --name raki_api -- \
-              -S 127.0.0.1:8082 -t "$APP_DIR"
-          else
-            pm2 restart raki_api
-          fi
+          # Selalu start ulang (bukan pm2 restart) supaya flag -d ikut terbaca.
+          # Upload foto menu: batas aplikasi 10 MB, PHP harus sedikit lebih besar.
+          pm2 delete raki_api || true
+          pm2 start php --name raki_api -- \
+            -d upload_max_filesize=12M -d post_max_size=16M \
+            -S 127.0.0.1:8082 -t "$APP_DIR"
 
           pm2 save

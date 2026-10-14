@@ -10,20 +10,32 @@ class DB {
       return self::$conn;
     }
 
-    $host = '127.0.0.1'; 
-    //$host = '100.98.160.119'; 
-    $port = 3306;
-    $user = 'movira_dev';
-    $pass = 'devjayaA9&';
+    $host = $_ENV['DB_HOST'] ?? '127.0.0.1';
+    $port = (int)($_ENV['DB_PORT'] ?? 3306);
+    $user = $_ENV['DB_USER'] ?? '';
+    $pass = $_ENV['DB_PASS'] ?? '';
 
-    // connect default ke movira_core
-    $defaultDb = $dbName ?: 'movira_core';
+    $defaultDb = $_ENV['MOVIRA_CORE_SCHEMA'] ?? '';
+    if ($user === '' || $defaultDb === '') {
+      error_log('DB config missing: DB_USER and MOVIRA_CORE_SCHEMA must be set in .env');
+    }
     $conn = new mysqli($host, $user, $pass, $defaultDb, $port);
 
     if ($conn->connect_error) {
       http_response_code(500);
-      header('Content-Type: application/json');
-      echo json_encode(['status_code' => 500, 'message' => 'Database connection failed']);
+      header('Content-Type: application/json; charset=utf-8');
+      echo json_encode([
+        'success' => false,
+        'data' => null,
+        'meta' => null,
+        'error' => [
+          'code' => 'ERR_COMMON_005',
+          'message' => 'Database connection failed',
+          'http_status' => 500,
+          'details' => [],
+          'request_id' => '00000000-0000-7000-8000-000000000000',
+        ],
+      ]);
       exit;
     }
 
@@ -37,7 +49,6 @@ class DB {
   public static function query(string $sql, array $params = []): mysqli_result|bool {
     $conn = self::conn();
 
-    // Kalau tanpa parameter, langsung jalan
     if (empty($params)) {
       $result = $conn->query($sql);
       if ($result === false) {
@@ -46,7 +57,6 @@ class DB {
       return $result;
     }
 
-    // Kalau ada parameter → pakai prepared statement
     $stmt = $conn->prepare($sql);
     if (!$stmt) {
       throw new Exception("Prepare failed: " . $conn->error);
@@ -63,7 +73,7 @@ class DB {
     }
 
     $res = $stmt->get_result();
-    return $res ?: true; // kalau INSERT/UPDATE ga punya result
+    return $res ?: true;
   }
 }
 ?>

@@ -11,200 +11,189 @@ use Firebase\JWT\JWT;
 use Firebase\JWT\Key;
 
 const RAKI_APP_ID = '06660e87-37e7-491b-92c3-c772130eb57c';
-const RESET_PASSWORD_PURPOSE = 'reset_password';
+const RESET_PASSWORD_PURPOSE = 'forgot_password';
+const OTP_MAX_ATTEMPTS = 5;
 
-// Step 1: request an OTP for the account matching the given username
 function requestPasswordResetOTP($conn, $input)
 {
     $conn = DB::conn();
+    $appId = RAKI_APP_ID;
+    $purpose = RESET_PASSWORD_PURPOSE;
+    $coreSchema = MOVIRA_CORE_SCHEMA;
 
-    $username = $input['username'] ?? null;
+    $username = trim($input['username'] ?? '');
 
     if (!$username) {
-        logApiError($conn, [
-            'error_level'   => 'error',
-            'http_status'   => 400,
-            'endpoint'      => '/account/forgot_password.php',
-            'method'        => 'POST',
-            'error_message' => 'Missing username',
-            'user_identifier' => null,
-            'company_id'      => null,
-        ]);
-
         jsonResponse(400, 'Username is required');
     }
 
-    $username = mysqli_real_escape_string($conn, $username);
-
-    $user_query = "SELECT username, phone_number FROM movira_core.app_user WHERE username = '$username' AND app_id = '" . RAKI_APP_ID . "' LIMIT 1";
-    $user_result = mysqli_query($conn, $user_query);
+    $stmt = $conn->prepare("SELECT username, phone_number, phone_e164, identity_id FROM {$coreSchema}.app_user WHERE username = ? AND app_id = ? LIMIT 1");
+    $stmt->bind_param('ss', $username, $appId);
+    $stmt->execute();
+    $user_result = $stmt->get_result();
+    $stmt->close();
 
     if (!$user_result) {
-        logApiError($conn, [
-            'error_level'   => 'error',
-            'http_status'   => 500,
-            'endpoint'      => '/account/forgot_password.php',
-            'method'        => 'POST',
-            'error_message' => mysqli_error($conn),
-            'user_identifier' => $username,
-            'company_id'      => null,
-        ]);
-        jsonResponse(500, 'DB error', ['error' => mysqli_error($conn)]);
+        jsonResponse(500, 'Internal Server Error');
     }
 
-    // Don't reveal whether the username exists — respond the same way either way.
-    if (mysqli_num_rows($user_result) !== 1) {
-        jsonResponse(200, 'If the account exists, an OTP has been sent');
+    if ($user_result->num_rows !== 1) {
+        jsonResponse(404, 'User not found');
     }
 
-    $user = mysqli_fetch_assoc($user_result);
+    $user = $user_result->fetch_assoc();
     $phone_number = $user['phone_number'];
+    $username = $user['username'];
+    $identifier = $user['phone_e164'] ?: $phone_number;
+    $identityId = $user['identity_id'];
 
     if (!$phone_number) {
-        jsonResponse(200, 'If the account exists, an OTP has been sent');
+        jsonResponse(422, 'This account has no phone number registered');
     }
 
-    // === RATE LIMIT: WAIT 3 MINUTES BETWEEN OTP REQUESTS ===
-    $rate_limit_query = "SELECT TIMESTAMPDIFF(SECOND, created_at, NOW()) AS diff_seconds FROM otp_codes WHERE identifier = '$username' AND purpose = '" . RESET_PASSWORD_PURPOSE . "' ORDER BY created_at DESC LIMIT 1";
-    $rate_limit_result = mysqli_query($conn, $rate_limit_query);
+    $stmt = $conn->prepare("SELECT TIMESTAMPDIFF(SECOND, created_at, NOW()) AS diff_seconds
+                            FROM {$coreSchema}.otp_codes
+                            WHERE identifier = ? AND purpose = ?
+                            ORDER BY created_at DESC LIMIT 1");
+    $stmt->bind_param('ss', $identifier, $purpose);
+    $stmt->execute();
+    $rate_limit_result = $stmt->get_result();
+    $stmt->close();
 
-    if ($rate_limit_result && mysqli_num_rows($rate_limit_result) === 1) {
-        $row = mysqli_fetch_assoc($rate_limit_result);
+    if ($rate_limit_result && $rate_limit_result->num_rows === 1) {
+        $row = $rate_limit_result->fetch_assoc();
         $diff = (int)$row['diff_seconds'];
 
         if ($diff < 180) {
-            logApiError($conn, [
-                'error_level'   => 'error',
-                'http_status'   => 429,
-                'endpoint'      => '/account/forgot_password.php',
-                'method'        => 'POST',
-                'error_message' => 'Please wait 2–3 minutes before requesting a new OTP',
-                'user_identifier' => $username,
-                'company_id'      => null,
-            ]);
-
             jsonResponse(429, 'Please wait 2–3 minutes before requesting a new OTP');
         }
     }
 
-    // === LOCK ACCOUNT AFTER 10 OTP REQUESTS IN 24 HOURS ===
-    $lock_check_query = "SELECT COUNT(*) AS total_requests FROM otp_codes WHERE identifier = '$username' AND purpose = '" . RESET_PASSWORD_PURPOSE . "' AND created_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)";
-    $lock_check_result = mysqli_query($conn, $lock_check_query);
+    $stmt = $conn->prepare("SELECT COUNT(*) AS total_requests
+                            FROM {$coreSchema}.otp_codes
+                            WHERE identifier = ? AND purpose = ?
+                            AND created_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)");
+    $stmt->bind_param('ss', $identifier, $purpose);
+    $stmt->execute();
+    $lock_check_result = $stmt->get_result();
+    $stmt->close();
 
     if ($lock_check_result) {
-        $lockData = mysqli_fetch_assoc($lock_check_result);
+        $lockData = $lock_check_result->fetch_assoc();
 
         if ((int)$lockData['total_requests'] >= 10) {
-            logApiError($conn, [
-                'error_level'   => 'error',
-                'http_status'   => 423,
-                'endpoint'      => '/account/forgot_password.php',
-                'method'        => 'POST',
-                'error_message' => 'Too many password reset requests',
-                'user_identifier' => $username,
-                'company_id'      => null,
-            ]);
-
             jsonResponse(423, 'Too many password reset requests, please try again later');
         }
     }
 
-    // Kill any previous unused reset OTPs for this user
-    $kill_old = "UPDATE otp_codes SET is_used = 1 WHERE identifier = '$username' AND purpose = '" . RESET_PASSWORD_PURPOSE . "'";
-    mysqli_query($conn, $kill_old);
+    $stmt = $conn->prepare("UPDATE {$coreSchema}.otp_codes SET used_at = NOW() WHERE identifier = ? AND purpose = ? AND used_at IS NULL");
+    $stmt->bind_param('ss', $identifier, $purpose);
+    $stmt->execute();
+    $stmt->close();
 
     $otp       = str_pad(random_int(0, 999999), 6, '0', STR_PAD_LEFT);
     $otp_id    = uniqid('otp_');
-    $expire_at = date('Y-m-d H:i:s', time() + 5 * 60); // 5 menit
+    $expire_at = date('Y-m-d H:i:s', time() + 5 * 60);
 
-    $insert_otp = "INSERT INTO otp_codes (otp_id, identifier, otp_code, purpose, expire_at, is_used, attempt_count, created_at) VALUES ('$otp_id', '$username', '$otp', '" . RESET_PASSWORD_PURPOSE . "', '$expire_at', 0, 0, NOW())";
+    $otpHash     = otpHash($otp);
+    $channel     = 'whatsapp';
+    $ip          = $_SERVER['REMOTE_ADDR'] ?? null;
+    $maxAttempts = OTP_MAX_ATTEMPTS;
 
-    if (!mysqli_query($conn, $insert_otp)) {
+    $stmt = $conn->prepare("INSERT INTO {$coreSchema}.otp_codes (otp_id, identity_id, identifier, channel, purpose, otp_hash, expire_at, attempt_count, max_attempts, ip_address, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, NOW())");
+    $stmt->bind_param('sssssssis', $otp_id, $identityId, $identifier, $channel, $purpose, $otpHash, $expire_at, $maxAttempts, $ip);
+
+    if (!$stmt->execute()) {
         logApiError($conn, [
             'error_level'   => 'error',
             'http_status'   => 500,
             'endpoint'      => '/account/forgot_password.php',
             'method'        => 'POST',
-            'error_message' => mysqli_error($conn),
+            'error_message' => 'Failed to create OTP',
             'user_identifier' => $username,
-            'company_id'      => null,
         ]);
-
-        jsonResponse(500, 'Failed to create OTP', ['error' => mysqli_error($conn)]);
+        jsonResponse(500, 'Failed to create OTP');
     }
+    $stmt->close();
 
     $text = "Kode OTP Reset Password RAKI Anda: $otp\nBerlaku selama 5 menit.\nJangan bagikan kode ini kepada siapapun.";
     sendWhatsAppText($phone_number, $text);
 
-    jsonResponse(200, 'If the account exists, an OTP has been sent');
+    jsonResponse(200, 'OTP sent');
 }
 
-// Step 2: verify the OTP and issue a short-lived reset token
 function verifyPasswordResetOTP($conn, $input)
 {
     $conn = DB::conn();
+    $appId = RAKI_APP_ID;
+    $purpose = RESET_PASSWORD_PURPOSE;
+    $coreSchema = MOVIRA_CORE_SCHEMA;
 
-    $username = $input['username'] ?? null;
+    $username = trim($input['username'] ?? '');
     $otp      = $input['otp'] ?? null;
 
     if (!$username || !$otp) {
-        logApiError($conn, [
-            'error_level'   => 'error',
-            'http_status'   => 400,
-            'endpoint'      => '/account/forgot_password.php',
-            'method'        => 'PUT',
-            'error_message' => 'username and otp are required',
-            'user_identifier' => $username,
-            'company_id'      => null,
-        ]);
-
         jsonResponse(400, 'Username and OTP are required');
     }
 
-    $username = mysqli_real_escape_string($conn, $username);
-    $otp      = mysqli_real_escape_string($conn, $otp);
+    $stmt = $conn->prepare("SELECT username, phone_number, phone_e164 FROM {$coreSchema}.app_user WHERE username = ? AND app_id = ? LIMIT 1");
+    $stmt->bind_param('ss', $username, $appId);
+    $stmt->execute();
+    $user_result = $stmt->get_result();
+    $stmt->close();
 
-    // Tambah attempt_count untuk OTP aktif user ini
-    $inc_attempt = "UPDATE otp_codes SET attempt_count = attempt_count + 1 WHERE identifier = '$username' AND purpose = '" . RESET_PASSWORD_PURPOSE . "' AND is_used = 0";
-    mysqli_query($conn, $inc_attempt);
-
-    $otp_query = "SELECT * FROM otp_codes WHERE identifier = '$username' AND otp_code = '$otp' AND purpose = '" . RESET_PASSWORD_PURPOSE . "' AND is_used = 0 ORDER BY created_at DESC LIMIT 1";
-    $otp_result = mysqli_query($conn, $otp_query);
-
-    if (!$otp_result || mysqli_num_rows($otp_result) !== 1) {
-        logApiError($conn, [
-            'error_level'   => 'error',
-            'http_status'   => 400,
-            'endpoint'      => '/account/forgot_password.php',
-            'method'        => 'PUT',
-            'error_message' => 'Invalid OTP',
-            'user_identifier' => $username,
-            'company_id'      => null,
-        ]);
+    if (!$user_result || $user_result->num_rows !== 1) {
         jsonResponse(400, 'Invalid OTP');
     }
 
-    $otp_row = mysqli_fetch_assoc($otp_result);
+    $user = $user_result->fetch_assoc();
+    $username   = $user['username'];
+    $identifier = $user['phone_e164'] ?: $user['phone_number'];
+
+    $stmt = $conn->prepare("SELECT otp_id, otp_hash, expire_at, attempt_count, max_attempts
+                            FROM {$coreSchema}.otp_codes
+                            WHERE identifier = ? AND purpose = ? AND used_at IS NULL
+                            ORDER BY created_at DESC LIMIT 1");
+    $stmt->bind_param('ss', $identifier, $purpose);
+    $stmt->execute();
+    $otp_result = $stmt->get_result();
+    $stmt->close();
+
+    if (!$otp_result || $otp_result->num_rows !== 1) {
+        jsonResponse(400, 'Invalid OTP');
+    }
+
+    $otp_row = $otp_result->fetch_assoc();
+
+    if ((int)$otp_row['attempt_count'] >= (int)$otp_row['max_attempts']) {
+        $stmt = $conn->prepare("UPDATE {$coreSchema}.otp_codes SET used_at = NOW() WHERE otp_id = ?");
+        $stmt->bind_param('s', $otp_row['otp_id']);
+        $stmt->execute();
+        $stmt->close();
+
+        jsonResponse(423, 'Too many failed OTP attempts. Please request a new OTP.');
+    }
+
+    $stmt = $conn->prepare("UPDATE {$coreSchema}.otp_codes SET attempt_count = attempt_count + 1 WHERE otp_id = ?");
+    $stmt->bind_param('s', $otp_row['otp_id']);
+    $stmt->execute();
+    $stmt->close();
+
+    if (!hash_equals($otp_row['otp_hash'], otpHash((string)$otp))) {
+        jsonResponse(400, 'Invalid OTP');
+    }
 
     if (strtotime($otp_row['expire_at']) < time()) {
-        logApiError($conn, [
-            'error_level'   => 'error',
-            'http_status'   => 400,
-            'endpoint'      => '/account/forgot_password.php',
-            'method'        => 'PUT',
-            'error_message' => 'OTP expired',
-            'user_identifier' => $username,
-            'company_id'      => null,
-        ]);
         jsonResponse(400, 'OTP expired');
     }
 
-    // Mark OTP as used — it can't be redeemed again, only the reset token below can be.
-    $mark_used = "UPDATE otp_codes SET is_used = 1, used_at = NOW() WHERE otp_id = '{$otp_row['otp_id']}' LIMIT 1";
-    mysqli_query($conn, $mark_used);
+    $stmt = $conn->prepare("UPDATE {$coreSchema}.otp_codes SET used_at = NOW() WHERE otp_id = ? LIMIT 1");
+    $stmt->bind_param('s', $otp_row['otp_id']);
+    $stmt->execute();
+    $stmt->close();
 
     $issuedAt       = time();
-    $expirationTime = $issuedAt + 10 * 60; // 10 menit untuk submit password baru
+    $expirationTime = $issuedAt + 10 * 60;
 
     $payload = [
         'iat'      => $issuedAt,
@@ -221,25 +210,16 @@ function verifyPasswordResetOTP($conn, $input)
     ]);
 }
 
-// Step 3: consume the reset token and set the new password
 function resetPassword($conn, $input)
 {
     $conn = DB::conn();
+    $appId = RAKI_APP_ID;
+    $coreSchema = MOVIRA_CORE_SCHEMA;
 
     $resetToken  = $input['reset_token'] ?? null;
     $newPassword = $input['new_password'] ?? null;
 
     if (!$resetToken || !$newPassword) {
-        logApiError($conn, [
-            'error_level'   => 'error',
-            'http_status'   => 400,
-            'endpoint'      => '/account/forgot_password.php',
-            'method'        => 'PATCH',
-            'error_message' => 'reset_token and new_password are required',
-            'user_identifier' => null,
-            'company_id'      => null,
-        ]);
-
         jsonResponse(400, 'Reset token and new password are required');
     }
 
@@ -251,13 +231,11 @@ function resetPassword($conn, $input)
         $decoded = JWT::decode($resetToken, new Key($_ENV['JWT_SECRET'], 'HS256'));
     } catch (Exception $e) {
         logApiError($conn, [
-            'error_level'   => 'error',
+            'error_level'   => 'warning',
             'http_status'   => 401,
             'endpoint'      => '/account/forgot_password.php',
             'method'        => 'PATCH',
             'error_message' => 'Invalid or expired reset token',
-            'user_identifier' => null,
-            'company_id'      => null,
         ]);
         jsonResponse(401, 'Invalid or expired reset token');
     }
@@ -266,31 +244,31 @@ function resetPassword($conn, $input)
         jsonResponse(401, 'Invalid reset token');
     }
 
-    $username = mysqli_real_escape_string($conn, $decoded->username);
-    $hashedPassword = password_hash($newPassword, PASSWORD_DEFAULT);
+    $username = $decoded->username;
 
-    $update_query = "UPDATE movira_core.app_user SET password = '$hashedPassword' WHERE username = '$username' AND app_id = '" . RAKI_APP_ID . "'";
+    $escapedPassword = mysqli_real_escape_string($conn, $newPassword);
+    $hashedPassword = password_hash($escapedPassword, PASSWORD_DEFAULT);
 
-    if (!mysqli_query($conn, $update_query)) {
+    $stmt = $conn->prepare("UPDATE {$coreSchema}.app_user SET password = ? WHERE username = ? AND app_id = ?");
+    $stmt->bind_param('sss', $hashedPassword, $username, $appId);
+
+    if (!$stmt->execute()) {
         logApiError($conn, [
             'error_level'   => 'error',
             'http_status'   => 500,
             'endpoint'      => '/account/forgot_password.php',
             'method'        => 'PATCH',
-            'error_message' => mysqli_error($conn),
+            'error_message' => 'Failed to reset password',
             'user_identifier' => $username,
-            'company_id'      => null,
         ]);
-        jsonResponse(500, 'Failed to reset password', ['error' => mysqli_error($conn)]);
+        jsonResponse(500, 'Failed to reset password');
     }
+    $stmt->close();
 
     jsonResponse(200, 'Password has been reset, please log in with your new password');
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-    header("Access-Control-Allow-Origin: *");
-    header("Access-Control-Allow-Methods: POST, GET, OPTIONS, PUT, PATCH, DELETE");
-    header("Access-Control-Allow-Headers: Origin, X-Requested-With, Content-Type, Accept");
     http_response_code(200);
     exit();
 }
@@ -301,26 +279,17 @@ try {
     switch ($method) {
         case 'POST':
             $input = json_decode(file_get_contents('php://input'), true);
-            requestPasswordResetOTP($conn, $input);
+            requestPasswordResetOTP(DB::conn(), $input);
             break;
         case 'PUT':
             $input = json_decode(file_get_contents('php://input'), true);
-            verifyPasswordResetOTP($conn, $input);
+            verifyPasswordResetOTP(DB::conn(), $input);
             break;
         case 'PATCH':
             $input = json_decode(file_get_contents('php://input'), true);
-            resetPassword($conn, $input);
+            resetPassword(DB::conn(), $input);
             break;
         default:
-            logApiError($conn, [
-                'error_level'   => 'error',
-                'http_status'   => 405,
-                'endpoint'      => '/account/forgot_password.php',
-                'method'        => $method,
-                'error_message' => 'Method Not Allowed',
-                'user_identifier' => null,
-                'company_id'      => null,
-            ]);
             jsonResponse(405, 'Method Not Allowed');
             break;
     }
@@ -333,11 +302,9 @@ try {
         'endpoint'      => '/account/forgot_password.php',
         'method'        => '',
         'error_message' => $e->getMessage(),
-        'user_identifier' => null,
-        'company_id'      => null,
     ]);
 
-    jsonResponse(500, 'Internal Server Error', ['error' => $e->getMessage()]);
+    jsonResponse(500, 'Internal Server Error');
 }
 
 ?>

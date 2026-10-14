@@ -7,8 +7,7 @@ require_once '../config.php';
 require_once '../log.php';
 
 function createVoucher($conn, $schema, $input, $username, $company, $role){
-    // ================= VALIDATION =================
-    $requiredFields = ['voucher_code', 'voucher_name', 'discount_type', 'discount_value', 'usage_type', 'start_date', 'end_date', 'is_active' ];
+    $requiredFields = ['voucher_code', 'voucher_name', 'discount_type', 'discount_value', 'usage_type', 'start_date', 'end_date', 'is_active'];
 
     foreach ($requiredFields as $field) {
         if (!isset($input[$field]) || $input[$field] === '') {
@@ -32,7 +31,6 @@ function createVoucher($conn, $schema, $input, $username, $company, $role){
         jsonResponse(400, 'is_active must be 0 or 1');
     }
 
-    // enum validation
     if (!in_array($discount_type, ['nominal','percentage'])) {
         jsonResponse(400, 'Invalid discount_type');
     }
@@ -41,7 +39,6 @@ function createVoucher($conn, $schema, $input, $username, $company, $role){
         jsonResponse(400, 'Invalid usage_type');
     }
 
-    // numeric validation
     if ($discount_value <= 0) {
         jsonResponse(400, 'discount_value must be greater than 0');
     }
@@ -50,7 +47,6 @@ function createVoucher($conn, $schema, $input, $username, $company, $role){
         jsonResponse(400, 'percentage discount cannot be more than 100');
     }
 
-    // date validation
     if (!strtotime($start_date) || !strtotime($end_date)) {
         jsonResponse(400, 'Invalid date format');
     }
@@ -59,64 +55,104 @@ function createVoucher($conn, $schema, $input, $username, $company, $role){
         jsonResponse(400, 'start_date cannot be greater than end_date');
     }
 
-    $check_app_query = "SELECT * FROM {$schema}.voucher WHERE voucher_name = '$voucher_name' AND discount_value = '$discount_value'";
-    $check_app_result = mysqli_query($conn, $check_app_query);
+    $checkStmt = $conn->prepare(
+        "SELECT * FROM {$schema}.voucher WHERE voucher_name = ? AND discount_value = ?"
+    );
+    if (!$checkStmt) jsonResponse(500, 'Internal Server Error');
+    $checkStmt->bind_param('si', $voucher_name, $discount_value);
+    $checkStmt->execute();
+    $checkRes = $checkStmt->get_result();
 
-    if (mysqli_num_rows($check_app_result) > 0) {
+    if ($checkRes && $checkRes->num_rows > 0) {
+        $checkStmt->close();
         logApiError($conn, [
-            'error_level'   => 'error',
-            'http_status'   => 400,
-            'endpoint'      => '/voucher/voucher.php',
-            'method'        => 'POST',
-            'error_message' => 'Voucher has already exists in database !!',
+            'error_level'     => 'error',
+            'http_status'     => 400,
+            'endpoint'        => '/voucher/voucher.php',
+            'method'          => 'POST',
+            'error_message'   => 'Voucher has already exists in database !!',
             'user_identifier' => $username ?? null,
-            'company_id'      => $decoded->company_id ?? null,
+            'company_id'      => $company ?? null,
         ]);
-        jsonResponse(400, 'Voucher has already exists in database !!');   
-    } else {
-        $voucher_id = "voucher" . uniqid();
-        $now = getCurrentDateTimeJakarta();
-
-        $insert_query = "INSERT INTO {$schema}.voucher (voucher_id, voucher_code, voucher_name, discount_type, discount_value, min_transaction, max_discount, usage_type, max_total_usage, start_date, end_date, is_active, company_id, created_by, created_at) VALUES ('$voucher_id', '$voucher_code', '$voucher_name', '$discount_type', $discount_value, $min_transaction, " . ($max_discount !== null ? $max_discount : "NULL") . ", '$usage_type', " . ($max_total_usage !== null ? $max_total_usage : "NULL") . ", '$start_date', '$end_date', $is_active, '$company', '$username', '$now')";
-
-        if (mysqli_query($conn, $insert_query)) {
-            jsonResponse(201, 'Voucher created successfully', [
-                'voucher_id' => $voucher_id
-            ]);
-        } else {
-            jsonResponse(500, 'Failed to create voucher: ' . mysqli_error($conn));
-        }
+        jsonResponse(400, 'Voucher has already exists in database !!');
     }
+    $checkStmt->close();
 
+    $voucher_id = "voucher" . uniqid();
+    $now = getCurrentDateTimeJakarta();
+
+    $stmt = $conn->prepare(
+        "INSERT INTO {$schema}.voucher (voucher_id, voucher_code, voucher_name, discount_type, discount_value, min_transaction, max_discount, usage_type, max_total_usage, start_date, end_date, is_active, company_id, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    );
+    if (!$stmt) jsonResponse(500, 'Internal Server Error');
+    $stmt->bind_param(
+        'ssssiiisississs',
+        $voucher_id,
+        $voucher_code,
+        $voucher_name,
+        $discount_type,
+        $discount_value,
+        $min_transaction,
+        $max_discount,
+        $usage_type,
+        $max_total_usage,
+        $start_date,
+        $end_date,
+        $is_active,
+        $company,
+        $username,
+        $now
+    );
+    if (!$stmt->execute()) {
+        $stmt->close();
+        jsonResponse(500, 'Failed to create voucher');
+    }
+    $stmt->close();
+
+    jsonResponse(201, 'Voucher created successfully', [
+        'voucher_id' => $voucher_id
+    ]);
 }
 
 function getAllVoucher($conn, $params, $schema, $company, $page = 1, $limit = 10){
-
     $offset = ($page - 1) * $limit;
 
-    $search = "";
+    $searchSql = '';
+    $types     = 's';
+    $bindVals  = [$company];
+
     if (!empty($params['search'])) {
-        $keyword = mysqli_real_escape_string($conn, $params['search']);
-        $search = " AND (voucher_code LIKE '%$keyword%' OR voucher_name LIKE '%$keyword%')";
+        $kw = '%' . $params['search'] . '%';
+        $searchSql = " AND (voucher_code LIKE ? OR voucher_name LIKE ?)";
+        $types .= 'ss';
+        $bindVals[] = $kw;
+        $bindVals[] = $kw;
     }
 
-    $companyFilter = !empty($company)
-        ? "company_id = '" . mysqli_real_escape_string($conn, $company) . "'"
-        : "1=1";
+    $whereClause = "WHERE company_id = ? $searchSql";
 
-    $count_query = "SELECT COUNT(*) as total FROM {$schema}.voucher WHERE $companyFilter $search";
-    $count_result = mysqli_query($conn, $count_query);
-    $count_data = mysqli_fetch_assoc($count_result);
-    $total_data = (int)$count_data['total'];
+    $countStmt = $conn->prepare("SELECT COUNT(*) as total FROM {$schema}.voucher $whereClause");
+    if (!$countStmt) jsonResponse(500, 'Internal Server Error');
+    $countStmt->bind_param($types, ...$bindVals);
+    $countStmt->execute();
+    $countRes = $countStmt->get_result();
+    $total_data = (int)$countRes->fetch_assoc()['total'];
+    $countStmt->close();
 
-    $query = "SELECT * FROM {$schema}.voucher WHERE $companyFilter $search ORDER BY created_at DESC LIMIT $limit OFFSET $offset";
+    $dataTypes = $types . 'ii';
+    $dataVals  = array_merge($bindVals, [$limit, $offset]);
 
-    $result = mysqli_query($conn, $query);
+    $dataStmt = $conn->prepare("SELECT * FROM {$schema}.voucher $whereClause ORDER BY created_at DESC LIMIT ? OFFSET ?");
+    if (!$dataStmt) jsonResponse(500, 'Internal Server Error');
+    $dataStmt->bind_param($dataTypes, ...$dataVals);
+    $dataStmt->execute();
+    $result = $dataStmt->get_result();
 
     $data = [];
     while ($row = mysqli_fetch_assoc($result)) {
         $data[] = $row;
     }
+    $dataStmt->close();
 
     jsonResponse(200, 'Voucher list retrieved successfully', [
         'data' => $data,
@@ -130,61 +166,72 @@ function getAllVoucher($conn, $params, $schema, $company, $page = 1, $limit = 10
 }
 
 function getDetailVoucher($conn, $schema, $voucher_id, $company){
-
     if (!$voucher_id) {
         jsonResponse(400, 'voucher_id is required');
     }
 
-    $voucher_id = mysqli_real_escape_string($conn, $voucher_id);
+    $stmt = $conn->prepare(
+        "SELECT * FROM {$schema}.voucher WHERE voucher_id = ? AND company_id = ? LIMIT 1"
+    );
+    if (!$stmt) jsonResponse(500, 'Internal Server Error');
+    $stmt->bind_param('ss', $voucher_id, $company);
+    $stmt->execute();
+    $result = $stmt->get_result();
 
-    $companyFilter = !empty($company) ? "AND company_id = '" . mysqli_real_escape_string($conn, $company) . "'" : '';
-    $query = "SELECT * FROM {$schema}.voucher WHERE voucher_id = '$voucher_id' $companyFilter LIMIT 1";
-
-    $result = mysqli_query($conn, $query);
-
-    if (mysqli_num_rows($result) === 0) {
+    if ($result->num_rows === 0) {
+        $stmt->close();
         jsonResponse(404, 'Voucher not found');
     }
 
-    $data = mysqli_fetch_assoc($result);
-
+    $data = $result->fetch_assoc();
+    $stmt->close();
     jsonResponse(200, 'Voucher detail retrieved successfully', $data);
 }
 
 function updateVoucher($conn, $schema, $input, $company){
-
     $voucher_id = $input['voucher_id'] ?? null;
 
     if (!$voucher_id) {
         jsonResponse(400, 'voucher_id is required');
     }
 
-    $voucher_id = mysqli_real_escape_string($conn, $voucher_id);
+    $checkStmt = $conn->prepare(
+        "SELECT * FROM {$schema}.voucher WHERE voucher_id = ? AND company_id = ?"
+    );
+    if (!$checkStmt) jsonResponse(500, 'Internal Server Error');
+    $checkStmt->bind_param('ss', $voucher_id, $company);
+    $checkStmt->execute();
+    $checkRes = $checkStmt->get_result();
 
-    $check_query = "SELECT * FROM {$schema}.voucher WHERE voucher_id = '$voucher_id' AND company_id = '$company'";
-    $check_result = mysqli_query($conn, $check_query);
-
-    if (mysqli_num_rows($check_result) === 0) {
+    if ($checkRes->num_rows === 0) {
+        $checkStmt->close();
         jsonResponse(404, 'Voucher not found');
     }
+    $checkStmt->close();
 
-    $fields = [];
+    $setParts = [];
+    $types    = '';
+    $values   = [];
 
     if (isset($input['voucher_code'])) {
-        $voucher_code = mysqli_real_escape_string($conn, trim($input['voucher_code']));
-        $fields[] = "voucher_code = '$voucher_code'";
+        $setParts[] = "voucher_code = ?";
+        $types .= 's';
+        $values[] = trim($input['voucher_code']);
     }
 
     if (isset($input['voucher_name'])) {
-        $voucher_name = mysqli_real_escape_string($conn, trim($input['voucher_name']));
-        $fields[] = "voucher_name = '$voucher_name'";
+        $setParts[] = "voucher_name = ?";
+        $types .= 's';
+        $values[] = trim($input['voucher_name']);
     }
 
     if (isset($input['discount_type'])) {
         if (!in_array($input['discount_type'], ['nominal','percentage'])) {
             jsonResponse(400, 'Invalid discount_type');
         }
-        $fields[] = "discount_type = '{$input['discount_type']}'";
+        $setParts[] = "discount_type = ?";
+        $types .= 's';
+        $values[] = $input['discount_type'];
     }
 
     if (isset($input['discount_value'])) {
@@ -192,40 +239,54 @@ function updateVoucher($conn, $schema, $input, $company){
         if ($discount_value <= 0) {
             jsonResponse(400, 'discount_value must be greater than 0');
         }
-        $fields[] = "discount_value = $discount_value";
+        $setParts[] = "discount_value = ?";
+        $types .= 'i';
+        $values[] = $discount_value;
     }
 
     if (isset($input['min_transaction'])) {
-        $fields[] = "min_transaction = " . (int)$input['min_transaction'];
+        $setParts[] = "min_transaction = ?";
+        $types .= 'i';
+        $values[] = (int)$input['min_transaction'];
     }
 
     if (array_key_exists('max_discount', $input)) {
-        $fields[] = "max_discount = " . ($input['max_discount'] !== null ? (int)$input['max_discount'] : "NULL");
+        $setParts[] = "max_discount = ?";
+        $types .= 'i';
+        $values[] = $input['max_discount'] !== null ? (int)$input['max_discount'] : null;
     }
 
     if (isset($input['usage_type'])) {
         if (!in_array($input['usage_type'], ['one_time','multi_use'])) {
             jsonResponse(400, 'Invalid usage_type');
         }
-        $fields[] = "usage_type = '{$input['usage_type']}'";
+        $setParts[] = "usage_type = ?";
+        $types .= 's';
+        $values[] = $input['usage_type'];
     }
 
     if (array_key_exists('max_total_usage', $input)) {
-        $fields[] = "max_total_usage = " . ($input['max_total_usage'] !== null ? (int)$input['max_total_usage'] : "NULL");
+        $setParts[] = "max_total_usage = ?";
+        $types .= 'i';
+        $values[] = $input['max_total_usage'] !== null ? (int)$input['max_total_usage'] : null;
     }
 
     if (isset($input['start_date'])) {
         if (!strtotime($input['start_date'])) {
             jsonResponse(400, 'Invalid start_date');
         }
-        $fields[] = "start_date = '{$input['start_date']}'";
+        $setParts[] = "start_date = ?";
+        $types .= 's';
+        $values[] = $input['start_date'];
     }
 
     if (isset($input['end_date'])) {
         if (!strtotime($input['end_date'])) {
             jsonResponse(400, 'Invalid end_date');
         }
-        $fields[] = "end_date = '{$input['end_date']}'";
+        $setParts[] = "end_date = ?";
+        $types .= 's';
+        $values[] = $input['end_date'];
     }
 
     if (isset($input['is_active'])) {
@@ -233,103 +294,93 @@ function updateVoucher($conn, $schema, $input, $company){
         if (!in_array($is_active, [0,1])) {
             jsonResponse(400, 'is_active must be 0 or 1');
         }
-        $fields[] = "is_active = $is_active";
+        $setParts[] = "is_active = ?";
+        $types .= 'i';
+        $values[] = $is_active;
     }
 
-    if (empty($fields)) {
+    if (empty($setParts)) {
         jsonResponse(400, 'No fields provided for update');
     }
 
-    $update_query = "UPDATE {$schema}.voucher SET " . implode(', ', $fields) . " WHERE voucher_id = '$voucher_id' AND company_id = '$company'";
+    $types .= 'ss';
+    $values[] = $voucher_id;
+    $values[] = $company;
 
-    if (mysqli_query($conn, $update_query)) {
-        jsonResponse(200, 'Voucher updated successfully');
-    } else {
-        jsonResponse(500, 'Failed to update voucher: ' . mysqli_error($conn));
+    $setClause = implode(', ', $setParts);
+    $updateSql = "UPDATE {$schema}.voucher SET {$setClause} WHERE voucher_id = ? AND company_id = ?";
+
+    $updateStmt = $conn->prepare($updateSql);
+    if (!$updateStmt) jsonResponse(500, 'Internal Server Error');
+    $updateStmt->bind_param($types, ...$values);
+    if (!$updateStmt->execute()) {
+        $updateStmt->close();
+        jsonResponse(500, 'Failed to update voucher');
     }
+    $updateStmt->close();
+
+    jsonResponse(200, 'Voucher updated successfully');
 }
 
 function deleteVoucher($conn, $schema, $voucher_id, $company){
-
     if (!$voucher_id) {
         jsonResponse(400, 'voucher_id is required');
     }
 
-    $voucher_id = mysqli_real_escape_string($conn, $voucher_id);
+    $checkStmt = $conn->prepare(
+        "SELECT * FROM {$schema}.voucher WHERE voucher_id = ? AND company_id = ?"
+    );
+    if (!$checkStmt) jsonResponse(500, 'Internal Server Error');
+    $checkStmt->bind_param('ss', $voucher_id, $company);
+    $checkStmt->execute();
+    $checkRes = $checkStmt->get_result();
 
-    $check_query = "SELECT * FROM {$schema}.voucher WHERE voucher_id = '$voucher_id' AND company_id = '$company'";
-    $check_result = mysqli_query($conn, $check_query);
-
-    if (mysqli_num_rows($check_result) === 0) {
+    if ($checkRes->num_rows === 0) {
+        $checkStmt->close();
         jsonResponse(404, 'Voucher not found');
     }
+    $checkStmt->close();
 
-    $delete_query = "DELETE FROM {$schema}.voucher WHERE voucher_id = '$voucher_id' AND company_id = '$company'";
-
-    if (mysqli_query($conn, $delete_query)) {
-        jsonResponse(200, 'Voucher deleted successfully');
-    } else {
-        jsonResponse(500, 'Failed to delete voucher: ' . mysqli_error($conn));
+    $deleteStmt = $conn->prepare(
+        "DELETE FROM {$schema}.voucher WHERE voucher_id = ? AND company_id = ?"
+    );
+    if (!$deleteStmt) jsonResponse(500, 'Internal Server Error');
+    $deleteStmt->bind_param('ss', $voucher_id, $company);
+    if (!$deleteStmt->execute()) {
+        $deleteStmt->close();
+        jsonResponse(500, 'Failed to delete voucher');
     }
+    $deleteStmt->close();
+
+    jsonResponse(200, 'Voucher deleted successfully');
 }
 
-use Firebase\JWT\JWT;
-use Firebase\JWT\Key;
-
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-    header("Access-Control-Allow-Origin: *");
-    header("Access-Control-Allow-Methods: POST, GET, OPTIONS, PUT, DELETE");
-    header("Access-Control-Allow-Headers: Origin, X-Requested-With, Content-Type, Accept, Authorization");
     http_response_code(200);
     exit();
 }
 
-$method = $_SERVER['REQUEST_METHOD'];
+$decoded = requireAuth();
+$conn    = DB::conn();
+$schema  = DB_SCHEMA;
+$method  = $_SERVER['REQUEST_METHOD'];
 
-// ── Public: GET (no auth required) ───────────────────────────────────────────
-if ($method === 'GET') {
-    $conn       = DB::conn();
-    $schema     = DB_SCHEMA;
-    $company_id = $_GET['company_id'] ?? null;
-    $voucher_id = $_GET['voucher_id'] ?? null;
-
-    if ($voucher_id) {
-        getDetailVoucher($conn, $schema, $voucher_id, $company_id);
-    } else {
-        $page  = isset($_GET['page'])  ? (int)$_GET['page']  : 1;
-        $limit = isset($_GET['limit']) ? (int)$_GET['limit'] : 10;
-        getAllVoucher($conn, $_GET, $schema, $company_id, $page, $limit);
-    }
-    exit;
-}
-
-// ── Protected: POST, PUT, DELETE (auth required) ──────────────────────────────
-$headers = getallheaders();
-if (!isset($headers['Authorization'])) {
-    $conn = DB::conn();
-    logApiError($conn, [
-        'error_level'     => 'error',
-        'http_status'     => 401,
-        'endpoint'        => '/voucher/voucher.php',
-        'method'          => $method,
-        'error_message'   => 'Authorization header not found',
-        'user_identifier' => null,
-        'company_id'      => null,
-    ]);
-    jsonResponse(401, 'Authorization header not found');
-}
+$token_username = $decoded->username;
+$token_role     = $decoded->role;
+$token_company  = $decoded->company_id;
 
 try {
-    $token = str_replace('Bearer ', '', $headers['Authorization']);
-    $decoded = JWT::decode($token, new Key($_ENV['JWT_SECRET'], 'HS256'));
-
-    $conn           = DB::conn();
-    $schema         = DB_SCHEMA;
-    $token_username = $decoded->username;
-    $token_role     = $decoded->role;
-    $token_company  = $decoded->company_id;
-
     switch ($method) {
+        case 'GET':
+            $voucher_id = $_GET['voucher_id'] ?? null;
+            if ($voucher_id) {
+                getDetailVoucher($conn, $schema, $voucher_id, $token_company);
+            } else {
+                $page  = isset($_GET['page'])  ? (int)$_GET['page']  : 1;
+                $limit = isset($_GET['limit']) ? (int)$_GET['limit'] : 10;
+                getAllVoucher($conn, $_GET, $schema, $token_company, $page, $limit);
+            }
+            break;
         case 'POST':
             $input = json_decode(file_get_contents('php://input'), true);
             createVoucher($conn, $schema, $input, $token_username, $token_company, $token_role);
@@ -355,19 +406,17 @@ try {
             jsonResponse(405, 'Method Not Allowed');
             break;
     }
-
 } catch (Exception $e) {
-    $conn = DB::conn();
     logApiError($conn, [
         'error_level'     => 'error',
         'http_status'     => 500,
         'endpoint'        => '/voucher/voucher.php',
         'method'          => $method,
         'error_message'   => $e->getMessage(),
-        'user_identifier' => $decoded->username ?? null,
-        'company_id'      => $decoded->company_id ?? null,
+        'user_identifier' => null,
+        'company_id'      => null,
     ]);
-    jsonResponse(500, 'Internal Server Error', ['error' => $e->getMessage()]);
+    jsonResponse(500, 'Internal Server Error');
 }
 
 ?>

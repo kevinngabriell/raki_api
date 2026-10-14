@@ -5,63 +5,12 @@ require_once(__DIR__ . '/../vendor/autoload.php');
 require_once(__DIR__ . '/../general.php');
 require_once(__DIR__ . '/../config.php');
 require_once(__DIR__ . '/../log.php');
+require_once(__DIR__ . '/notification.php');
 require_once(__DIR__ . '/email.php');
 
 // Recaps sales created by users with the "Outlet" role, once a day at 18:00 WIB.
 // Outlet-created transactions no longer trigger a notification per-transaction
 // (see transaction/index.php) — this cron sends the daily total instead.
-
-function sendWhatsAppText($chatId, $text, $session = WAHA_SESSION) {
-    $conn = DB::conn();
-
-    $url     = rtrim(WAHA_BASE_URL, '/') . '/api/sendText';
-    $payload = ['chatId' => $chatId, 'text' => $text, 'session' => $session];
-
-    $ch      = curl_init($url);
-    $headers = ['Content-Type: application/json'];
-    if (!empty(WAHA_API_KEY)) {
-        $headers[] = 'X-Api-Key: ' . WAHA_API_KEY;
-    }
-
-    curl_setopt_array($ch, [
-        CURLOPT_POST           => true,
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_HTTPHEADER     => $headers,
-        CURLOPT_POSTFIELDS     => json_encode($payload),
-        CURLOPT_TIMEOUT        => 10,
-    ]);
-
-    $responseBody = curl_exec($ch);
-    $errno        = curl_errno($ch);
-    $error        = curl_error($ch);
-    $httpCode     = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    curl_close($ch);
-
-    if ($errno) {
-        error_log("WAHA CURL error: $error");
-        logApiError($conn, [
-            'error_level'     => 'error',
-            'http_status'     => 500,
-            'endpoint'        => '/notification/outlet_daily_recap.php',
-            'method'          => '',
-            'error_message'   => $error,
-            'user_identifier' => null,
-            'company_id'      => null,
-        ]);
-        return ['success' => false, 'httpCode' => $httpCode, 'error' => $error, 'raw' => $responseBody];
-    }
-
-    return [
-        'success'  => $httpCode >= 200 && $httpCode < 300,
-        'httpCode' => $httpCode,
-        'data'     => json_decode($responseBody, true),
-        'raw'      => $responseBody,
-    ];
-}
-
-function formatRupiah($angka) {
-    return 'Rp ' . number_format((int)$angka, 0, ',', '.');
-}
 
 // --- Determine execution context ---
 $isCli  = php_sapi_name() === 'cli';
@@ -80,6 +29,14 @@ $hour = (int) $now->format('G'); // 0-23
 // --- HTTP-only guards ---
 if ($isHttp) {
     header('Content-Type: application/json');
+
+    $cronSecret = $_ENV['CRON_SECRET'] ?? '';
+    $provided   = (string)($_GET['secret'] ?? '');
+    if ($cronSecret === '' || !hash_equals($cronSecret, $provided)) {
+        http_response_code(403);
+        echo json_encode(['status_code' => 403, 'status_message' => 'Forbidden.']);
+        exit;
+    }
 
     if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
         http_response_code(405);
@@ -120,7 +77,7 @@ $targets = [];
 if ($isHttp && isset($_GET['company_id']) && trim($_GET['company_id']) !== '') {
     $companyId = trim($_GET['company_id']);
 
-    $stmt = $conn->prepare("SELECT company_id, company_name, pic_contact FROM movira_core.app_company WHERE company_id = ?");
+    $stmt = $conn->prepare("SELECT company_id, company_name, pic_contact FROM {$coreSchema}.app_company WHERE company_id = ?");
     if (!$stmt) {
         http_response_code(500);
         echo json_encode(['status_code' => 500, 'status_message' => 'Database error: unable to prepare company query.']);
@@ -144,7 +101,7 @@ if ($isHttp && isset($_GET['company_id']) && trim($_GET['company_id']) !== '') {
     ];
 
 } else {
-    $stmt = $conn->prepare("SELECT company_id, company_name, pic_contact FROM movira_core.app_company WHERE app_id = ?");
+    $stmt = $conn->prepare("SELECT company_id, company_name, pic_contact FROM {$coreSchema}.app_company WHERE app_id = ?");
     if (!$stmt) {
         $msg = 'Database error: unable to prepare company list query.';
         if ($isCli) {
@@ -201,8 +158,8 @@ foreach ($targets as $target) {
     $sqlTotals = "
         SELECT COUNT(*) AS trx_count, SUM(t.total_amount) AS total_amount
         FROM {$schema}.transaction t
-        JOIN movira_core.app_user u ON u.username = t.created_by
-        JOIN movira_core.app_role r ON r.app_role_id = u.app_role_id
+        JOIN {$coreSchema}.app_user u ON u.username = t.created_by
+        JOIN {$coreSchema}.app_role r ON r.app_role_id = u.app_role_id
         WHERE t.company_id = ?
           AND r.role_name = 'Outlet'
           AND DATE(t.transaction_date) = ?
@@ -250,8 +207,8 @@ foreach ($targets as $target) {
         SELECT SUM(td.quantity) AS total_cups
         FROM {$schema}.transaction_detail td
         JOIN {$schema}.transaction t ON t.transaction_id = td.transaction_id
-        JOIN movira_core.app_user u ON u.username = t.created_by
-        JOIN movira_core.app_role r ON r.app_role_id = u.app_role_id
+        JOIN {$coreSchema}.app_user u ON u.username = t.created_by
+        JOIN {$coreSchema}.app_role r ON r.app_role_id = u.app_role_id
         WHERE t.company_id = ?
           AND r.role_name = 'Outlet'
           AND DATE(t.transaction_date) = ?
@@ -291,7 +248,7 @@ foreach ($targets as $target) {
         error_log('Gagal kirim WhatsApp rekap outlet: ' . ($waResult['raw'] ?? ''));
 
         // Fallback: send email to business owner
-        $sqlOwnerEmail = "SELECT u.email FROM movira_core.app_user u JOIN movira_core.app_role r ON r.app_role_id = u.app_role_id WHERE u.company_id = ? AND r.role_name = 'Owner' AND u.email IS NOT NULL AND u.email != '' LIMIT 1";
+        $sqlOwnerEmail = "SELECT u.email FROM {$coreSchema}.app_user u JOIN {$coreSchema}.app_role r ON r.app_role_id = u.app_role_id WHERE u.company_id = ? AND r.role_name = 'Owner' AND u.email IS NOT NULL AND u.email != '' LIMIT 1";
         $stmtOwnerEmail = $conn->prepare($sqlOwnerEmail);
         if ($stmtOwnerEmail) {
             $stmtOwnerEmail->bind_param('s', $companyId);

@@ -6,9 +6,6 @@ require_once '../general.php';
 require_once '../config.php';
 require_once '../log.php';
 
-use Firebase\JWT\JWT;
-use Firebase\JWT\Key;
-
 function calcProfileCompletion(array $user): int {
     $fields = ['first_name', 'phone_number', 'email', 'language'];
     $filled = 0;
@@ -21,33 +18,35 @@ function calcProfileCompletion(array $user): int {
 }
 
 function getMemberProfile($conn, $username) {
-    $username = mysqli_real_escape_string($conn, $username);
+    $coreSchema = MOVIRA_CORE_SCHEMA;
+    $stmt = $conn->prepare("SELECT username, first_name, phone_number, email, language
+              FROM {$coreSchema}.app_user
+              WHERE username = ?
+              LIMIT 1");
 
-    $query = "SELECT username, first_name, phone_number, email, language
-              FROM movira_core.app_user
-              WHERE username = '$username'
-              LIMIT 1";
-
-    $result = mysqli_query($conn, $query);
-
-    if (!$result) {
+    if (!$stmt) {
         logApiError($conn, [
             'error_level'     => 'error',
             'http_status'     => 500,
             'endpoint'        => '/member/profile.php',
             'method'          => 'GET',
-            'error_message'   => mysqli_error($conn),
+            'error_message'   => 'Failed to prepare statement for member profile',
             'user_identifier' => $username,
             'company_id'      => null,
         ]);
-        jsonResponse(500, 'DB error', ['error' => mysqli_error($conn)]);
+        jsonResponse(500, 'Failed to prepare statement');
     }
 
-    if (mysqli_num_rows($result) === 0) {
+    $stmt->bind_param('s', $username);
+    $stmt->execute();
+    $result = $stmt->get_result();
+
+    if ($result->num_rows === 0) {
         jsonResponse(404, 'User not found');
     }
 
-    $user = mysqli_fetch_assoc($result);
+    $user = $result->fetch_assoc();
+    $stmt->close();
 
     jsonResponse(200, 'Member profile', [
         'username'               => $user['username'],
@@ -60,24 +59,13 @@ function getMemberProfile($conn, $username) {
     ]);
 }
 
-$headers = getallheaders();
-if (!isset($headers['Authorization'])) {
-    $conn = DB::conn();
-    logApiError($conn, [
-        'error_level'     => 'error',
-        'http_status'     => 401,
-        'endpoint'        => '/member/profile.php',
-        'method'          => '',
-        'error_message'   => 'Authorization header not found',
-        'user_identifier' => null,
-        'company_id'      => null,
-    ]);
-    jsonResponse(401, 'Authorization header not found');
+if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+    http_response_code(200);
+    exit();
 }
 
 try {
-    $token   = str_replace('Bearer ', '', $headers['Authorization']);
-    $decoded = JWT::decode($token, new Key($_ENV['JWT_SECRET'], 'HS256'));
+    $decoded = requireAuth();
 
     $conn   = DB::conn();
     $method = $_SERVER['REQUEST_METHOD'];
@@ -109,11 +97,11 @@ try {
         'endpoint'        => '/member/profile.php',
         'method'          => '',
         'error_message'   => $e->getMessage(),
-        'user_identifier' => $decoded->username ?? null,
-        'company_id'      => $decoded->company_id ?? null,
+        'user_identifier' => null,
+        'company_id'      => null,
     ]);
 
-    jsonResponse(500, 'Internal Server Error', ['error' => $e->getMessage()]);
+    jsonResponse(500, 'Internal Server Error');
 }
 
 ?>

@@ -5,56 +5,7 @@ require_once(__DIR__ . '/../vendor/autoload.php');
 require_once(__DIR__ . '/../general.php');
 require_once(__DIR__ . '/../config.php');
 require_once(__DIR__ . '/../log.php');
-
-function sendWhatsAppText($chatId, $text, $session = WAHA_SESSION) {
-    $conn = DB::conn();
-
-    $url     = rtrim(WAHA_BASE_URL, '/') . '/api/sendText';
-    $payload = ['chatId' => $chatId, 'text' => $text, 'session' => $session];
-
-    $ch      = curl_init($url);
-    $headers = ['Content-Type: application/json'];
-    if (!empty(WAHA_API_KEY)) {
-        $headers[] = 'X-Api-Key: ' . WAHA_API_KEY;
-    }
-
-    curl_setopt_array($ch, [
-        CURLOPT_POST           => true,
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_HTTPHEADER     => $headers,
-        CURLOPT_POSTFIELDS     => json_encode($payload),
-        CURLOPT_TIMEOUT        => 10,
-    ]);
-
-    $responseBody = curl_exec($ch);
-    $errno        = curl_errno($ch);
-    $error        = curl_error($ch);
-    $httpCode     = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    if ($errno) {
-        error_log("WAHA CURL error: $error");
-        logApiError($conn, [
-            'error_level'     => 'error',
-            'http_status'     => 500,
-            'endpoint'        => '/notification/daily_summary.php',
-            'method'          => '',
-            'error_message'   => $error,
-            'user_identifier' => null,
-            'company_id'      => null,
-        ]);
-        return ['success' => false, 'httpCode' => $httpCode, 'error' => $error, 'raw' => $responseBody];
-    }
-
-    return [
-        'success'  => $httpCode >= 200 && $httpCode < 300,
-        'httpCode' => $httpCode,
-        'data'     => json_decode($responseBody, true),
-        'raw'      => $responseBody,
-    ];
-}
-
-function formatRupiah($angka) {
-    return 'Rp ' . number_format((int)$angka, 0, ',', '.');
-}
+require_once(__DIR__ . '/notification.php');
 
 // --- Determine execution context ---
 $isCli  = php_sapi_name() === 'cli';
@@ -73,6 +24,14 @@ $hour = (int) $now->format('G'); // 0-23
 // --- HTTP-only guards ---
 if ($isHttp) {
     header('Content-Type: application/json');
+
+    $cronSecret = $_ENV['CRON_SECRET'] ?? '';
+    $provided   = (string)($_GET['secret'] ?? '');
+    if ($cronSecret === '' || !hash_equals($cronSecret, $provided)) {
+        http_response_code(403);
+        echo json_encode(['status_code' => 403, 'status_message' => 'Forbidden.']);
+        exit;
+    }
 
     if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
         http_response_code(405);
@@ -111,7 +70,7 @@ $targets = [];
 if ($isHttp && isset($_GET['company_id']) && trim($_GET['company_id']) !== '') {
     $companyId = trim($_GET['company_id']);
 
-    $stmt = $conn->prepare("SELECT company_id, company_name, pic_contact FROM movira_core.app_company WHERE company_id = ?");
+    $stmt = $conn->prepare("SELECT company_id, company_name, pic_contact FROM {$coreSchema}.app_company WHERE company_id = ?");
     if (!$stmt) {
         http_response_code(500);
         echo json_encode(['status_code' => 500, 'status_message' => 'Database error: unable to prepare company query.']);
@@ -135,7 +94,7 @@ if ($isHttp && isset($_GET['company_id']) && trim($_GET['company_id']) !== '') {
     ];
 
 } else {
-    $stmt = $conn->prepare("SELECT company_id, company_name, pic_contact FROM movira_core.app_company WHERE app_id = ?");
+    $stmt = $conn->prepare("SELECT company_id, company_name, pic_contact FROM {$coreSchema}.app_company WHERE app_id = ?");
     if (!$stmt) {
         $msg = 'Database error: unable to prepare company list query.';
         if ($isCli) {
