@@ -36,6 +36,6 @@ jobs:
           pm2 delete raki_api || true
           pm2 start php --name raki_api -- \
             -d upload_max_filesize=12M -d post_max_size=16M \
-            -S 127.0.0.1:8082 -t "$APP_DIR"
+            -S 127.0.0.1:8082 -t "$APP_DIR" "$APP_DIR/router.php"
 
           pm2 save

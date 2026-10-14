@@ -235,7 +235,19 @@ function handle_menu_image_upload(array $file, string $bucket = 'menu'): array {
         $imageKey = $base . '.' . $ok[$mime];
         $thumbKey = $base . '_thumb.webp';
 
-        $imageUrl = $storage->put($imageKey, file_get_contents($file['tmp_name']), $mime);
+        // Store a re-encoded copy: drops EXIF/GPS and any payload appended to the original bytes.
+        $cleanTmp = tempnam(sys_get_temp_dir(), 'raki_clean_');
+        try {
+            reencode_image($file['tmp_name'], $cleanTmp, $size[2]);
+        } catch (Throwable $e) {
+            @unlink($cleanTmp);
+            throw new ApiException('ERR_COMMON_007', 400, 'Image cannot be processed');
+        }
+        try {
+            $imageUrl = $storage->put($imageKey, file_get_contents($cleanTmp), $mime);
+        } finally {
+            @unlink($cleanTmp);
+        }
         try {
             $thumbUrl = $storage->put($thumbKey, file_get_contents($thumbTmp), 'image/webp');
         } catch (Throwable $e) {
@@ -261,6 +273,47 @@ function delete_menu_image_urls(array $urls): void {
         }
     } catch (Throwable $e) {
         error_log('delete_menu_image_urls: ' . $e->getMessage());
+    }
+}
+
+/** Decodes and re-saves an image in its own format, upright, with all metadata stripped. */
+function reencode_image(string $srcPath, string $dstPath, int $type): void {
+    switch ($type) {
+        case IMAGETYPE_JPEG: $img = imagecreatefromjpeg($srcPath); break;
+        case IMAGETYPE_PNG:  $img = imagecreatefrompng($srcPath);  break;
+        case IMAGETYPE_WEBP: $img = function_exists('imagecreatefromwebp') ? imagecreatefromwebp($srcPath) : false; break;
+        default: throw new RuntimeException('Format gambar tidak didukung');
+    }
+    if (!$img) {
+        throw new RuntimeException('Gagal membuka gambar sumber.');
+    }
+
+    // Metadata is dropped, so bake the EXIF orientation into the pixels.
+    if ($type === IMAGETYPE_JPEG && function_exists('exif_read_data')) {
+        try {
+            $orientation = (int)(@exif_read_data($srcPath)['Orientation'] ?? 1);
+        } catch (Throwable $e) {
+            $orientation = 1;
+        }
+        $angle = [3 => 180, 6 => -90, 8 => 90][$orientation] ?? 0;
+        if ($angle !== 0 && ($rotated = imagerotate($img, $angle, 0))) {
+            imagedestroy($img);
+            $img = $rotated;
+        }
+    }
+
+    if ($type === IMAGETYPE_PNG || $type === IMAGETYPE_WEBP) {
+        imagealphablending($img, false);
+        imagesavealpha($img, true);
+    }
+    $ok = match ($type) {
+        IMAGETYPE_JPEG => imagejpeg($img, $dstPath, 90),
+        IMAGETYPE_PNG  => imagepng($img, $dstPath, 6),
+        IMAGETYPE_WEBP => imagewebp($img, $dstPath, 90),
+    };
+    imagedestroy($img);
+    if (!$ok) {
+        throw new RuntimeException('Gagal menyimpan gambar.');
     }
 }
 

@@ -116,13 +116,26 @@ function createRedemption($conn, $schema, $input, $user_id, $company_id, $userna
             ]);
         }
 
-        $stmt = $conn->prepare("INSERT INTO {$schema}.reward_redemption
-                    (redemption_id, reward_id, user_id, company_id, points_used, status, redemption_code, notes, created_at)
-                VALUES
-                    (?, ?, ?, ?, ?, ?, ?, ?, ?)");
-        $stmt->bind_param('ssssissss', $redemption_id, $reward_id, $user_id, $company_id, $point_cost, $status, $redemption_code, $notes, $now);
-        if (!$stmt->execute()) throw new Exception('Failed to create redemption');
-        $stmt->close();
+        // redemption_code has a unique index (migrations/002): on a collision, draw a new code.
+        for ($attempt = 1; ; $attempt++) {
+            $stmt = $conn->prepare("INSERT INTO {$schema}.reward_redemption
+                        (redemption_id, reward_id, user_id, company_id, points_used, status, redemption_code, notes, created_at)
+                    VALUES
+                        (?, ?, ?, ?, ?, ?, ?, ?, ?)");
+            $stmt->bind_param('ssssissss', $redemption_id, $reward_id, $user_id, $company_id, $point_cost, $status, $redemption_code, $notes, $now);
+            try {
+                $inserted = $stmt->execute();
+                $dupCode  = !$inserted && $stmt->errno === 1062;
+            } catch (mysqli_sql_exception $e) {
+                if ($e->getCode() !== 1062) throw $e;
+                $inserted = false;
+                $dupCode  = true;
+            }
+            $stmt->close();
+            if ($inserted) break;
+            if (!$dupCode || $attempt >= 5) throw new Exception('Failed to create redemption');
+            $redemption_code = strtoupper(substr(bin2hex(random_bytes(5)), 0, 8));
+        }
 
         $stmt = $conn->prepare("INSERT INTO {$schema}.member_point_ledger
                     (ledger_id, user_id, company_id, type, points, reference_type, reference_id, notes, created_by, created_at)
