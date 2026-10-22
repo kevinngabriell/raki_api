@@ -7,6 +7,7 @@ require_once '../config.php';
 require_once '../log.php';
 require_once __DIR__ . '/../account/account_rules.php';
 require_once __DIR__ . '/history_lines.php';
+require_once __DIR__ . '/../setoran/lib.php';
 
 function getPosHistory($conn, $schema, $params, $decoded){
     $company_id = trim((string)($params['company_id'] ?? ''));
@@ -20,7 +21,7 @@ function getPosHistory($conn, $schema, $params, $decoded){
     }
 
     $page  = max(1, (int)($params['page'] ?? 1));
-    $limit = min(100, max(1, (int)($params['limit'] ?? 10)));
+    $limit = pageLimit($params['limit'] ?? null);
     $offset = ($page - 1) * $limit;
 
     $where = ['t.company_id = ?'];
@@ -28,9 +29,11 @@ function getPosHistory($conn, $schema, $params, $decoded){
 
     $roleName = accountRoleName($conn, $decoded->role ?? null);
     if (accountIsManagerRole($roleName)) {
+        requireCompanyAccess($conn, $decoded, $company_id);
         $cashier = trim((string)($params['username'] ?? ''));
         if ($cashier !== '') {
-            $where[] = 't.created_by = ?';
+            // A bundle is recorded under the abang it belongs to (created_for), not under the Owner / Mitra who typed it.
+            $where[] = 'COALESCE(t.created_for, t.created_by) = ?';
             $args[]  = $cashier;
         }
     } else {
@@ -74,7 +77,8 @@ function getPosHistory($conn, $schema, $params, $decoded){
     $total = (int)$summaryRow['transaction_count'];
 
     $pageRows = DB::query(
-        "SELECT t.transaction_id, t.transaction_date, t.created_at, t.queue_number, t.total_item, t.total_amount, COALESCE(t.discount_amount, 0) AS discount_amount
+        "SELECT t.transaction_id, t.transaction_date, t.created_at, t.queue_number, t.total_item, t.total_amount, COALESCE(t.discount_amount, 0) AS discount_amount,
+                t.created_by, t.created_for, t.session_id, t.source, t.notes, t.sell_start, t.sell_end
          FROM {$schema}.transaction t WHERE $whereSql
          ORDER BY t.transaction_date DESC, t.created_at DESC
          LIMIT ?, ?",
@@ -125,8 +129,31 @@ function getPosHistory($conn, $schema, $params, $decoded){
             $promoByTrx[$row['transaction_id']] = $row['promo_name'];
         }
 
+        // Who is an abang (older bundles have no `source`), and which sales of each day match the settlement.
+        $abangs = [];
+        $creators = array_values(array_unique(array_column($pageRows, 'created_by')));
+        if ($creators) {
+            $core = MOVIRA_CORE_SCHEMA;
+            $cin = implode(',', array_fill(0, count($creators), '?'));
+            foreach (DB::query("SELECT username FROM {$core}.app_user WHERE app_role_id = '" . ACCESS_ROLE_ABANG . "' AND username IN ($cin)", $creators) as $r) {
+                $abangs[$r['username']] = true;
+            }
+        }
+        $matchedByDay = [];
+        $doneDays = [];
+        foreach (array_unique(array_column($pageRows, 'transaction_date')) as $day) {
+            $matchedByDay[$day] = setoranMatchedTransactions($conn, $schema, $company_id, $day);
+            $stmtDone = $conn->prepare("SELECT done FROM {$schema}.setoran_day WHERE company_id = ? AND setoran_date = ?");
+            $stmtDone->bind_param('ss', $company_id, $day);
+            $stmtDone->execute();
+            $doneDays[$day] = (bool)($stmtDone->get_result()->fetch_row()[0] ?? false);
+            $stmtDone->close();
+        }
+
         foreach ($pageRows as $row) {
             $id = $row['transaction_id'];
+            $isBundle = ($row['source'] ?? null) === 'bundle'
+                || (($row['source'] ?? null) === null && isset($abangs[$row['created_by']]) && $row['session_id'] === null);
             $totalAmount = (int)round((float)$row['total_amount']);
             $discount = (int)$row['discount_amount'];
             $transactions[] = [
@@ -139,6 +166,13 @@ function getPosHistory($conn, $schema, $params, $decoded){
                 'discount_amount'  => $discount,
                 'total_amount'     => $totalAmount,
                 'promo_name'       => $promoByTrx[$id] ?? null,
+                'created_by'       => $row['created_for'] ?? $row['created_by'],
+                'recorded_by'      => $row['created_by'],
+                'source'           => $isBundle ? 'bundle' : 'outlet',
+                'notes'            => $row['notes'],
+                'sell_start'       => $row['sell_start'],
+                'sell_end'         => $row['sell_end'],
+                'setoran_matched'  => $doneDays[$row['transaction_date']] || isset($matchedByDay[$row['transaction_date']][$id]),
                 'lines'            => posHistoryBuildLines($detailByTrx[$id] ?? []),
                 'payments'         => $paymentsByTrx[$id] ?? [],
             ];

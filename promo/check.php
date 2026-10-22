@@ -40,13 +40,19 @@ try {
         jsonResponse(400, 'company_id is required (not found in payload or token).');
     }
 
+    if ($companyId !== ($decoded->company_id ?? null)) {
+        requireCompanyAccess($conn, $decoded, $companyId);
+    }
+
     $parsed = promoParseCartLines($input['items'] ?? null);
     if (isset($parsed['error'])) {
         jsonResponse(400, $parsed['error']);
     }
 
     $roleName = promoResolveRoleName($conn, $decoded->role ?? null);
-    $result = promoEvaluateRequest($conn, $schema, $companyId, $roleName, $input['transaction_date'] ?? null, $parsed['lines']);
+    $channel = in_array($input['channel'] ?? null, ['outlet', 'abang'], true) ? $input['channel'] : null;
+    $result = promoEvaluateRequest($conn, $schema, $companyId, $roleName, $input['transaction_date'] ?? null, $parsed['lines'],
+        ['channel' => $channel, 'allow_past' => promoIsManagerRole($roleName)]);
 
     jsonResponse(200, 'Promo check', $result);
 } catch (Throwable $e) {

@@ -26,6 +26,17 @@ function menuError($conn, $status, $message, $method, $username) {
     jsonResponse($status, $message);
 }
 
+// Optional 0/1 flags of a menu: description is text, the rest are switches.
+const MENU_FLAG_FIELDS = ['sell_outlet', 'sell_abang', 'sugar_ice', 'is_archived'];
+
+function menuFlag($conn, $value, string $field, string $method, $username): int {
+    $flag = filter_var($value, FILTER_VALIDATE_INT, ['options' => ['min_range' => 0, 'max_range' => 1]]);
+    if ($flag === false) {
+        menuError($conn, 400, "$field must be 0 or 1", $method, $username);
+    }
+    return $flag;
+}
+
 function menuCategoryExists($conn, $schema, $category_id) {
     $stmt = $conn->prepare("SELECT category_id FROM {$schema}.category_menu WHERE category_id = ?");
     if (!$stmt) {
@@ -85,17 +96,33 @@ function createMenu($conn, $schema, $input, $username) {
     }
 
     $menuID = "menu" . uniqid();
+    $description = isset($input['description']) && trim((string)$input['description']) !== '' ? trim((string)$input['description']) : null;
+    $flags = ['sell_outlet' => 1, 'sell_abang' => 1, 'sugar_ice' => null, 'is_archived' => 0];
+    foreach (MENU_FLAG_FIELDS as $f) {
+        if (isset($input[$f]) && $input[$f] !== '') {
+            $flags[$f] = menuFlag($conn, $input[$f], $f, 'POST', $username);
+        }
+    }
+    if ($flags['sugar_ice'] === null) {
+        // Default: sugar & ice for everything except the Add-on / Topping category.
+        $stmtCat = $conn->prepare("SELECT category_name FROM {$schema}.category_menu WHERE category_id = ?");
+        $stmtCat->bind_param('s', $category_id);
+        $stmtCat->execute();
+        $catName = (string)($stmtCat->get_result()->fetch_row()[0] ?? '');
+        $stmtCat->close();
+        $flags['sugar_ice'] = preg_match('/^(topping|add-?on)$/i', trim($catName)) ? 0 : 1;
+    }
 
     [$image_url, $thumb_url] = menuImageUpload();
 
     // mysqli throws on failure in PHP 8.1+, so prepare/bind/execute all sit inside the cleanup.
     $stmt = null;
     try {
-        $stmt = $conn->prepare("INSERT INTO {$schema}.menu (menu_id, menu_name, category_id, price, image_url, thumb_url, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)");
+        $stmt = $conn->prepare("INSERT INTO {$schema}.menu (menu_id, menu_name, category_id, price, image_url, thumb_url, created_by, description, sell_outlet, sell_abang, sugar_ice, is_archived) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
         if (!$stmt) {
             throw new RuntimeException('Database query error');
         }
-        $stmt->bind_param('sssdsss', $menuID, $menu_name, $category_id, $price_val, $image_url, $thumb_url, $username);
+        $stmt->bind_param('sssdssssiiii', $menuID, $menu_name, $category_id, $price_val, $image_url, $thumb_url, $username, $description, $flags['sell_outlet'], $flags['sell_abang'], $flags['sugar_ice'], $flags['is_archived']);
         $saved = $stmt->execute();
     } catch (Throwable $e) {
         if ($stmt) $stmt->close();
@@ -117,12 +144,24 @@ function createMenu($conn, $schema, $input, $username) {
     ]);
 }
 
-function getAllMenu($conn, $schema, $params, $page = 1, $limit = 50, $showAll = false) {
+// What a list shows: everything for the dashboard (show_all), otherwise only menus the till may sell. With
+// channel=outlet|abang the menus not sold on that POS are hidden too.
+function menuVisibleFilter(bool $showAll, ?string $channel): string {
+    if ($showAll) {
+        return '';
+    }
+    $f = 'ME.is_active = 1 AND ME.is_archived = 0 AND ';
+    if ($channel === 'outlet') $f .= 'ME.sell_outlet = 1 AND ';
+    if ($channel === 'abang') $f .= 'ME.sell_abang = 1 AND ';
+    return $f;
+}
+
+function getAllMenu($conn, $schema, $params, $page = 1, $limit = 50, $showAll = false, $channel = null) {
     $page = max(1, (int)$page);
-    $limit = min(200, max(1, (int)$limit));
+    $limit = pageLimit($limit);
     $offset = ($page - 1) * $limit;
     $search = '%' . ($params ?? '') . '%';
-    $activeFilter = $showAll ? '' : 'ME.is_active = 1 AND ';
+    $activeFilter = menuVisibleFilter($showAll, $channel);
 
     $stmt = $conn->prepare("SELECT COUNT(*) as total FROM {$schema}.menu ME WHERE {$activeFilter}ME.menu_name LIKE ?");
     if (!$stmt) {
@@ -135,11 +174,12 @@ function getAllMenu($conn, $schema, $params, $page = 1, $limit = 50, $showAll = 
     $total = (int)$totalRow['total'];
     $stmt->close();
 
-    $query = "SELECT ME.menu_id, ME.menu_name, ME.price, ME.category_id, CM.category_name, ME.image_url, ME.thumb_url, ME.is_active
+    $query = "SELECT ME.menu_id, ME.menu_name, ME.price, ME.category_id, CM.category_name, ME.image_url, ME.thumb_url, ME.is_active,
+                     ME.description, ME.sell_outlet, ME.sell_abang, ME.sugar_ice, ME.is_archived
               FROM {$schema}.menu ME
               LEFT JOIN {$schema}.category_menu CM ON ME.category_id = CM.category_id
               WHERE {$activeFilter}ME.menu_name LIKE ?
-              ORDER BY ME.created_at, ME.menu_id
+              ORDER BY COALESCE(CM.sort_order, 1000000), ME.created_at, ME.menu_id
               LIMIT ? OFFSET ?";
     $stmt = $conn->prepare($query);
     if (!$stmt) {
@@ -168,9 +208,9 @@ function getAllMenu($conn, $schema, $params, $page = 1, $limit = 50, $showAll = 
     }
 }
 
-function getDetailMenu($conn, $schema, $menu_id, $showAll = false) {
-    $activeFilter = $showAll ? '' : 'ME.is_active = 1 AND ';
-    $stmt = $conn->prepare("SELECT ME.menu_id, ME.menu_name, ME.price, ME.category_id, CM.category_name, ME.image_url, ME.thumb_url, ME.company_id, ME.is_active, ME.created_at, ME.created_by, ME.updated_at, ME.updated_by FROM {$schema}.menu ME LEFT JOIN {$schema}.category_menu CM ON ME.category_id = CM.category_id WHERE {$activeFilter}ME.menu_id = ?");
+function getDetailMenu($conn, $schema, $menu_id, $showAll = false, $channel = null) {
+    $activeFilter = menuVisibleFilter($showAll, $channel);
+    $stmt = $conn->prepare("SELECT ME.menu_id, ME.menu_name, ME.price, ME.category_id, CM.category_name, ME.image_url, ME.thumb_url, ME.company_id, ME.is_active, ME.description, ME.sell_outlet, ME.sell_abang, ME.sugar_ice, ME.is_archived, ME.created_at, ME.created_by, ME.updated_at, ME.updated_by FROM {$schema}.menu ME LEFT JOIN {$schema}.category_menu CM ON ME.category_id = CM.category_id WHERE {$activeFilter}ME.menu_id = ?");
     if (!$stmt) {
         jsonResponse(500, 'Database query error');
     }
@@ -249,6 +289,19 @@ function updateMenu($conn, $schema, $input, $username) {
         $types .= 'd';
         $values[] = (float)$input['price'];
     }
+    foreach (MENU_FLAG_FIELDS as $f) {
+        if (isset($input[$f]) && $input[$f] !== '') {
+            $updates[] = "$f = ?";
+            $types .= 'i';
+            $values[] = menuFlag($conn, $input[$f], $f, 'PUT', $username);
+        }
+    }
+    if (array_key_exists('description', $input)) {
+        $d = trim((string)($input['description'] ?? ''));
+        $updates[] = "description = ?";
+        $types .= 's';
+        $values[] = $d === '' ? null : $d;
+    }
     if (isset($input['is_active'])) {
         $flag = filter_var($input['is_active'], FILTER_VALIDATE_INT, ['options' => ['min_range' => 0, 'max_range' => 1]]);
         if ($flag === false) {
@@ -267,6 +320,12 @@ function updateMenu($conn, $schema, $input, $username) {
         $updates[] = "thumb_url = ?";
         $types .= 's';
         $values[] = $thumb_url;
+    }
+
+    $removeImage = $image_url === null && filter_var($input['remove_image'] ?? false, FILTER_VALIDATE_BOOLEAN);
+    if ($removeImage) {
+        $updates[] = "image_url = NULL";
+        $updates[] = "thumb_url = NULL";
     }
 
     if (empty($updates)) {
@@ -304,7 +363,7 @@ function updateMenu($conn, $schema, $input, $username) {
         menuError($conn, 500, 'Failed to update menu', 'PUT', $username);
     }
 
-    if ($image_url !== null) {
+    if ($image_url !== null || $removeImage) {
         delete_menu_image_urls([$existing['image_url'], $existing['thumb_url']]);
     }
 
@@ -327,6 +386,11 @@ function deleteMenu($conn, $schema, $menu_id, $username) {
 
     if (!$existing) {
         menuError($conn, 404, 'Menu is not registered in systems', 'DELETE', $username);
+    }
+
+    $sales = referenceCount($conn, "SELECT COUNT(DISTINCT transaction_id) FROM {$schema}.transaction_detail WHERE menu_id = ?", $menu_id);
+    if ($sales > 0) {
+        menuError($conn, 409, "Menu ini ada di $sales transaksi. Arsipkan saja agar riwayat tetap utuh.", 'DELETE', $username);
     }
 
     $stmt = $conn->prepare("DELETE FROM {$schema}.menu WHERE menu_id = ?");
@@ -388,10 +452,11 @@ try {
             $page = $_GET['page'] ?? 1;
             $limit = $_GET['limit'] ?? 50;
             $menu_id = $_GET['menu_id'] ?? null;
+            $channel = in_array($_GET['channel'] ?? null, ['outlet', 'abang'], true) ? $_GET['channel'] : null;
             if ($menu_id != null) {
-                getDetailMenu($conn, $schema, $menu_id, $showAll);
+                getDetailMenu($conn, $schema, $menu_id, $showAll, $channel);
             } else {
-                getAllMenu($conn, $schema, $params, $page, $limit, $showAll);
+                getAllMenu($conn, $schema, $params, $page, $limit, $showAll, $channel);
             }
             break;
         case 'PUT':

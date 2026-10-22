@@ -22,7 +22,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
  */
 function getDriverStatus($conn, $schema, $company_id) {
     $coreSchema = MOVIRA_CORE_SCHEMA;
-    $stmtRoster = $conn->prepare("SELECT username, first_name, phone_number FROM {$coreSchema}.app_user WHERE company_id = ? AND app_role_id = 'app_role6902bc0cbb991' AND account_status = 'verified' ORDER BY first_name ASC, username ASC");
+    $stmtRoster = $conn->prepare("SELECT username, first_name, last_name, phone_number, account_status, updated_at FROM {$coreSchema}.app_user WHERE company_id = ? AND app_role_id = 'app_role6902bc0cbb991' AND account_status NOT IN ('suspended', 'disabled', 'rejected') ORDER BY first_name ASC, username ASC");
 
     if (!$stmtRoster) {
         logApiError($conn, [
@@ -94,15 +94,19 @@ function getDriverStatus($conn, $schema, $company_id) {
 
     foreach ($drivers as $driver) {
         $session  = $sessionsByUser[$driver['username']] ?? null;
-        $isOnline = $session && $session['status'] === 'active';
+        $isOnline = $session && $session['status'] === 'active' && !accountIsNonaktif($driver['account_status']);
 
         if ($isOnline) {
             $online_count++;
         }
 
+        $nonaktif = accountIsNonaktif($driver['account_status']);
         $result[] = [
             'username'      => $driver['username'],
             'first_name'    => $driver['first_name'],
+            'full_name'     => trim(($driver['first_name'] ?? '') . ' ' . ($driver['last_name'] ?? '')) ?: $driver['username'],
+            'account_status' => $nonaktif ? 'suspended' : 'active',
+            'deactivated_at' => $nonaktif ? $driver['updated_at'] : null,
             'phone_number'  => $driver['phone_number'] ?? null,
             'status'        => $isOnline ? 'online' : 'offline',
             'session_id'    => $session['session_id'] ?? null,
@@ -150,6 +154,7 @@ try {
                 jsonResponse(400, 'company_id is required');
             }
 
+            requireCompanyAccess($conn, $decoded, $company_id);
             getDriverStatus($conn, $schema, $company_id);
             break;
 

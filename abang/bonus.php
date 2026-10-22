@@ -127,11 +127,17 @@ function getAllDriverBonus($conn, $schema, $company_id, $start = null, $end = nu
     $weekPeriods = getBonusWeekPeriods($start, $end);
 
     // Prepare the weekly transaction query once (reused for each week)
-    $stmtTrx = $conn->prepare("SELECT created_by, COALESCE(SUM(total_item), 0) as total_item
-             FROM {$schema}.transaction
-             WHERE company_id = ?
-             AND DATE(transaction_date) BETWEEN ? AND ?
-             GROUP BY created_by");
+    // Cups only: add-ons (Topping / Add-on category) do not count, a package counts each menu inside it, and a
+    // bundle counts for the abang it was recorded for (created_for), not for the Owner / Mitra who typed it.
+    $stmtTrx = $conn->prepare("SELECT COALESCE(t.created_for, t.created_by) AS created_by, COALESCE(SUM(td.quantity), 0) AS total_item
+             FROM {$schema}.transaction t
+             JOIN {$schema}.transaction_detail td ON td.transaction_id = t.transaction_id
+             LEFT JOIN {$schema}.menu m ON m.menu_id = td.menu_id
+             LEFT JOIN {$schema}.category_menu c ON c.category_id = m.category_id
+             WHERE t.company_id = ?
+             AND DATE(t.transaction_date) BETWEEN ? AND ?
+             AND COALESCE(c.category_name, '') NOT REGEXP '^(topping|add-?on)$'
+             GROUP BY COALESCE(t.created_for, t.created_by)");
 
     if (!$stmtTrx) {
         logApiError($conn, [
@@ -245,6 +251,7 @@ try {
             $start      = $_GET['start']      ?? null;
             $end        = $_GET['end']        ?? null;
             $company_id = $_GET['company_id'] ?? $company_id;
+            requireCompanyAccess($conn, $decoded, $company_id);
             getAllDriverBonus($conn, $schema, $company_id, $start, $end);
             break;
 

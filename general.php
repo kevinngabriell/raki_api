@@ -5,6 +5,7 @@ require_once __DIR__ . '/core/ApiException.php';
 require_once __DIR__ . '/core/Response.php';
 require_once __DIR__ . '/core/RequestLogger.php';
 require_once __DIR__ . '/core/ObjectStorage.php';
+require_once __DIR__ . '/core/Access.php';
 
 $isCli = php_sapi_name() === 'cli';
 
@@ -58,6 +59,14 @@ if (!$isCli) {
     RequestLogger::init();
 } else {
     RequestLogger::init('cli');
+}
+
+// Every list endpoint pages with at most this many rows per call (performance); a bigger ?limit is clamped, not refused.
+const MAX_PAGE_LIMIT = 15;
+
+function pageLimit($value, int $default = 10): int {
+    $n = (int)$value;
+    return min(MAX_PAGE_LIMIT, $n >= 1 ? $n : min($default, MAX_PAGE_LIMIT));
 }
 
 function jsonResponse($code, $message, $data = []): never
@@ -425,10 +434,38 @@ function requireAuth(): object {
             'company_id' => $decoded->company_id ?? null,
             'app_id'     => $decoded->app_id ?? null,
         ]);
-
-        return $decoded;
     } catch (Exception $e) {
         Response::error('ERR_AUTH_003', 'Token tidak valid atau sudah kedaluwarsa', 401);
+    }
+
+    requireActiveAccount($decoded);
+    return $decoded;
+}
+
+/**
+ * A user who was set to nonaktif while logged in loses the session on the next request:
+ * 401 with details.reason = "inactive" (the apps clear the token and return to Login).
+ */
+function requireActiveAccount(object $decoded): void {
+    $username = (string)($decoded->username ?? '');
+    if ($username === '' || !class_exists('DB')) {
+        return;
+    }
+    require_once __DIR__ . '/account/account_rules.php';
+
+    $coreSchema = $_ENV['MOVIRA_CORE_SCHEMA'] ?? '';
+    $appId = ACCOUNT_RAKI_APP_ID;
+    $stmt = DB::conn()->prepare("SELECT account_status FROM {$coreSchema}.app_user WHERE username = ? AND app_id = ? LIMIT 1");
+    if (!$stmt) {
+        return;
+    }
+    $stmt->bind_param('ss', $username, $appId);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+
+    if ($row && accountIsNonaktif($row['account_status'] ?? null)) {
+        Response::error('ERR_AUTH_002', 'Akun kamu nonaktif. Hubungi admin RAKI.', 401, ['reason' => 'inactive']);
     }
 }
 

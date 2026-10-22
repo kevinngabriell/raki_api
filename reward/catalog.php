@@ -10,7 +10,7 @@ function getCatalog($conn, $schema, $company_id, $params) {
     $today = date('Y-m-d');
 
     $page   = isset($params['page'])  ? max(1, (int)$params['page'])  : 1;
-    $limit  = isset($params['limit']) ? max(1, (int)$params['limit']) : 10;
+    $limit  = pageLimit($params['limit'] ?? null);
     $offset = ($page - 1) * $limit;
 
     $searchSql = '';

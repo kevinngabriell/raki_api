@@ -72,6 +72,7 @@ function createSupplier($conn, $schema, $input, $token_username, $company_id){
 }
 
 function getAllSupplier($conn, $schema, $params, $company_id, $page = 1, $limit = 10){
+    $limit = pageLimit($limit);
     $offset = ($page - 1) * $limit;
     $search = '%' . ($params ?? '') . '%';
 

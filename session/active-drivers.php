@@ -126,7 +126,11 @@ $method = $_SERVER['REQUEST_METHOD'];
 
 switch ($method) {
     case 'GET':
-        $company_id = $decoded->company_id ?? null;
+        // An Owner may look at any of their outlets; everyone else gets the company in the token.
+        $company_id = $_GET['company_id'] ?? ($decoded->company_id ?? null);
+        if ($company_id !== ($decoded->company_id ?? null)) {
+            requireCompanyAccess($conn, $decoded, $company_id);
+        }
         checkActiveDriverSpesific($conn, $schema, $company_id, $token_username);
         break;
     default:

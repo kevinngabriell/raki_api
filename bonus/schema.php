@@ -89,6 +89,7 @@ function createBonusSchema($conn, $schema, $input, $username, $company_id){
 }
 
 function getAllBonusSchema($conn, $schema, $params, $company_id, $page = 1, $limit = 10){
+    $limit = pageLimit($limit);
     $offset = ($page - 1) * $limit;
     $search = '%' . ($params ?? '') . '%';
 
@@ -306,9 +307,21 @@ $token_company = $decoded->company_id;
 $method = $_SERVER['REQUEST_METHOD'];
 
 try {
+    // The outlet a request is about: ?company_id / body company_id, else the token's own. An Owner may pick any
+    // of their outlets, a Mitra only their own; only Owner / Mitra may change a scheme.
+    $body = in_array($method, ['POST', 'PUT'], true) ? (json_decode(file_get_contents('php://input'), true) ?? []) : [];
+    $target = $_GET['company_id'] ?? ($body['company_id'] ?? $token_company);
+    if ($target !== $token_company) {
+        requireCompanyAccess($conn, $decoded, $target);
+    }
+    if ($method !== 'GET') {
+        requireManager($decoded);
+    }
+    $token_company = $target;
+
     switch($method){
         case 'POST':
-            $input = json_decode(file_get_contents('php://input'), true);
+            $input = $body;
             createBonusSchema($conn, $schema, $input, $token_username, $token_company);
             break;
         case 'GET':
@@ -323,7 +336,7 @@ try {
             }
             break;
         case 'PUT':
-            $input = json_decode(file_get_contents('php://input'), true);
+            $input = $body;
             updateBonusSchema($conn, $schema, $input, $token_username, $token_company);
             break;
         case 'DELETE':

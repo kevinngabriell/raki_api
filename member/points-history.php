@@ -37,7 +37,7 @@ function getPointsHistory($conn, $schema, $username, $company_id, array $params)
 
     // 2. Pagination
     $page   = isset($params['page'])  ? max(1, (int)$params['page'])  : 1;
-    $limit  = isset($params['limit']) ? min(100, max(1, (int)$params['limit'])) : 20;
+    $limit  = pageLimit($params['limit'] ?? null, 15);
     $offset = ($page - 1) * $limit;
     $filterType = !empty($params['type']) ? $params['type'] : null;
 

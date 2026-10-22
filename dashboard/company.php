@@ -7,7 +7,7 @@ require_once '../config.php';
 require_once '../log.php';
 
 function getAllCompany($conn){
-    $stmt = $conn->prepare("SELECT company_id, company_name FROM app_company WHERE app_id = '06660e87-37e7-491b-92c3-c772130eb57c' AND company_id != 'company691b31b41ea7b' AND status = 'active'");
+    $stmt = $conn->prepare("SELECT company_id, company_name, EXISTS (SELECT 1 FROM app_user u WHERE u.company_id = app_company.company_id AND u.app_role_id = '" . ACCESS_ROLE_MITRA . "') AS is_mitra FROM app_company WHERE app_id = '06660e87-37e7-491b-92c3-c772130eb57c' AND company_id != 'company691b31b41ea7b' AND status = 'active'");
 
     if (!$stmt) {
         logApiError($conn, [
@@ -26,7 +26,7 @@ function getAllCompany($conn){
     $result = $stmt->get_result();
 
     if ($result && $result->num_rows > 0) {
-        $data = $result->fetch_all(MYSQLI_ASSOC);
+        $data = array_map(fn($r) => ['is_mitra' => (bool)$r['is_mitra']] + $r, $result->fetch_all(MYSQLI_ASSOC));
         $stmt->close();
         jsonResponse(200, 'Company found', ['data' => $data]);
     } else {

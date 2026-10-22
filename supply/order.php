@@ -6,6 +6,49 @@ require_once '../general.php';
 require_once '../config.php';
 require_once '../log.php';
 require_once '../notification/notification.php';
+require_once '../notification/feed.php';
+
+// Supply order helpers -----------------------------------------------------------------------------
+
+const SUPPLY_NEXT_STATUS = [
+    'pending'    => ['approved', 'rejected'],
+    'approved'   => ['processing', 'cancelled'],
+    'processing' => ['shipped', 'cancelled'],
+    'shipped'    => ['completed'],
+];
+
+/** Pure: may `$actor` move an order from `$from` to `$to`? $actor is 'pusat' or 'outlet'. Returns an error message or null. */
+function supplyTransitionError(string $from, string $to, string $actor): ?string {
+    if (!in_array($to, SUPPLY_NEXT_STATUS[$from] ?? [], true)) {
+        return "Status order tidak bisa berubah dari $from ke $to";
+    }
+    if ($to !== 'completed' && $actor !== 'pusat') {
+        return 'Hanya pusat yang bisa mengubah status ini';
+    }
+    return null;
+}
+
+/** payments + bill of orders: order_id => ['payments' => [...], 'paid' => int]. */
+function supplyPaymentsFor(mysqli $conn, string $schema, array $orderIds): array {
+    if (!$orderIds) return [];
+    [$in, $types] = accessInList($orderIds);
+    $stmt = $conn->prepare("SELECT supply_order_id, amount, paid_on, method, recorded_by, proof_url FROM {$schema}.supply_payment WHERE supply_order_id IN ($in) ORDER BY paid_on, created_at");
+    $stmt->bind_param($types, ...$orderIds);
+    $stmt->execute();
+    $out = [];
+    foreach ($stmt->get_result() as $r) {
+        $out[$r['supply_order_id']]['payments'][] = ['amount' => (int)$r['amount'], 'paid_on' => $r['paid_on'], 'method' => $r['method'], 'recorded_by' => $r['recorded_by'], 'proof_url' => $r['proof_url']];
+        $out[$r['supply_order_id']]['paid'] = ($out[$r['supply_order_id']]['paid'] ?? 0) + (int)$r['amount'];
+    }
+    $stmt->close();
+    return $out;
+}
+
+/** Companies of the caller that may see an order (as the ordering outlet or as pusat). */
+function supplyOrderVisible(mysqli $conn, object $decoded, array $order): bool {
+    $mine = accessCompanyIds($conn, $decoded);
+    return in_array($order['from_company_id'], $mine, true) || in_array($order['to_company_id'], $mine, true);
+}
 
 function createOrderTransaction($conn, $schema, $input, $username){
     $coreSchema = MOVIRA_CORE_SCHEMA;
@@ -22,6 +65,9 @@ function createOrderTransaction($conn, $schema, $input, $username){
 
     $from_company_id = $input['from_company_id'];
     $to_company_id   = $input['to_company_id'];
+    if (!in_array($from_company_id, accessCompanyIds($conn, $GLOBALS['decoded']), true)) {
+        jsonResponse(403, 'Kamu tidak bisa memesan atas nama outlet ini');
+    }
     $notes           = isset($input['notes']) ? $input['notes'] : null;
     $now             = getCurrentDateTimeJakarta();
 
@@ -49,11 +95,28 @@ function createOrderTransaction($conn, $schema, $input, $username){
             jsonResponse(400, "Invalid unit_price at index $idx. Must be numeric and >= 0.");
         }
 
+        // The price is fixed at order time from the catalog (H2); a bahan that is nonaktif cannot be ordered.
+        $stmtIng = $conn->prepare("SELECT price, is_active FROM {$schema}.ingredient WHERE ingredient_id = ?");
+        $stmtIng->bind_param('s', $ingredient_id);
+        $stmtIng->execute();
+        $ing = $stmtIng->get_result()->fetch_assoc();
+        $stmtIng->close();
+        if (!$ing) {
+            jsonResponse(404, "Bahan tidak ditemukan (index $idx)");
+        }
+        if ((int)$ing['is_active'] !== 1) {
+            jsonResponse(400, "Bahan nonaktif tidak bisa dipesan (index $idx)");
+        }
+
         $prepared_items[] = [
             'ingredient_id' => $ingredient_id,
             'qty'           => (float)$qty,
-            'unit_price'    => (float)$unit_price,
+            'unit_price'    => $ing['price'] !== null ? (float)$ing['price'] : (float)$unit_price,
         ];
+    }
+    $total_amount = 0.0;
+    foreach ($prepared_items as $pi) {
+        $total_amount += $pi['qty'] * $pi['unit_price'];
     }
 
     $generateId = function ($prefix = '') {
@@ -114,7 +177,7 @@ function createOrderTransaction($conn, $schema, $input, $username){
             }
 
             $stmtDetail->bind_param(
-                'ssssdss',
+                'sssddsss',
                 $detail_id,
                 $supply_order_id,
                 $item['ingredient_id'],
@@ -138,6 +201,8 @@ function createOrderTransaction($conn, $schema, $input, $username){
         }
 
         mysqli_commit($conn);
+
+        notificationCreate($conn, $schema, $to_company_id, 'supply_order', 'Order supply baru', "Order {$order_code} masuk dari outlet.", 'supply_order', $supply_order_id, $username);
 
         $ownerPhone      = '';
         $fromCompanyName = '';
@@ -205,7 +270,7 @@ function createOrderTransaction($conn, $schema, $input, $username){
 
 function getSupplyOrderDetail($conn, $schema, $order_id){
     $coreSchema = MOVIRA_CORE_SCHEMA;
-    $stmt = $conn->prepare("SELECT supply_order_id, order_code, from_company_id, AC.company_name, to_company_id, SO.status, notes, requested_at, approved_at, completed_at, created_by, updated_by, SO.created_at, SO.updated_at, total_amount
+    $stmt = $conn->prepare("SELECT supply_order_id, order_code, from_company_id, AC.company_name, AC.company_name AS from_company_name, to_company_id, SO.status, notes, requested_at, approved_at, processing_at, shipped_at, completed_at, rejected_at, cancelled_at, reason, shipping_cost, shipping_awb, shipping, created_by, updated_by, SO.created_at, SO.updated_at, total_amount
         FROM {$schema}.supply_order SO
         LEFT JOIN {$coreSchema}.app_company AC ON SO.from_company_id = AC.company_id
         WHERE supply_order_id = ?");
@@ -219,11 +284,20 @@ function getSupplyOrderDetail($conn, $schema, $order_id){
     }
     $order = $orderRes->fetch_assoc();
     $stmt->close();
+    if (!supplyOrderVisible($conn, $GLOBALS['decoded'], $order)) {
+        jsonResponse(403, 'Kamu tidak punya akses ke order ini');
+    }
+    $order['is_mitra'] = accessCompanyIsMitra($conn, $order['from_company_id']);
+    $pay = supplyPaymentsFor($conn, $schema, [$order_id])[$order_id] ?? ['payments' => [], 'paid' => 0];
+    $order['payments'] = $pay['payments'];
+    $order['paid_amount'] = $pay['paid'];
+    $order['bill_amount'] = (int)$order['total_amount'] + (int)($order['shipping_cost'] ?? 0);
 
-    $stmtDetail = $conn->prepare("SELECT I.ingredient_id, I.ingredient_name, IC.category_name, qty, unit_price, subtotal
+    $stmtDetail = $conn->prepare("SELECT I.ingredient_id, I.ingredient_name, IC.category_name, UOM.uom_name, qty, unit_price, subtotal
         FROM {$schema}.supply_order_detail SOD
         LEFT JOIN {$schema}.ingredient I ON SOD.ingredient_id = I.ingredient_id
         LEFT JOIN {$schema}.ingredient_category IC ON I.ingredient_category = IC.category_id
+        LEFT JOIN {$schema}.unit_of_measurement UOM ON I.uom = UOM.uom_id
         WHERE supply_order_id = ?");
     $stmtDetail->bind_param('s', $order_id);
     $stmtDetail->execute();
@@ -244,6 +318,7 @@ function getSupplyOrderDetail($conn, $schema, $order_id){
 }
 
 function getSupplyOrders($conn, $schema, $page = 1, $limit = 10){
+    $limit = pageLimit($limit);
     $coreSchema = MOVIRA_CORE_SCHEMA;
     $excludedCompanyId = 'company691b31b41ea7b';
 
@@ -273,6 +348,13 @@ function getSupplyOrders($conn, $schema, $page = 1, $limit = 10){
         $params[] = $_GET['status'];
     }
 
+    // Only orders the caller is a party to (as the ordering outlet or as pusat).
+    $mine = accessCompanyIds($conn, $GLOBALS['decoded']) ?: ['-'];
+    [$mineIn, $mineTypes] = accessInList($mine);
+    $conditions[] = "(SO.from_company_id IN ($mineIn) OR SO.to_company_id IN ($mineIn))";
+    $types .= $mineTypes . $mineTypes;
+    $params = array_merge($params, $mine, $mine);
+
     $where = '';
     if (!empty($conditions)) {
         $where = 'WHERE ' . implode(' AND ', $conditions);
@@ -292,9 +374,12 @@ function getSupplyOrders($conn, $schema, $page = 1, $limit = 10){
     $total = $totalRow['total'];
     $countStmt->close();
 
-    $dataSql = "SELECT supply_order_id, order_code, from_company_id, AC.company_name, to_company_id, SO.status, notes, requested_at, approved_at, completed_at, created_by, updated_by, SO.created_at, SO.updated_at, total_amount
+    $dataSql = "SELECT supply_order_id, order_code, from_company_id, AC.company_name, FC.company_name AS from_company_name, to_company_id, SO.status, notes, requested_at, approved_at, processing_at, shipped_at, completed_at, rejected_at, cancelled_at, reason, shipping_cost, shipping_awb, shipping, created_by, updated_by, SO.created_at, SO.updated_at, total_amount,
+            (SELECT COUNT(*) FROM {$schema}.supply_order_detail D WHERE D.supply_order_id = SO.supply_order_id) AS item_count,
+            EXISTS (SELECT 1 FROM {$coreSchema}.app_user MU WHERE MU.company_id = SO.from_company_id AND MU.app_role_id = '" . ACCESS_ROLE_MITRA . "') AS is_mitra
         FROM {$schema}.supply_order SO
         LEFT JOIN {$coreSchema}.app_company AC ON SO.to_company_id = AC.company_id
+        LEFT JOIN {$coreSchema}.app_company FC ON SO.from_company_id = FC.company_id
         $where
         ORDER BY requested_at DESC, created_at DESC LIMIT ? OFFSET ?";
 
@@ -311,6 +396,16 @@ function getSupplyOrders($conn, $schema, $page = 1, $limit = 10){
         $rows[] = $row;
     }
     $dataStmt->close();
+
+    $pay = supplyPaymentsFor($conn, $schema, array_column($rows, 'supply_order_id'));
+    foreach ($rows as &$row) {
+        $row['is_mitra'] = (bool)$row['is_mitra'];
+        $row['item_count'] = (int)$row['item_count'];
+        $row['payments'] = $pay[$row['supply_order_id']]['payments'] ?? [];
+        $row['paid_amount'] = $pay[$row['supply_order_id']]['paid'] ?? 0;
+        $row['bill_amount'] = (int)$row['total_amount'] + (int)($row['shipping_cost'] ?? 0);
+    }
+    unset($row);
 
     $response = [
         'data' => $rows,
@@ -376,16 +471,26 @@ function updateOrderStatus($conn, $schema, $input, $username, $company_id){
 
     $now = getCurrentDateTimeJakarta();
 
-    $check_stmt = $conn->prepare("SELECT supply_order_id FROM {$schema}.supply_order WHERE supply_order_id = ? AND (from_company_id = ? OR to_company_id = ?)");
-    $check_stmt->bind_param('sss', $order_id, $company_id, $company_id);
+    $check_stmt = $conn->prepare("SELECT supply_order_id, from_company_id, to_company_id, status FROM {$schema}.supply_order WHERE supply_order_id = ?");
+    $check_stmt->bind_param('s', $order_id);
     $check_stmt->execute();
-    $check_result = $check_stmt->get_result();
+    $current = $check_stmt->get_result()->fetch_assoc();
+    $check_stmt->close();
 
-    if (!$check_result || $check_result->num_rows === 0) {
-        $check_stmt->close();
+    $actor = $GLOBALS['decoded'];
+    if (!$current || !supplyOrderVisible($conn, $actor, $current)) {
         jsonResponse(404, 'Supply order not found or you do not have permission to update it');
     }
-    $check_stmt->close();
+    // Pusat = the receiving company's Owner; the outlet is the ordering side.
+    $isPusat = accessIsOwner($actor) && in_array($current['to_company_id'], accessCompanyIds($conn, $actor), true);
+    $transitionError = supplyTransitionError($current['status'], $status, $isPusat ? 'pusat' : 'outlet');
+    if ($transitionError !== null) {
+        jsonResponse(409, $transitionError, ['reason' => 'invalid_transition', 'from' => $current['status']]);
+    }
+    $reason = isset($input['reason']) ? mb_substr(trim((string)$input['reason']), 0, 500) : '';
+    if (in_array($status, ['rejected', 'cancelled'], true) && $reason === '') {
+        jsonResponse(400, 'Alasan wajib diisi untuk menolak atau membatalkan order');
+    }
 
     $setParts = [];
     $setTypes = '';
@@ -419,6 +524,18 @@ function updateOrderStatus($conn, $schema, $input, $username, $company_id){
         $setValues[] = $shipping_company_val;
     }
 
+    foreach (['processing' => 'processing_at', 'shipped' => 'shipped_at', 'rejected' => 'rejected_at', 'cancelled' => 'cancelled_at'] as $st => $col) {
+        if ($status === $st) {
+            $setParts[] = "$col = ?";
+            $setTypes .= 's';
+            $setValues[] = $now;
+        }
+    }
+    if ($reason !== '') {
+        $setParts[] = "reason = ?";
+        $setTypes .= 's';
+        $setValues[] = $reason;
+    }
     if ($status === 'approved') {
         $setParts[] = "approved_at = ?";
         $setTypes .= 's';
@@ -458,12 +575,17 @@ function updateOrderStatus($conn, $schema, $input, $username, $company_id){
         jsonResponse(404, 'Supply order not found');
     }
 
+    $statusText = ['approved' => 'disetujui', 'processing' => 'diproses', 'shipped' => 'dikirim', 'completed' => 'selesai', 'rejected' => 'ditolak', 'cancelled' => 'dibatalkan'][$status] ?? $status;
+    $notifyCompany = $isPusat ? $current['from_company_id'] : $current['to_company_id'];
+    notificationCreate($conn, $schema, $notifyCompany, 'supply_order', "Order supply {$statusText}", ($reason !== '' ? $reason : "Status order berubah menjadi {$statusText}."), 'supply_order', $order_id, $username);
+
     jsonResponse(200, 'Status updated successfully', [
         'supply_order_id' => $order_id,
         'status'          => $status,
         'shipping_cost'   => $shipping_cost_val,
         'shipping_awb'    => $shipping_awb_val,
         'shipping'        => $shipping_company_val,
+        'reason'          => $reason !== '' ? $reason : null,
     ]);
 }
 

@@ -28,9 +28,20 @@ function accountStatusBlockMessage($status): ?string {
             return 'Akun kamu masih menunggu persetujuan admin.';
         case ACCOUNT_STATUS_REJECTED:
             return 'Pendaftaran akun kamu ditolak. Hubungi admin RAKI.';
+        case 'suspended':
+        case 'disabled':
+        case 'inactive':
+        case 'nonaktif':
+            return 'Akun kamu nonaktif. Hubungi admin RAKI.';
         default:
             return null;
     }
+}
+
+// True for a nonaktif account (deactivated, suspended or disabled). requireAuth() uses it to drop the
+// session of a user who was deactivated while logged in.
+function accountIsNonaktif($status): bool {
+    return in_array(strtolower(trim((string)$status)), ['suspended', 'disabled', 'inactive', 'nonaktif'], true);
 }
 
 // 0812…, +62 812…, 62-812… => 62812…. Returns null when the result isn't 62 + digits, 10–15 long.
@@ -75,6 +86,9 @@ function accountValidateRegistration($input): array {
     }
     if (strlen($password) < 8) {
         return ['error' => 'Password minimal 8 karakter.'];
+    }
+    if (accountIsBlockedPassword($password)) {
+        return ['error' => 'Password ini tidak boleh dipakai. Buat password lain.'];
     }
     if ($fullName === '') {
         return ['error' => 'Nama lengkap wajib diisi.'];
@@ -225,3 +239,44 @@ function accountRoleName(mysqli $conn, ?string $appRoleId): ?string {
     $stmt->close();
     return $row['role_name'] ?? null;
 }
+
+// --- Forgot password (account/forgot_password.php) ---
+
+// Team decisions (docs/backend-endpoints-revamp.md §1): OTP valid 5 minutes, 3 wrong attempts burn the code,
+// 8+ characters, and the old shared default password is never accepted as a new one.
+const ACCOUNT_RESET_OTP_TTL_SECONDS = 300;
+const ACCOUNT_RESET_RESEND_SECONDS  = 180;
+const ACCOUNT_RESET_OTP_MAX_ATTEMPTS = 3;
+const ACCOUNT_RESET_MIN_PASSWORD_LENGTH = 8;
+const ACCOUNT_SHARED_DEFAULT_PASSWORD = 'raki12345';
+
+function accountIsBlockedPassword($password): bool {
+    return strtolower(trim((string)$password)) === ACCOUNT_SHARED_DEFAULT_PASSWORD;
+}
+
+// Why an account may not reset its password: 'pending' (waiting for approval), 'inactive' (rejected,
+// suspended, disabled or nonaktif), or null when it may. NULL status = account from before self-registration.
+function accountResetBlockReason($status): ?string {
+    switch (strtolower(trim((string)$status))) {
+        case ACCOUNT_STATUS_PENDING:
+            return 'pending';
+        case ACCOUNT_STATUS_REJECTED:
+        case 'suspended':
+        case 'disabled':
+        case 'inactive':
+        case 'nonaktif':
+            return 'inactive';
+        default:
+            return null;
+    }
+}
+
+// 6281234567890 => 6281•••••890 (first 4 and last 3 digits; at least 3 dots). Matches the dashboard's maskPhone().
+function accountMaskPhone(string $phone): string {
+    $digits = preg_replace('/\D/', '', $phone);
+    if (strlen($digits) <= 7) {
+        return str_repeat('•', max(strlen($digits), 3));
+    }
+    return substr($digits, 0, 4) . str_repeat('•', max(strlen($digits) - 7, 3)) . substr($digits, -3);
+}
+

@@ -98,7 +98,7 @@ function createIngredientCategory($conn, $schema, $input, $username) {
 
 function getAllIngredientCategory($conn, $schema, $params, $username, $page = 1, $limit = 10) {
     $page = (int)$page;
-    $limit = (int)$limit;
+    $limit = pageLimit($limit);
     $offset = ($page - 1) * $limit;
     $search = '%' . ($params ?? '') . '%';
 

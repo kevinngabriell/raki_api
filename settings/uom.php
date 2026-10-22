@@ -89,7 +89,7 @@ function createUOM($conn, $schema, $input, $token_username) {
 
 function getAllUOM($conn, $schema, $params, $page = 1, $limit = 10) {
     $page = (int)$page;
-    $limit = (int)$limit;
+    $limit = pageLimit($limit);
     $offset = ($page - 1) * $limit;
     $search = '%' . ($params ?? '') . '%';
 

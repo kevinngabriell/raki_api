@@ -18,7 +18,7 @@ use Firebase\JWT\Key;
 function getPendingAccounts($conn, $page, $limit){
     $coreSchema = MOVIRA_CORE_SCHEMA;
     $page  = max(1, (int)$page);
-    $limit = min(100, max(1, (int)$limit));
+    $limit = pageLimit($limit);
     $offset = ($page - 1) * $limit;
 
     $appId  = ACCOUNT_RAKI_APP_ID;
@@ -96,8 +96,8 @@ function reviewPendingAccount($conn, $input, $decoded){
         jsonResponse(400, 'Akun owner tidak terhubung ke perusahaan.');
     }
     $companyId = trim((string)($input['company_id'] ?? '')) ?: $ownerCompanyId;
-    if ($companyId !== $ownerCompanyId) {
-        jsonResponse(403, 'Hanya bisa menyetujui akun untuk perusahaan sendiri.');
+    if ($companyId !== $ownerCompanyId && !in_array($companyId, accessCompanyIds($conn, $decoded), true)) {
+        jsonResponse(403, 'Hanya bisa menyetujui akun untuk outlet milikmu sendiri.');
     }
 
     $appRoleId = trim((string)($input['app_role_id'] ?? ''));
@@ -150,6 +150,7 @@ try {
     } catch (Exception $e) {
         jsonResponse(401, 'Invalid or expired token');
     }
+    requireActiveAccount($decoded);
 
     $conn = DB::conn();
 

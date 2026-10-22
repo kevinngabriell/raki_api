@@ -38,6 +38,10 @@ function valid(array $overrides = []): array {
 // --- account status ---
 check('pending blocked', accountStatusBlockMessage('pending'), 'Akun kamu masih menunggu persetujuan admin.');
 check('rejected blocked', accountStatusBlockMessage('Rejected'), 'Pendaftaran akun kamu ditolak. Hubungi admin RAKI.');
+check('disabled blocked as nonaktif', accountStatusBlockMessage('disabled'), 'Akun kamu nonaktif. Hubungi admin RAKI.');
+check('nonaktif detected', accountIsNonaktif('Inactive'), true);
+check('verified is not nonaktif', accountIsNonaktif('verified'), false);
+check('register rejects shared default password', isset(accountValidateRegistration(['username'=>'a.b','password'=>'RAKI12345','full_name'=>'A','phone_number'=>'6281234567890','email'=>'a@b.co'])['error']), true);
 check('verified allowed', accountStatusBlockMessage('verified'), null);
 check('NULL (existing users) allowed', accountStatusBlockMessage(null), null);
 check('unknown legacy value allowed', accountStatusBlockMessage('verified'), null);
@@ -108,6 +112,20 @@ check('Owner is manager', accountIsManagerRole('Owner'), true);
 check('Mitra is manager', accountIsManagerRole('Mitra'), true);
 check('Outlet is not manager', accountIsManagerRole('Outlet'), false);
 check('Abang is not manager', accountIsManagerRole('Abang'), false);
+
+// --- forgot password ---
+check('shared password blocked', accountIsBlockedPassword('raki12345'), true);
+check('shared password blocked, case and spaces', accountIsBlockedPassword('  RAKI12345 '), true);
+check('other password allowed', accountIsBlockedPassword('raki123456'), false);
+check('pending cannot reset', accountResetBlockReason('pending'), 'pending');
+check('rejected cannot reset', accountResetBlockReason('Rejected'), 'inactive');
+check('suspended cannot reset', accountResetBlockReason('suspended'), 'inactive');
+check('nonaktif cannot reset', accountResetBlockReason('nonaktif'), 'inactive');
+check('verified may reset', accountResetBlockReason('verified'), null);
+check('legacy NULL status may reset', accountResetBlockReason(null), null);
+check('mask 62 number', accountMaskPhone('6281234567890'), '6281••••••890');
+check('mask short number', accountMaskPhone('62812'), '•••••');
+check('mask ignores + and spaces', accountMaskPhone('+62 812 3456 7890'), '6281••••••890');
 
 echo $failures === 0 ? "OK: $checks checks passed\n" : "\n$failures of $checks checks FAILED\n";
 exit($failures === 0 ? 0 : 1);

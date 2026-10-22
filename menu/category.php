@@ -98,7 +98,7 @@ function createCategory($conn, $schema, $input, $username) {
 
 function getAllCategory($conn, $schema, $params, $page = 1, $limit = 10) {
     $page = (int)$page;
-    $limit = (int)$limit;
+    $limit = pageLimit($limit);
     $offset = ($page - 1) * $limit;
     $search = '%' . ($params ?? '') . '%';
 
@@ -113,7 +113,7 @@ function getAllCategory($conn, $schema, $params, $page = 1, $limit = 10) {
     $total = (int)$totalRow['total'];
     $stmt->close();
 
-    $query = "SELECT category_id, category_name FROM {$schema}.category_menu WHERE category_name LIKE ? LIMIT ? OFFSET ?";
+    $query = "SELECT category_id, category_name, sort_order FROM {$schema}.category_menu WHERE category_name LIKE ? ORDER BY sort_order, created_at, category_id LIMIT ? OFFSET ?";
     $stmt = $conn->prepare($query);
     if (!$stmt) {
         jsonResponse(500, 'Database query error');

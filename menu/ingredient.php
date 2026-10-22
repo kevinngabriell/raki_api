@@ -184,13 +184,13 @@ function createIngredient($conn, $schema, $input, $username, $company_id) {
     }
 }
 
-function getAllIngredient($conn, $schema, $params, $page = 1, $limit = 10) {
+function getAllIngredient($conn, $schema, $params, $page = 1, $limit = 10, $activeOnly = '') {
     $page = (int)$page;
-    $limit = (int)$limit;
+    $limit = pageLimit($limit);
     $offset = ($page - 1) * $limit;
     $search = '%' . ($params ?? '') . '%';
 
-    $stmt = $conn->prepare("SELECT COUNT(*) as total FROM {$schema}.ingredient WHERE ingredient_name LIKE ?");
+    $stmt = $conn->prepare("SELECT COUNT(*) as total FROM {$schema}.ingredient I WHERE ingredient_name LIKE ?{$activeOnly}");
     if (!$stmt) {
         jsonResponse(500, 'Database query error');
     }
@@ -201,7 +201,7 @@ function getAllIngredient($conn, $schema, $params, $page = 1, $limit = 10) {
     $total = (int)$totalRow['total'];
     $stmt->close();
 
-    $query = "SELECT ingredient_id, ingredient_name, UOM.uom_name, IC.category_name, price FROM {$schema}.ingredient I LEFT JOIN {$schema}.unit_of_measurement UOM ON I.uom = UOM.uom_id LEFT JOIN {$schema}.ingredient_category IC ON I.ingredient_category = IC.category_id WHERE ingredient_name LIKE ? LIMIT ? OFFSET ?";
+    $query = "SELECT ingredient_id, ingredient_name, I.uom, UOM.uom_name, I.ingredient_category, IC.category_name, price, I.is_active FROM {$schema}.ingredient I LEFT JOIN {$schema}.unit_of_measurement UOM ON I.uom = UOM.uom_id LEFT JOIN {$schema}.ingredient_category IC ON I.ingredient_category = IC.category_id WHERE ingredient_name LIKE ?{$activeOnly} ORDER BY ingredient_name LIMIT ? OFFSET ?";
     $stmt = $conn->prepare($query);
     if (!$stmt) {
         jsonResponse(500, 'Database query error');
@@ -230,7 +230,7 @@ function getAllIngredient($conn, $schema, $params, $page = 1, $limit = 10) {
 }
 
 function getDetailIngredient($conn, $schema, $ingredient_id) {
-    $query = "SELECT ingredient_id, ingredient_name, IC.category_id, IC.category_name, I.sku, UOM.uom_id, UOM.uom_name, price FROM {$schema}.ingredient I LEFT JOIN {$schema}.ingredient_category IC ON I.ingredient_category = IC.category_id LEFT JOIN {$schema}.unit_of_measurement UOM ON I.uom = UOM.uom_id WHERE ingredient_id = ?";
+    $query = "SELECT ingredient_id, ingredient_name, IC.category_id, IC.category_name, I.sku, UOM.uom_id, UOM.uom_name, price, I.is_active FROM {$schema}.ingredient I LEFT JOIN {$schema}.ingredient_category IC ON I.ingredient_category = IC.category_id LEFT JOIN {$schema}.unit_of_measurement UOM ON I.uom = UOM.uom_id WHERE ingredient_id = ?";
     $stmt = $conn->prepare($query);
     if (!$stmt) {
         jsonResponse(500, 'Database query error');
@@ -372,12 +372,9 @@ function deleteIngredient($conn, $schema, $ingredient_id, $username, $company_id
         apiReject($conn, '/menu/ingredient.php', 'DELETE', $username, 404, 'Ingredient is not registered in systems');
     }
 
-    $orders = referenceCount($conn,
-        "SELECT COUNT(DISTINCT supply_order_id) FROM {$schema}.supply_order_detail WHERE ingredient_id = ?", $ingredient_id);
-    if ($orders > 0) {
-        apiReject($conn, '/menu/ingredient.php', 'DELETE', $username, 409,
-            "Can't delete this ingredient: it is used in $orders supply order(s).");
-    }
+    // Bahan are never deleted (H3): set them nonaktif with PUT { ingredient_id, is_active: 0 }.
+    apiReject($conn, '/menu/ingredient.php', 'DELETE', $username, 409,
+        "Bahan tidak dihapus. Nonaktifkan saja (is_active = 0) agar riwayat order tetap utuh.");
 
     $stmt = $conn->prepare("DELETE FROM {$schema}.ingredient WHERE ingredient_id = ?");
     if (!$stmt) {
@@ -428,7 +425,8 @@ try {
             if ($ingredient_id != null) {
                 getDetailIngredient($conn, $schema, $ingredient_id);
             } else {
-                getAllIngredient($conn, $schema, $params, $page, $limit);
+                // Outlets read pusat's catalog: active bahan only. The Owner sees all.
+                getAllIngredient($conn, $schema, $params, $page, $limit, isMenuManager($decoded) ? '' : ' AND I.is_active = 1');
             }
             break;
         case 'PUT':

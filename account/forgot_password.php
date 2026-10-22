@@ -6,13 +6,44 @@ require_once '../general.php';
 require_once '../config.php';
 require_once '../notification/notification.php';
 require_once '../log.php';
+require_once __DIR__ . '/account_rules.php';
 
 use Firebase\JWT\JWT;
 use Firebase\JWT\Key;
 
 const RAKI_APP_ID = '06660e87-37e7-491b-92c3-c772130eb57c';
 const RESET_PASSWORD_PURPOSE = 'forgot_password';
-const OTP_MAX_ATTEMPTS = 5;
+const OTP_MAX_ATTEMPTS = ACCOUNT_RESET_OTP_MAX_ATTEMPTS;
+
+// Looks the account up by username or by phone number (62…, matched against older un-normalized rows too).
+// Returns the row, or null when there is none. More than one match on a phone number is ambiguous: 'ambiguous'.
+function findResetAccount($conn, string $coreSchema, string $appId, string $username, string $phone)
+{
+    if ($username !== '') {
+        $stmt = $conn->prepare("SELECT username, phone_number, phone_e164, identity_id, account_status FROM {$coreSchema}.app_user WHERE username = ? AND app_id = ? LIMIT 1");
+        $stmt->bind_param('ss', $username, $appId);
+    } else {
+        $normalized = accountNormalizePhone($phone);
+        if ($normalized === null) {
+            return null;
+        }
+        [$a, $b, $c] = accountPhoneVariants($normalized);
+        $stmt = $conn->prepare("SELECT username, phone_number, phone_e164, identity_id, account_status FROM {$coreSchema}.app_user
+                                WHERE app_id = ? AND (phone_number IN (?, ?, ?) OR phone_e164 IN (?, ?, ?)) LIMIT 2");
+        $stmt->bind_param('sssssss', $appId, $a, $b, $c, $a, $b, $c);
+    }
+    $stmt->execute();
+    $result = $stmt->get_result();
+    $stmt->close();
+
+    if (!$result) {
+        jsonResponse(500, 'Internal Server Error');
+    }
+    if ($result->num_rows > 1) {
+        return 'ambiguous';
+    }
+    return $result->num_rows === 1 ? $result->fetch_assoc() : null;
+}
 
 function requestPasswordResetOTP($conn, $input)
 {
@@ -21,34 +52,40 @@ function requestPasswordResetOTP($conn, $input)
     $purpose = RESET_PASSWORD_PURPOSE;
     $coreSchema = MOVIRA_CORE_SCHEMA;
 
+    // Either field, never both.
     $username = trim($input['username'] ?? '');
+    $phone    = trim($input['phone_number'] ?? '');
 
-    if (!$username) {
-        jsonResponse(400, 'Username is required');
+    if ($username === '' && $phone === '') {
+        jsonResponse(400, 'Username or phone_number is required');
+    }
+    if ($username !== '' && $phone !== '') {
+        jsonResponse(400, 'Send either username or phone_number, not both');
     }
 
-    $stmt = $conn->prepare("SELECT username, phone_number, phone_e164, identity_id FROM {$coreSchema}.app_user WHERE username = ? AND app_id = ? LIMIT 1");
-    $stmt->bind_param('ss', $username, $appId);
-    $stmt->execute();
-    $user_result = $stmt->get_result();
-    $stmt->close();
+    $user = findResetAccount($conn, $coreSchema, $appId, $username, $phone);
 
-    if (!$user_result) {
-        jsonResponse(500, 'Internal Server Error');
+    if ($user === null) {
+        jsonResponse(404, 'Account not found', ['reason' => 'not_found']);
+    }
+    if ($user === 'ambiguous') {
+        jsonResponse(409, 'This phone number belongs to more than one account, use the username instead', ['reason' => 'ambiguous_phone']);
     }
 
-    if ($user_result->num_rows !== 1) {
-        jsonResponse(404, 'User not found');
+    $blockReason = accountResetBlockReason($user['account_status'] ?? null);
+    if ($blockReason !== null) {
+        jsonResponse(403, $blockReason === 'pending'
+            ? 'Akun kamu masih menunggu persetujuan admin.'
+            : 'Akun kamu nonaktif. Hubungi admin RAKI.', ['reason' => $blockReason]);
     }
 
-    $user = $user_result->fetch_assoc();
     $phone_number = $user['phone_number'];
     $username = $user['username'];
     $identifier = $user['phone_e164'] ?: $phone_number;
     $identityId = $user['identity_id'];
 
     if (!$phone_number) {
-        jsonResponse(422, 'This account has no phone number registered');
+        jsonResponse(422, 'This account has no phone number registered', ['reason' => 'no_phone']);
     }
 
     $stmt = $conn->prepare("SELECT TIMESTAMPDIFF(SECOND, created_at, NOW()) AS diff_seconds
@@ -64,8 +101,11 @@ function requestPasswordResetOTP($conn, $input)
         $row = $rate_limit_result->fetch_assoc();
         $diff = (int)$row['diff_seconds'];
 
-        if ($diff < 180) {
-            jsonResponse(429, 'Please wait 2–3 minutes before requesting a new OTP');
+        if ($diff < ACCOUNT_RESET_RESEND_SECONDS) {
+            jsonResponse(429, 'Please wait 2–3 minutes before requesting a new OTP', [
+                'reason'   => 'too_soon',
+                'retry_in' => ACCOUNT_RESET_RESEND_SECONDS - $diff,
+            ]);
         }
     }
 
@@ -82,7 +122,7 @@ function requestPasswordResetOTP($conn, $input)
         $lockData = $lock_check_result->fetch_assoc();
 
         if ((int)$lockData['total_requests'] >= 10) {
-            jsonResponse(423, 'Too many password reset requests, please try again later');
+            jsonResponse(423, 'Too many password reset requests, please try again later', ['reason' => 'locked']);
         }
     }
 
@@ -93,7 +133,7 @@ function requestPasswordResetOTP($conn, $input)
 
     $otp       = str_pad(random_int(0, 999999), 6, '0', STR_PAD_LEFT);
     $otp_id    = uniqid('otp_');
-    $expire_at = date('Y-m-d H:i:s', time() + 5 * 60);
+    $expire_at = date('Y-m-d H:i:s', time() + ACCOUNT_RESET_OTP_TTL_SECONDS);
 
     $otpHash     = otpHash($otp);
     $channel     = 'whatsapp';
@@ -117,9 +157,32 @@ function requestPasswordResetOTP($conn, $input)
     $stmt->close();
 
     $text = "Kode OTP Reset Password RAKI Anda: $otp\nBerlaku selama 5 menit.\nJangan bagikan kode ini kepada siapapun.";
-    sendWhatsAppText($phone_number, $text);
+    $sent = sendWhatsAppText($phone_number, $text);
 
-    jsonResponse(200, 'OTP sent');
+    if (empty($sent['success'])) {
+        // Nothing reached the user, so don't make them wait out the resend timer for a code they never got.
+        $stmt = $conn->prepare("DELETE FROM {$coreSchema}.otp_codes WHERE otp_id = ?");
+        $stmt->bind_param('s', $otp_id);
+        $stmt->execute();
+        $stmt->close();
+
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 502,
+            'endpoint'      => '/account/forgot_password.php',
+            'method'        => 'POST',
+            'error_message' => 'WhatsApp send failed: ' . ($sent['error'] ?? ('HTTP ' . ($sent['httpCode'] ?? '?'))),
+            'user_identifier' => $username,
+        ]);
+        jsonResponse(502, 'Failed to send the OTP over WhatsApp', ['reason' => 'wa_failed']);
+    }
+
+    jsonResponse(200, 'OTP sent', [
+        'username'       => $username,
+        'masked_phone'   => accountMaskPhone($phone_number),
+        'otp_expires_in' => ACCOUNT_RESET_OTP_TTL_SECONDS,
+        'resend_in'      => ACCOUNT_RESET_RESEND_SECONDS,
+    ]);
 }
 
 function verifyPasswordResetOTP($conn, $input)
@@ -136,7 +199,7 @@ function verifyPasswordResetOTP($conn, $input)
         jsonResponse(400, 'Username and OTP are required');
     }
 
-    $stmt = $conn->prepare("SELECT username, phone_number, phone_e164 FROM {$coreSchema}.app_user WHERE username = ? AND app_id = ? LIMIT 1");
+    $stmt = $conn->prepare("SELECT username, phone_number, phone_e164, account_status FROM {$coreSchema}.app_user WHERE username = ? AND app_id = ? LIMIT 1");
     $stmt->bind_param('ss', $username, $appId);
     $stmt->execute();
     $user_result = $stmt->get_result();
@@ -150,7 +213,13 @@ function verifyPasswordResetOTP($conn, $input)
     $username   = $user['username'];
     $identifier = $user['phone_e164'] ?: $user['phone_number'];
 
-    $stmt = $conn->prepare("SELECT otp_id, otp_hash, expire_at, attempt_count, max_attempts
+    // The account may have been switched off since the code was sent.
+    $blockReason = accountResetBlockReason($user['account_status'] ?? null);
+    if ($blockReason !== null) {
+        jsonResponse(403, 'Akun ini tidak bisa mengatur ulang password.', ['reason' => $blockReason]);
+    }
+
+    $stmt = $conn->prepare("SELECT otp_id, otp_hash, expire_at, attempt_count
                             FROM {$coreSchema}.otp_codes
                             WHERE identifier = ? AND purpose = ? AND used_at IS NULL
                             ORDER BY created_at DESC LIMIT 1");
@@ -160,37 +229,37 @@ function verifyPasswordResetOTP($conn, $input)
     $stmt->close();
 
     if (!$otp_result || $otp_result->num_rows !== 1) {
-        jsonResponse(400, 'Invalid OTP');
+        jsonResponse(400, 'Invalid OTP', ['attempts_left' => 0]);
     }
 
     $otp_row = $otp_result->fetch_assoc();
+    $maxAttempts = ACCOUNT_RESET_OTP_MAX_ATTEMPTS;
 
-    if ((int)$otp_row['attempt_count'] >= (int)$otp_row['max_attempts']) {
-        $stmt = $conn->prepare("UPDATE {$coreSchema}.otp_codes SET used_at = NOW() WHERE otp_id = ?");
-        $stmt->bind_param('s', $otp_row['otp_id']);
-        $stmt->execute();
-        $stmt->close();
-
-        jsonResponse(423, 'Too many failed OTP attempts. Please request a new OTP.');
+    if ((int)$otp_row['attempt_count'] >= $maxAttempts) {
+        burnResetOtp($conn, $coreSchema, $otp_row['otp_id']);
+        jsonResponse(429, 'Too many failed OTP attempts. Please request a new OTP.', ['reason' => 'too_many_attempts']);
     }
 
-    $stmt = $conn->prepare("UPDATE {$coreSchema}.otp_codes SET attempt_count = attempt_count + 1 WHERE otp_id = ?");
-    $stmt->bind_param('s', $otp_row['otp_id']);
+    if (strtotime($otp_row['expire_at']) < time()) {
+        jsonResponse(410, 'OTP expired', ['reason' => 'expired']);
+    }
+
+    $attempts = (int)$otp_row['attempt_count'] + 1;
+    $stmt = $conn->prepare("UPDATE {$coreSchema}.otp_codes SET attempt_count = ? WHERE otp_id = ?");
+    $stmt->bind_param('is', $attempts, $otp_row['otp_id']);
     $stmt->execute();
     $stmt->close();
 
     if (!hash_equals($otp_row['otp_hash'], otpHash((string)$otp))) {
-        jsonResponse(400, 'Invalid OTP');
+        if ($attempts >= $maxAttempts) {
+            // Third wrong code: burn it, a new one must be requested.
+            burnResetOtp($conn, $coreSchema, $otp_row['otp_id']);
+            jsonResponse(429, 'Too many failed OTP attempts. Please request a new OTP.', ['reason' => 'too_many_attempts']);
+        }
+        jsonResponse(400, 'Invalid OTP', ['attempts_left' => $maxAttempts - $attempts]);
     }
 
-    if (strtotime($otp_row['expire_at']) < time()) {
-        jsonResponse(400, 'OTP expired');
-    }
-
-    $stmt = $conn->prepare("UPDATE {$coreSchema}.otp_codes SET used_at = NOW() WHERE otp_id = ? LIMIT 1");
-    $stmt->bind_param('s', $otp_row['otp_id']);
-    $stmt->execute();
-    $stmt->close();
+    burnResetOtp($conn, $coreSchema, $otp_row['otp_id']);
 
     $issuedAt       = time();
     $expirationTime = $issuedAt + 10 * 60;
@@ -210,6 +279,14 @@ function verifyPasswordResetOTP($conn, $input)
     ]);
 }
 
+function burnResetOtp($conn, string $coreSchema, string $otpId): void
+{
+    $stmt = $conn->prepare("UPDATE {$coreSchema}.otp_codes SET used_at = NOW() WHERE otp_id = ? LIMIT 1");
+    $stmt->bind_param('s', $otpId);
+    $stmt->execute();
+    $stmt->close();
+}
+
 function resetPassword($conn, $input)
 {
     $conn = DB::conn();
@@ -223,8 +300,12 @@ function resetPassword($conn, $input)
         jsonResponse(400, 'Reset token and new password are required');
     }
 
-    if (strlen($newPassword) < 6) {
-        jsonResponse(400, 'Password must be at least 6 characters');
+    if (strlen($newPassword) < ACCOUNT_RESET_MIN_PASSWORD_LENGTH) {
+        jsonResponse(400, 'Password must be at least ' . ACCOUNT_RESET_MIN_PASSWORD_LENGTH . ' characters', ['reason' => 'too_short']);
+    }
+
+    if (accountIsBlockedPassword($newPassword)) {
+        jsonResponse(400, 'Password ini tidak boleh dipakai. Buat password lain.', ['reason' => 'blocked_password']);
     }
 
     try {
@@ -246,7 +327,28 @@ function resetPassword($conn, $input)
 
     $username = $decoded->username;
 
+    $stmt = $conn->prepare("SELECT password, account_status FROM {$coreSchema}.app_user WHERE username = ? AND app_id = ? LIMIT 1");
+    $stmt->bind_param('ss', $username, $appId);
+    $stmt->execute();
+    $current_result = $stmt->get_result();
+    $stmt->close();
+
+    if (!$current_result || $current_result->num_rows !== 1) {
+        jsonResponse(401, 'Invalid reset token');
+    }
+    $current = $current_result->fetch_assoc();
+
+    $blockReason = accountResetBlockReason($current['account_status'] ?? null);
+    if ($blockReason !== null) {
+        jsonResponse(403, 'Akun ini tidak bisa mengatur ulang password.', ['reason' => $blockReason]);
+    }
+
     $escapedPassword = mysqli_real_escape_string($conn, $newPassword);
+
+    if (password_verify($escapedPassword, (string)$current['password'])) {
+        jsonResponse(409, 'Password baru tidak boleh sama dengan password lama.', ['reason' => 'same_as_old']);
+    }
+
     $hashedPassword = password_hash($escapedPassword, PASSWORD_DEFAULT);
 
     $stmt = $conn->prepare("UPDATE {$coreSchema}.app_user SET password = ? WHERE username = ? AND app_id = ?");

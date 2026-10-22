@@ -83,8 +83,11 @@ function formatRupiah($angka) {
 }
 
 // --- Determine execution context ---
-$isCli  = php_sapi_name() === 'cli';
-$isHttp = !$isCli
+// CLI counts only when this file itself is the script being run: a CLI script that merely include()s it for
+// sendWhatsAppText() must not trigger the weekly recap.
+$isCli  = php_sapi_name() === 'cli'
+    && realpath($_SERVER['SCRIPT_FILENAME'] ?? '') === __FILE__;
+$isHttp = php_sapi_name() !== 'cli'
     && isset($_SERVER['SCRIPT_FILENAME'])
     && basename($_SERVER['SCRIPT_FILENAME']) === basename(__FILE__);
 
@@ -222,16 +225,24 @@ foreach ($targets as $target) {
 
     $sqlRecap = "
         SELECT
-            t.created_by,
-            SUM(td.quantity)               AS total_cup,
-            SUM(DISTINCT t.total_amount)   AS total_amount
-        FROM {$schema}.transaction t
-        JOIN {$schema}.transaction_detail td ON td.transaction_id = t.transaction_id
-        WHERE t.company_id = ?
-          AND td.menu_id <> 'menu69112f46968b3'
-          AND YEARWEEK(t.transaction_date, 1) = YEARWEEK(CURDATE(), 1)
-        GROUP BY t.created_by
-        ORDER BY t.created_by
+            x.created_by,
+            SUM(x.cups)         AS total_cup,
+            SUM(x.total_amount) AS total_amount
+        FROM (
+            SELECT
+                t.transaction_id,
+                t.created_by,
+                t.total_amount,
+                SUM(td.quantity) AS cups
+            FROM {$schema}.transaction t
+            JOIN {$schema}.transaction_detail td ON td.transaction_id = t.transaction_id
+            WHERE t.company_id = ?
+              AND td.menu_id <> 'menu69112f46968b3'
+              AND YEARWEEK(t.transaction_date, 1) = YEARWEEK(CURDATE(), 1)
+            GROUP BY t.transaction_id, t.created_by, t.total_amount
+        ) x
+        GROUP BY x.created_by
+        ORDER BY x.created_by
     ";
 
     $stmtRecap = $conn->prepare($sqlRecap);

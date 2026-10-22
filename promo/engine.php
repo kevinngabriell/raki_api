@@ -7,9 +7,12 @@
 
 const PROMO_TIMEZONE = 'Asia/Jakarta';
 const PROMO_TYPE_BUY_N_NOMINAL_OFF = 'buy_n_nominal_off';
+const PROMO_TYPE_PERCENT_OFF = 'percent_off';             // discount_amount = percent of the eligible subtotal
+const PROMO_TYPE_NOMINAL_OFF_PER_ITEM = 'nominal_off_per_item'; // discount_amount rupiah off every eligible item
+const PROMO_TYPES = [PROMO_TYPE_BUY_N_NOMINAL_OFF, PROMO_TYPE_PERCENT_OFF, PROMO_TYPE_NOMINAL_OFF_PER_ITEM];
 
-// app_role.role_name values allowed to create/edit/delete promos. Own company only.
-const PROMO_MANAGER_ROLES = ['Owner'];
+// app_role.role_name values allowed to create/edit/delete promos. Owner: any outlets; Mitra: forced to their own.
+const PROMO_MANAGER_ROLES = ['Owner', 'Mitra/Franchise'];
 
 // RAKI's app_id in movira_core.app (same literal as account/login.php).
 const PROMO_APP_ID = '06660e87-37e7-491b-92c3-c772130eb57c';
@@ -111,6 +114,7 @@ function promoEvaluateOne(array $promo, array $lines, array $menuInfo, array $ct
     $eval = [
         'promo_id'          => $promo['promo_id'],
         'promo_name'        => $promo['promo_name'],
+        'promo_type'        => $promo['promo_type'] ?? PROMO_TYPE_BUY_N_NOMINAL_OFF,
         'applicable'        => false,
         'reason'            => null,
         'message'           => null,
@@ -125,8 +129,20 @@ function promoEvaluateOne(array $promo, array $lines, array $menuInfo, array $ct
 
     // Guard: the promo only applies to a sale dated today (Jakarta). Blocks
     // back-dating a sale onto a promo day, and future-dating.
-    if ($ctx['sale_date'] === null || $ctx['sale_date'] !== $ctx['today']) {
+    // Owner / Mitra may back-date a sale and still get the promo of that day (ctx allow_past).
+    $saleDate = $ctx['sale_date'];
+    $dateOk = $saleDate !== null && ($saleDate === $ctx['today'] || (!empty($ctx['allow_past']) && $saleDate < $ctx['today']));
+    if (!$dateOk) {
         return promoRejected($eval, 'sale_date_not_today', 'Promo only applies to sales dated today (Jakarta time).');
+    }
+    if (!empty($promo['start_date']) && $saleDate < $promo['start_date']) {
+        return promoRejected($eval, 'not_started', 'Promo has not started yet.');
+    }
+    if (!empty($promo['end_date']) && $saleDate > $promo['end_date']) {
+        return promoRejected($eval, 'expired', 'Promo has ended.');
+    }
+    if (!empty($ctx['channel']) && !empty($promo['channels']) && !in_array($ctx['channel'], $promo['channels'], true)) {
+        return promoRejected($eval, 'wrong_channel', 'Promo is not valid on this POS.');
     }
     if ($c['day_of_week'] && !in_array(promoIsoWeekday($ctx['sale_date']), $c['day_of_week'], true)) {
         return promoRejected($eval, 'day_not_allowed', 'Promo is not valid on this day.');
@@ -152,6 +168,33 @@ function promoEvaluateOne(array $promo, array $lines, array $menuInfo, array $ct
     if ($quantity === 0) {
         $eval['next_reward'] = ['items_needed' => $buy, 'discount_amount' => $promo['discount_amount']];
         return promoRejected($eval, 'no_eligible_items', 'No eligible items in the cart.');
+    }
+
+    $type = $promo['promo_type'] ?? PROMO_TYPE_BUY_N_NOMINAL_OFF;
+    $eligibleTotal = array_sum($eligibleSubtotals);
+
+    if ($type !== PROMO_TYPE_BUY_N_NOMINAL_OFF) {
+        if ($promo['min_eligible_subtotal'] !== null && $eligibleTotal < $promo['min_eligible_subtotal']) {
+            return promoRejected($eval, 'below_min_subtotal',
+                'Eligible items must total at least ' . promoRupiah($promo['min_eligible_subtotal']) . '.');
+        }
+        if ($type === PROMO_TYPE_PERCENT_OFF) {
+            $discount = intdiv($eligibleTotal * min(100, $promo['discount_amount']), 100);
+            $applications = 1;
+        } else {
+            // max_applications caps how many items per transaction get the discount.
+            $items = $promo['max_applications'] !== null ? min($quantity, $promo['max_applications']) : $quantity;
+            $discount = min($items * $promo['discount_amount'], $eligibleTotal);
+            $applications = $items;
+        }
+        if ($discount <= 0) {
+            return promoRejected($eval, 'nothing_to_discount', 'Eligible items have no value to discount.');
+        }
+        $eval['applicable']      = true;
+        $eval['applications']    = $applications;
+        $eval['discount_amount'] = $discount;
+        $eval['line_discounts']  = promoAllocate($discount, $eligibleSubtotals);
+        return $eval;
     }
 
     $pairs = intdiv($quantity, $buy);
@@ -247,7 +290,7 @@ function promoEvaluate(array $promos, array $lines, array $menuInfo, array $ctx)
         'applied'         => $best === null ? null : [
             'promo_id'        => $best['promo_id'],
             'promo_name'      => $best['promo_name'],
-            'promo_type'      => PROMO_TYPE_BUY_N_NOMINAL_OFF,
+            'promo_type'      => $best['promo_type'],
             'applications'    => $best['applications'],
             'cap_reached'     => $best['cap_reached'],
             'discount_amount' => $best['discount_amount'],
@@ -315,6 +358,14 @@ function promoIsManagerRole(?string $roleName): bool {
     return $roleName !== null && in_array($roleName, PROMO_MANAGER_ROLES, true);
 }
 
+// 'outlet,abang' => ['outlet','abang']; NULL / '' => [] (every channel).
+function promoParseChannels($csv): array {
+    if ($csv === null || trim((string)$csv) === '') {
+        return [];
+    }
+    return array_values(array_intersect(['outlet', 'abang'], array_map('trim', explode(',', (string)$csv))));
+}
+
 function promoEmptyConditions(): array {
     return ['day_of_week' => [], 'category' => [], 'menu' => [], 'exclude_menu' => [], 'outlet_type' => []];
 }
@@ -327,6 +378,10 @@ function promoNormalizeRow(array $row): array {
     foreach (['max_applications', 'min_item_price', 'max_item_price', 'min_eligible_subtotal'] as $k) {
         $row[$k] = $row[$k] === null ? null : (int)$row[$k];
     }
+    $row['is_archived'] = (int)($row['is_archived'] ?? 0);
+    $row['channels'] = promoParseChannels($row['channels'] ?? null);
+    $row['start_date'] = !empty($row['start_date']) ? substr((string)$row['start_date'], 0, 10) : null;
+    $row['end_date'] = !empty($row['end_date']) ? substr((string)$row['end_date'], 0, 10) : null;
     $row['conditions'] = promoEmptyConditions();
     return $row;
 }
@@ -339,7 +394,11 @@ function promoAddCondition(array &$promo, string $type, string $value): void {
 // Active promos of one company with their conditions, oldest first.
 function promoLoadActive(mysqli $conn, string $schema, string $companyId): array {
     $stmt = $conn->prepare(
-        "SELECT * FROM {$schema}.promo WHERE company_id = ? AND is_active = 1 ORDER BY created_at, promo_id"
+        "SELECT p.* FROM {$schema}.promo p
+         WHERE p.is_active = 1 AND p.is_archived = 0
+           AND (EXISTS (SELECT 1 FROM {$schema}.promo_company pc WHERE pc.promo_id = p.promo_id AND pc.company_id = ?)
+                OR NOT EXISTS (SELECT 1 FROM {$schema}.promo_company pc2 WHERE pc2.promo_id = p.promo_id))
+         ORDER BY p.created_at, p.promo_id"
     );
     if (!$stmt) {
         throw new Exception('Prepare promo load failed: ' . $conn->error);
@@ -359,12 +418,11 @@ function promoLoadActive(mysqli $conn, string $schema, string $companyId): array
         "SELECT pc.promo_id, pc.condition_type, pc.condition_value
          FROM {$schema}.promo_condition pc
          JOIN {$schema}.promo p ON p.promo_id = pc.promo_id
-         WHERE p.company_id = ? AND p.is_active = 1"
+         WHERE p.is_active = 1 AND p.is_archived = 0"
     );
     if (!$stmt) {
         throw new Exception('Prepare promo condition load failed: ' . $conn->error);
     }
-    $stmt->bind_param('s', $companyId);
     $stmt->execute();
     foreach ($stmt->get_result() as $row) {
         if (isset($promos[$row['promo_id']])) {
@@ -398,7 +456,8 @@ function promoLoadMenuInfo(mysqli $conn, string $schema, array $menuIds): array 
 
 // The one entry point both endpoints use. $transactionDate is whatever the client
 // sent as transaction_date (or null); $roleName is the cashier's app_role.role_name.
-function promoEvaluateRequest(mysqli $conn, string $schema, string $companyId, ?string $roleName, $transactionDate, array $lines): array {
+// $opts: 'channel' => 'outlet'|'abang' (null = any), 'allow_past' => true for Owner / Mitra back-dated sales.
+function promoEvaluateRequest(mysqli $conn, string $schema, string $companyId, ?string $roleName, $transactionDate, array $lines, array $opts = []): array {
     $today = promoTodayJakarta();
     $promos = promoLoadActive($conn, $schema, $companyId);
     $menuInfo = promoLoadMenuInfo($conn, $schema, array_column($lines, 'menu_id'));
@@ -406,6 +465,8 @@ function promoEvaluateRequest(mysqli $conn, string $schema, string $companyId, ?
         'today'     => $today,
         'sale_date' => promoSaleDate($transactionDate, $today),
         'role_name' => $roleName,
+        'channel'   => $opts['channel'] ?? null,
+        'allow_past' => !empty($opts['allow_past']),
     ]);
 }
 
@@ -434,5 +495,6 @@ function promoAuthenticate(): object {
     if (!$decoded) {
         jsonResponse(401, 'Invalid or expired token');
     }
+    requireActiveAccount($decoded);
     return $decoded;
 }

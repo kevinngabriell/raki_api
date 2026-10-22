@@ -114,33 +114,8 @@ function getAllOutletsSummary($conn, $schema, $token_username, $token_role, $tok
         jsonResponse(400, 'company_id not found in token');
     }
 
-    // Multi-outlet owners are separate app_user rows (one per outlet) that share
-    // the same email address. Resolve every company_id tied to this owner's email
-    // so the dashboard can fetch all outlets in a single call instead of N+1.
-    $stmtSelf = $conn->prepare("SELECT email FROM {$coreSchema}.app_user WHERE username = ? LIMIT 1");
-    $stmtSelf->bind_param('s', $token_username);
-    $stmtSelf->execute();
-    $email = trim($stmtSelf->get_result()->fetch_assoc()['email'] ?? '');
-    $stmtSelf->close();
-
-    $company_ids = [];
-    if ($email !== '') {
-        $stmtCompanies = $conn->prepare("SELECT DISTINCT AU.company_id 
-            FROM {$coreSchema}.app_user AU
-            LEFT JOIN {$coreSchema}.app_company AC ON AU.company_id = AC.company_id
-            WHERE AU.email = ? AND AU.app_role_id = ? AND AU.company_id IS NOT NULL AND AU.company_id <> '' AND AC.status = 'active'");
-        $stmtCompanies->bind_param('ss', $email, $token_role);
-        $stmtCompanies->execute();
-        $res = $stmtCompanies->get_result();
-        while ($row = $res->fetch_assoc()) {
-            $company_ids[] = $row['company_id'];
-        }
-        $stmtCompanies->close();
-    }
-
-    if (empty($company_ids)) {
-        $company_ids = [$token_company_id];
-    }
+    // An Owner sees every active outlet; everyone else only their own (see core/Access.php).
+    $company_ids = accessCompanyIds($conn, (object)['role' => $token_role, 'username' => $token_username, 'company_id' => $token_company_id]);
 
     $summaries = [];
     foreach ($company_ids as $company_id) {
@@ -247,6 +222,15 @@ function getDashboard($conn, $schema, $company_id, $username){
     $stmtCupsToday->bind_param('sss', $company_id, $today, $tomorrow);
     $stmtCupsToday->execute();
     $cups_today = (int)($stmtCupsToday->get_result()->fetch_assoc()['cups_today'] ?? 0);
+
+    // Same weekday last week, up to the current time of day ("vs Rabu lalu jam yang sama").
+    $lastWeekDay = date('Y-m-d', strtotime('-7 days', strtotime($today)));
+    $nowTime = date('H:i:s');
+    $stmtCompare = $conn->prepare("SELECT COALESCE(SUM(t.total_amount),0) AS revenue FROM {$schema}.transaction t WHERE t.company_id = ? AND t.transaction_date = ? AND TIME(t.created_at) <= ?");
+    $stmtCompare->bind_param('sss', $company_id, $lastWeekDay, $nowTime);
+    $stmtCompare->execute();
+    $compare_same_time_last_week = (float)($stmtCompare->get_result()->fetch_assoc()['revenue'] ?? 0);
+    $stmtCompare->close();
     $stmtCupsToday->close();
 
     $stmtActiveDrivers = $conn->prepare("SELECT COUNT(DISTINCT user_id) AS c FROM {$coreSchema}.app_user WHERE company_id = ? AND account_status = 'verified';");
@@ -323,6 +307,7 @@ function getDashboard($conn, $schema, $company_id, $username){
         'cups_this_month' => (int)$cups,
         'avg_daily_revenue' => (float)$avg_calendar,
         'revenue_today' => $revenue_today,
+        'compare_same_time_last_week' => $compare_same_time_last_week,
         'cups_today' => $cups_today,
         'transactions_today' => $transactions_today,
         'active_drivers_today' => $active_drivers_today,
@@ -349,6 +334,9 @@ try {
         case 'GET':
             $company_id = $_GET['company_id'] ?? null;
             $action = $_GET['action'] ?? null;
+            if ($company_id && $company_id !== ($decoded->company_id ?? null)) {
+                requireCompanyAccess($conn, $decoded, $company_id);
+            }
             if ($action === 'payment_method_summary') {
                 $start_date = $_GET['start_date'] ?? null;
                 $end_date   = $_GET['end_date'] ?? null;
