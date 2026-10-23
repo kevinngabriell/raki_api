@@ -38,8 +38,12 @@ set_error_handler(function (int $severity, string $message, string $file, int $l
     throw new ErrorException($message, 0, $severity, $file, $line);
 });
 
+// .env must be loaded before the CORS check below; endpoints include this file before config.php.
+require_once __DIR__ . '/vendor/autoload.php';
+require_once __DIR__ . '/config.php';
+
 if (!$isCli) {
-    $origin = $_SERVER['HTTP_ORIGIN'] ?? '';
+    $origin =$_SERVER['HTTP_ORIGIN'] ?? '';
     $allowed_origins = array_values(array_filter(array_map('trim', explode(',', $_ENV['CORS_ALLOWED_ORIGINS'] ?? 'http://localhost:3000'))));
 
     if (in_array($origin, $allowed_origins, true)) {
