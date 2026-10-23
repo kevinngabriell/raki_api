@@ -9,17 +9,27 @@ require_once __DIR__ . '/account_rules.php';
 
 use Firebase\JWT\JWT;
 
+const RAKI_APP_ID = '06660e87-37e7-491b-92c3-c772130eb57c';
+
 function login($conn, $input){
+    $coreSchema = MOVIRA_CORE_SCHEMA;
     $conn = DB::conn();
 
-    $username = $input['username'];
-    $password = $input['password'];
+    $username = trim($input['username'] ?? '');
+    $password = $input['password'] ?? '';
 
-    $username = mysqli_real_escape_string($conn, $username);
-    $password = mysqli_real_escape_string($conn, $password);
+    if ($username === '' || $password === '') {
+        jsonResponse(400, 'Username and password are required');
+    }
 
-    $user_query = "SELECT * FROM movira_core.app_user WHERE username = '$username' AND app_id = '06660e87-37e7-491b-92c3-c772130eb57c'";
-    $user_result = mysqli_query($conn, $user_query);
+    $appId = RAKI_APP_ID;
+    $stmt = $conn->prepare("SELECT user_id, username, password, company_id, app_role_id, account_status
+                            FROM {$coreSchema}.app_user
+                            WHERE username = ? AND app_id = ?");
+    $stmt->bind_param('ss', $username, $appId);
+    $stmt->execute();
+    $user_result = $stmt->get_result();
+    $stmt->close();
 
     if (!$user_result) {
         logApiError($conn, [
@@ -27,43 +37,39 @@ function login($conn, $input){
             'http_status'   => 500,
             'endpoint'      => '/account/login.php',
             'method'        => 'POST',
-            'error_message' => mysqli_error($conn),
-            'user_identifier' => $username ?? null,
-            'company_id'      => $decoded->company_id ?? null,
+            'error_message' => 'DB query failed',
+            'user_identifier' => $username,
         ]);
-        jsonResponse(500, 'DB error', ['error' => mysqli_error($conn)]);
+        jsonResponse(500, 'Internal Server Error');
     }
 
-    if (mysqli_num_rows($user_result) !== 1) {
+    if ($user_result->num_rows !== 1) {
         logApiError($conn, [
-            'error_level'   => 'error',
+            'error_level'   => 'warning',
             'http_status'   => 401,
             'endpoint'      => '/account/login.php',
             'method'        => 'POST',
             'error_message' => 'Invalid credentials',
-            'user_identifier' => $username ?? null,
-            'company_id'      => $decoded->company_id ?? null,
+            'user_identifier' => $username,
         ]);
         jsonResponse(401, 'Invalid credentials');
     }
 
-    $row = mysqli_fetch_assoc($user_result);
+    $row = $user_result->fetch_assoc();
 
-    // verifikasi password
-    if (!password_verify($password, $row['password'])) {
+    $escapedPassword = mysqli_real_escape_string($conn, $password);
+    if (!password_verify($escapedPassword, $row['password'])) {
         logApiError($conn, [
-            'error_level'   => 'error',
+            'error_level'   => 'warning',
             'http_status'   => 401,
             'endpoint'      => '/account/login.php',
             'method'        => 'POST',
             'error_message' => 'Invalid credentials',
-            'user_identifier' => $username ?? null,
-            'company_id'      => $decoded->company_id ?? null,
+            'user_identifier' => $username,
         ]);
         jsonResponse(401, 'Invalid credentials');
     }
 
-    // Self-registered accounts can't log in until an Owner approves them (account/pending.php).
     $blockedMessage = accountStatusBlockMessage($row['account_status'] ?? null);
     if ($blockedMessage !== null) {
         logApiError($conn, [
@@ -72,14 +78,13 @@ function login($conn, $input){
             'endpoint'      => '/account/login.php',
             'method'        => 'POST',
             'error_message' => 'Login blocked, account_status=' . $row['account_status'],
-            'user_identifier' => $username ?? null,
-            'company_id'      => null,
+            'user_identifier' => $username,
         ]);
         jsonResponse(403, $blockedMessage);
     }
 
     $issuedAt       = time();
-    $expirationTime = $issuedAt + 8 * 60 * 60; // 8 jam
+    $expirationTime = $issuedAt + 8 * 60 * 60;
 
     $company_id = $row['company_id'];
     $role = $row['app_role_id'];
@@ -94,22 +99,19 @@ function login($conn, $input){
 
     $jwt = JWT::encode($payload, $_ENV['JWT_SECRET'], 'HS256');
 
-    http_response_code(200); // OK
-    echo json_encode([
-        'status_code' => 200,
-        'status_message' => 'Login Success',
-        'token' => $jwt,
-        'expires_in' => $expirationTime,
-        'data' => $payload
+    RequestLogger::setActor([
+        'username'   => $username,
+        'company_id' => $company_id,
     ]);
 
-    exit;
+    Response::success([
+        'token' => $jwt,
+        'expires_in' => $expirationTime,
+        'user' => $payload,
+    ], null, 200, 'Login successful');
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-    header("Access-Control-Allow-Origin: *");
-    header("Access-Control-Allow-Methods: POST, GET, OPTIONS, PUT, DELETE");
-    header("Access-Control-Allow-Headers: Origin, X-Requested-With, Content-Type, Accept");
     http_response_code(200);
     exit();
 }
@@ -119,19 +121,17 @@ try {
     $conn = DB::conn();
 
     switch($method){
-        case 'POST':   
+        case 'POST':
             $input = json_decode(file_get_contents('php://input'), true);
             login($conn, $input);
             break;
         default:
             logApiError($conn, [
-                'error_level'   => 'error',
+                'error_level'   => 'warning',
                 'http_status'   => 405,
                 'endpoint'      => '/account/login.php',
                 'method'        => $method,
                 'error_message' => 'Method Not Allowed',
-                'user_identifier' => $decoded->username ?? null,
-                'company_id'      => $decoded->company_id ?? null,
             ]);
             jsonResponse(405, 'Method Not Allowed');
             break;
@@ -139,18 +139,16 @@ try {
 
 } catch (Exception $e){
     $conn = DB::conn();
-    
+
     logApiError($conn, [
         'error_level'   => 'error',
         'http_status'   => 500,
         'endpoint'      => '/account/login.php',
         'method'        => '',
         'error_message' => $e->getMessage(),
-        'user_identifier' => null,
-        'company_id'      => null,
     ]);
 
-    jsonResponse(500, 'Internal Server Error', ['error' => $e->getMessage()]);
+    jsonResponse(500, 'Internal Server Error');
 }
 
 ?>

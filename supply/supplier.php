@@ -4,62 +4,94 @@ require_once '../connection/db.php';
 require_once '../vendor/autoload.php';
 require_once '../general.php';
 require_once '../config.php';
+require_once '../log.php';
 
-function createSupplier($conn, $schema, $input, $token_username){
-    if (!isset($input['supplier_name']) || !isset($input['contact_person']) || !isset($input['company_id'])) {
-        jsonResponse(400, 'Missing required fields (supplier_name, contact_person, and company_id)');
+function createSupplier($conn, $schema, $input, $token_username, $company_id){
+    if (!isset($input['supplier_name']) || !isset($input['contact_person'])) {
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 400,
+            'endpoint'      => '/supply/supplier.php',
+            'method'        => 'POST',
+            'error_message' => 'Missing required fields (supplier_name and contact_person)',
+            'user_identifier' => $token_username ?? null,
+            'company_id'      => $company_id ?? null,
+        ]);
+        jsonResponse(400, 'Missing required fields (supplier_name and contact_person)');
     }
 
     $supplier_name = $input['supplier_name'];
     $contact_person = $input['contact_person'];
-    $phone = $input['phone'];
-    $email = $input['email'];
-    $address = $input['address'];
-    $company_id = $input['company_id'];
-    $is_active = $input['is_active'];
+    $phone = $input['phone'] ?? null;
+    $email = $input['email'] ?? null;
+    $address = $input['address'] ?? null;
+    $is_active = isset($input['is_active']) ? ($input['is_active'] ? 1 : 0) : 1;
 
-    $supplier_name = mysqli_real_escape_string($conn, $input['supplier_name']);
-    $contact_person = mysqli_real_escape_string($conn, $input['contact_person']);
-    $phone = mysqli_real_escape_string($conn, $input['phone']);
-    $email = mysqli_real_escape_string($conn, $input['email']);
-    $address = mysqli_real_escape_string($conn, $input['address']);
-    $company_id = mysqli_real_escape_string($conn, $input['company_id']);
-    $is_active = $is_active ? 1 : 0;
+    $check_stmt = $conn->prepare("SELECT supplier_id FROM {$schema}.supplier WHERE supplier_name = ? AND company_id = ?");
+    $check_stmt->bind_param('ss', $supplier_name, $company_id);
+    $check_stmt->execute();
+    $check_result = $check_stmt->get_result();
 
-    $check_app_query = "SELECT * FROM {$schema}.supplier WHERE supplier_name = '$supplier_name' AND company_id = '$company_id'";
-    $check_app_result = mysqli_query($conn, $check_app_query);
+    if ($check_result->num_rows > 0) {
+        $check_stmt->close();
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 400,
+            'endpoint'      => '/supply/supplier.php',
+            'method'        => 'POST',
+            'error_message' => 'Supplier data has already exists in database',
+            'user_identifier' => $token_username ?? null,
+            'company_id'      => $company_id ?? null,
+        ]);
+        jsonResponse(400, 'Supplier data has already exists in database');
+    }
+    $check_stmt->close();
 
-    if (mysqli_num_rows($check_app_result) > 0) {
-        jsonResponse(400, 'Supplier data has already exists in database !!');    
+    $supplier_id = "supplier" . uniqid();
+    $now = getCurrentDateTimeJakarta();
+
+    $insert_stmt = $conn->prepare("INSERT INTO {$schema}.supplier (supplier_id, supplier_name, contact_person, phone, email, address, company_id, is_active, created_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+    $insert_stmt->bind_param('ssssssiiss', $supplier_id, $supplier_name, $contact_person, $phone, $email, $address, $company_id, $is_active, $now, $token_username);
+
+    if ($insert_stmt->execute()) {
+        $insert_stmt->close();
+        jsonResponse(201, 'New supplier has been created successfully', ['supplier_name' => $supplier_name]);
     } else {
-        $supplier_id = "supplier" . uniqid();
-        $now = getCurrentDateTimeJakarta();
-
-        $category_query = "INSERT INTO {$schema}.supplier (supplier_id, supplier_name, contact_person, phone, email, address, company_id, is_active, created_at, created_by) 
-        VALUES ('$supplier_id', '$supplier_name', '$contact_person', '$phone', '$email', '$address', '$company_id', '$is_active', '$now','$token_username')";
-
-        if (mysqli_query($conn, $category_query)) {
-            jsonResponse(201, 'New supplier has been created successfully', ['ingredients' => $supplier_name]);
-        } else {
-            jsonResponse(500, 'Failed to create a new supplier: ' . mysqli_error($conn));
-        }
-
+        $insert_stmt->close();
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 500,
+            'endpoint'      => '/supply/supplier.php',
+            'method'        => 'POST',
+            'error_message' => 'Failed to create a new supplier',
+            'user_identifier' => $token_username ?? null,
+            'company_id'      => $company_id ?? null,
+        ]);
+        jsonResponse(500, 'Failed to create a new supplier');
     }
 }
 
-function getAllSupplier($conn, $schema, $params, $page = 1, $limit = 10){
+function getAllSupplier($conn, $schema, $params, $company_id, $page = 1, $limit = 10){
+    $limit = pageLimit($limit);
     $offset = ($page - 1) * $limit;
+    $search = '%' . ($params ?? '') . '%';
 
-    $countQuery = "SELECT COUNT(*) as total FROM {$schema}.supplier WHERE (supplier_name LIKE '%$params%')";
-    $countResult = mysqli_query($conn, $countQuery);
-    $totalRow = mysqli_fetch_assoc($countResult);
+    $count_stmt = $conn->prepare("SELECT COUNT(*) as total FROM {$schema}.supplier WHERE company_id = ? AND (supplier_name LIKE ?)");
+    $count_stmt->bind_param('ss', $company_id, $search);
+    $count_stmt->execute();
+    $count_result = $count_stmt->get_result();
+    $totalRow = $count_result->fetch_assoc();
     $total = $totalRow['total'];
+    $count_stmt->close();
 
-    $query = "SELECT supplier_id, supplier_name, contact_person, phone, is_active FROM {$schema}.supplier WHERE (supplier_name LIKE '%$params%') LIMIT $limit OFFSET $offset";
-    $result = mysqli_query($conn, $query);
+    $query_stmt = $conn->prepare("SELECT supplier_id, supplier_name, contact_person, phone, is_active FROM {$schema}.supplier WHERE company_id = ? AND (supplier_name LIKE ?) LIMIT ? OFFSET ?");
+    $query_stmt->bind_param('ssii', $company_id, $search, $limit, $offset);
+    $query_stmt->execute();
+    $result = $query_stmt->get_result();
 
-    if ($result && mysqli_num_rows($result) > 0) {
-        $data = mysqli_fetch_all($result, MYSQLI_ASSOC);
+    if ($result && $result->num_rows > 0) {
+        $data = $result->fetch_all(MYSQLI_ASSOC);
+        $query_stmt->close();
         $response = [
             'data' => $data,
             'pagination' => [
@@ -71,18 +103,29 @@ function getAllSupplier($conn, $schema, $params, $page = 1, $limit = 10){
         ];
         jsonResponse(200, 'Supplier found', $response);
     } else {
+        $query_stmt->close();
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 404,
+            'endpoint'      => '/supply/supplier.php',
+            'method'        => 'GET',
+            'error_message' => 'Supplier not found',
+            'user_identifier' => null,
+            'company_id'      => $company_id ?? null,
+        ]);
         jsonResponse(404, 'Supplier not found');
     }
 }
 
-function getDetailSupplier($conn, $schema, $supplier_id){
-    $query = "SELECT supplier_id, supplier_name, contact_person, phone, email, address, is_active
-        FROM {$schema}.supplier 
-        WHERE supplier_id = '$supplier_id'";
-    $result = mysqli_query($conn, $query);
-    
-    if ($result && mysqli_num_rows($result) > 0) {
-        $data = mysqli_fetch_all($result, MYSQLI_ASSOC);
+function getDetailSupplier($conn, $schema, $supplier_id, $company_id){
+    $stmt = $conn->prepare("SELECT supplier_id, supplier_name, contact_person, phone, email, address, is_active FROM {$schema}.supplier WHERE supplier_id = ? AND company_id = ?");
+    $stmt->bind_param('ss', $supplier_id, $company_id);
+    $stmt->execute();
+    $result = $stmt->get_result();
+
+    if ($result && $result->num_rows > 0) {
+        $data = $result->fetch_all(MYSQLI_ASSOC);
+        $stmt->close();
         $response = [
             'data' => $data,
             'pagination' => [
@@ -94,134 +137,204 @@ function getDetailSupplier($conn, $schema, $supplier_id){
         ];
         jsonResponse(200, 'Supplier found', $response);
     } else {
+        $stmt->close();
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 404,
+            'endpoint'      => '/supply/supplier.php',
+            'method'        => 'GET',
+            'error_message' => 'Supplier not found',
+            'user_identifier' => null,
+            'company_id'      => $company_id ?? null,
+        ]);
         jsonResponse(404, 'Supplier not found');
     }
 }
 
-function updateSupplier($conn, $schema, $input){
+function updateSupplier($conn, $schema, $input, $company_id){
     if (!isset($input['supplier_id'])) {
         jsonResponse(400, 'Missing required fields (supplier_id)');
     }
 
-    $supplier_id = mysqli_real_escape_string($conn, $input['supplier_id']);
+    $supplier_id = $input['supplier_id'];
 
-    $query = "SELECT * FROM {$schema}.supplier WHERE supplier_id = '$supplier_id'";
-    $result = mysqli_query($conn, $query);
+    $check_stmt = $conn->prepare("SELECT supplier_id FROM {$schema}.supplier WHERE supplier_id = ? AND company_id = ?");
+    $check_stmt->bind_param('ss', $supplier_id, $company_id);
+    $check_stmt->execute();
+    $check_result = $check_stmt->get_result();
 
-    $updates = [];
+    if (!$check_result || $check_result->num_rows === 0) {
+        $check_stmt->close();
+        jsonResponse(404, 'Supplier not found');
+    }
+    $check_stmt->close();
+
+    $setFields = [];
+    $setTypes = '';
+    $setValues = [];
+
     if (isset($input['supplier_name'])) {
-        $updates[] = "supplier_name = '" . mysqli_real_escape_string($conn, $input['supplier_name']) . "'";
+        $setFields[] = "supplier_name = ?";
+        $setTypes .= 's';
+        $setValues[] = $input['supplier_name'];
     }
     if (isset($input['contact_person'])) {
-        $updates[] = "contact_person = '" . mysqli_real_escape_string($conn, $input['contact_person']) . "'";
+        $setFields[] = "contact_person = ?";
+        $setTypes .= 's';
+        $setValues[] = $input['contact_person'];
     }
     if (isset($input['phone'])) {
-        $updates[] = "phone = '" . mysqli_real_escape_string($conn, $input['phone']) . "'";
+        $setFields[] = "phone = ?";
+        $setTypes .= 's';
+        $setValues[] = $input['phone'];
     }
     if (isset($input['email'])) {
-        $updates[] = "email = '" . mysqli_real_escape_string($conn, $input['email']) . "'";
+        $setFields[] = "email = ?";
+        $setTypes .= 's';
+        $setValues[] = $input['email'];
     }
     if (isset($input['address'])) {
-        $updates[] = "address = '" . mysqli_real_escape_string($conn, $input['address']) . "'";
+        $setFields[] = "address = ?";
+        $setTypes .= 's';
+        $setValues[] = $input['address'];
     }
-    if (isset($input['company_id'])) {
-        $updates[] = "company_id = '" . mysqli_real_escape_string($conn, $input['company_id']) . "'";
+    if (isset($input['is_active'])) {
+        $setFields[] = "is_active = ?";
+        $setTypes .= 'i';
+        $setValues[] = $input['is_active'] ? 1 : 0;
     }
 
-    if (empty($updates)) {
+    if (empty($setFields)) {
         jsonResponse(400, 'No fields provided for update');
     }
 
-    if(mysqli_num_rows($result) > 0) {
-        $updateQuery = "UPDATE {$schema}.supplier SET " . implode(', ', $updates) . " WHERE supplier_id = '$supplier_id'";
+    $setClause = implode(', ', $setFields);
+    $allTypes = $setTypes . 'ss';
+    $allValues = array_merge($setValues, [$supplier_id, $company_id]);
 
-        if (mysqli_query($conn, $updateQuery)) {
-            jsonResponse(200, 'Supplier updated successfully', ['supplier_id' => $supplier_id]);
-        } else {
-            jsonResponse(500, 'Failed to update supplier');
-        }
+    $update_stmt = $conn->prepare("UPDATE {$schema}.supplier SET {$setClause} WHERE supplier_id = ? AND company_id = ?");
+    $update_stmt->bind_param($allTypes, ...$allValues);
+
+    if ($update_stmt->execute()) {
+        $update_stmt->close();
+        jsonResponse(200, 'Supplier updated successfully', ['supplier_id' => $supplier_id]);
     } else {
-        jsonResponse(404, message: 'Supplier not registered in systems');
+        $update_stmt->close();
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 500,
+            'endpoint'      => '/supply/supplier.php',
+            'method'        => 'PUT',
+            'error_message' => 'Failed to update supplier',
+            'user_identifier' => null,
+            'company_id'      => $company_id ?? null,
+        ]);
+        jsonResponse(500, 'Failed to update supplier');
     }
-
 }
 
-function deleteSupplier($conn, $schema, $supplier_id){
-    if($supplier_id === null || $supplier_id === ''){
+function deleteSupplier($conn, $schema, $supplier_id, $company_id){
+    if ($supplier_id === null || $supplier_id === '') {
         jsonResponse(400, 'Missing required fields (supplier_id)');
     }
 
-    $query = "SELECT * FROM {$schema}.supplier WHERE supplier_id = '$supplier_id'";
-    $result = mysqli_query($conn, $query);
+    $check_stmt = $conn->prepare("SELECT supplier_id FROM {$schema}.supplier WHERE supplier_id = ? AND company_id = ?");
+    $check_stmt->bind_param('ss', $supplier_id, $company_id);
+    $check_stmt->execute();
+    $check_result = $check_stmt->get_result();
 
-    if(mysqli_num_rows($result) > 0) {
-        $query = "DELETE FROM {$schema}.supplier WHERE supplier_id = '$supplier_id'";
+    if (!$check_result || $check_result->num_rows === 0) {
+        $check_stmt->close();
+        jsonResponse(404, 'Supplier not found');
+    }
+    $check_stmt->close();
 
-        if (mysqli_query($conn, $query)) {
-            jsonResponse(200, 'Supplier deleted successfully');
-        } else {
-            jsonResponse(500, 'Failed to delete supplier');
-        }
+    $delete_stmt = $conn->prepare("DELETE FROM {$schema}.supplier WHERE supplier_id = ? AND company_id = ?");
+    $delete_stmt->bind_param('ss', $supplier_id, $company_id);
 
+    if ($delete_stmt->execute()) {
+        $delete_stmt->close();
+        jsonResponse(200, 'Supplier deleted successfully');
     } else {
-        jsonResponse(404, 'Supplier is not registered in systems');
+        $delete_stmt->close();
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 500,
+            'endpoint'      => '/supply/supplier.php',
+            'method'        => 'DELETE',
+            'error_message' => 'Failed to delete supplier',
+            'user_identifier' => null,
+            'company_id'      => $company_id ?? null,
+        ]);
+        jsonResponse(500, 'Failed to delete supplier');
     }
 }
 
-use Firebase\JWT\JWT;
-use Firebase\JWT\Key;
-
-$headers = getallheaders();
-if (!isset($headers['Authorization'])) {
-    jsonResponse(401, 'Authorization header not found');
-}
-
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-    header("Access-Control-Allow-Origin: *");
-    header("Access-Control-Allow-Methods: POST, GET, OPTIONS, PUT, DELETE");
-    header("Access-Control-Allow-Headers: Origin, X-Requested-With, Content-Type, Accept");
     http_response_code(200);
     exit();
 }
 
+$decoded = requireAuth();
+$conn = DB::conn();
+$schema = DB_SCHEMA;
+
+$token_username = $decoded->username;
+$token_company = $decoded->company_id;
+
+$method = $_SERVER['REQUEST_METHOD'];
+
 try {
-    $token = str_replace('Bearer ', '', $headers['Authorization']);
-    $decoded = JWT::decode($token, new Key($_ENV['JWT_SECRET'], 'HS256'));
-
-    $conn = DB::conn();
-    $schema = DB_SCHEMA;
-    
-    $token_username = $decoded->username;
-    $method = $_SERVER['REQUEST_METHOD'];
-
     switch($method){
         case 'POST':
             $input = json_decode(file_get_contents('php://input'), true);
-            createSupplier($conn, $schema, $input, $token_username);
+            createSupplier($conn, $schema, $input, $token_username, $token_company);
             break;
         case 'GET':
-            $params = $_GET['params'] ?? null;
-            $page = $_GET['page'] ?? 1;
-            $limit = $_GET['limit'] ?? 10;
+            $params = $_GET['params'] ?? '';
+            $page = (int)($_GET['page'] ?? 1);
+            $limit = (int)($_GET['limit'] ?? 10);
             $supplier_id = $_GET['supplier_id'] ?? null;
             if($supplier_id != null){
-                getDetailSupplier($conn, $schema, $supplier_id);
+                getDetailSupplier($conn, $schema, $supplier_id, $token_company);
             } else {
-                getAllSupplier($conn, $schema, $params, $page, $limit);
+                getAllSupplier($conn, $schema, $params, $token_company, $page, $limit);
             }
             break;
         case 'PUT':
             $input = json_decode(file_get_contents('php://input'), true);
-            updateSupplier($conn, $schema, $input);
+            updateSupplier($conn, $schema, $input, $token_company);
             break;
         case 'DELETE':
             $supplier_id = $_GET['supplier_id'] ?? null;
-            deleteSupplier($conn, $schema, $supplier_id);
+            deleteSupplier($conn, $schema, $supplier_id, $token_company);
+            break;
+        default:
+            logApiError($conn, [
+                'error_level'   => 'error',
+                'http_status'   => 405,
+                'endpoint'      => '/supply/supplier.php',
+                'method'        => $method,
+                'error_message' => 'Method Not Allowed',
+                'user_identifier' => $decoded->username ?? null,
+                'company_id'      => $decoded->company_id ?? null,
+            ]);
+            jsonResponse(405, 'Method Not Allowed');
             break;
     }
 
 } catch (Exception $e){
-    jsonResponse(500, 'Internal Server Error', ['error' => $e->getMessage()]);
+    logApiError($conn, [
+        'error_level'   => 'error',
+        'http_status'   => 500,
+        'endpoint'      => '/supply/supplier.php',
+        'method'        => $method ?? '',
+        'error_message' => $e->getMessage(),
+        'user_identifier' => $decoded->username ?? null,
+        'company_id'      => $decoded->company_id ?? null,
+    ]);
+
+    jsonResponse(500, 'Internal Server Error');
 }
 
 ?>

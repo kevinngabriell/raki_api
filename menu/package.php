@@ -9,24 +9,10 @@ require_once '../log.php';
 header("Content-Type: application/json");
 
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-    header("Access-Control-Allow-Origin: *");
-    header("Vary: Origin");
-    header("Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS");
-    header("Access-Control-Allow-Headers: Authorization, Content-Type");
-    header("Access-Control-Allow-Credentials: true");
-    http_response_code(204);
+    http_response_code(200);
     exit();
 }
 
-use Firebase\JWT\JWT;
-use Firebase\JWT\Key;
-
-// ─────────────────────────────────────────────
-// CREATE
-// ─────────────────────────────────────────────
-
-// menu_ids arrive as a JSON array, or from a multipart form as menu_ids[]=…,
-// a JSON string '["a","b"]' or "a,b". null when not sent at all.
 function packageMenuIds($value) {
     if ($value === null) {
         return null;
@@ -38,7 +24,146 @@ function packageMenuIds($value) {
     return is_array($value) ? array_values($value) : $value;
 }
 
-// Optional photo (multipart field `image`), stored like menu photos. [null, null] when none was sent.
+// --- Contents with choices -------------------------------------------------------------------------
+// items: [{ type:"fixed", menu_id, qty } | { type:"slot", name, pick, options:[menu_id], extras:{menu_id:rupiah} }]
+// menu_ids keeps being sent/stored for the fixed menus (a menu listed twice = qty 2), so older clients keep working.
+
+function packageParseItems($raw): ?array {
+    if ($raw === null || $raw === '') {
+        return null;
+    }
+    if (is_string($raw)) {
+        $raw = json_decode($raw, true);
+    }
+    if (!is_array($raw) || !$raw) {
+        jsonResponse(400, 'items must be a non-empty array');
+    }
+    $out = [];
+    foreach (array_values($raw) as $i => $it) {
+        $type = is_array($it) ? ($it['type'] ?? '') : '';
+        if ($type === 'fixed') {
+            $qty = (int)($it['qty'] ?? 1);
+            if (empty($it['menu_id']) || $qty < 1 || $qty > 99) {
+                jsonResponse(400, "items[$i]: fixed needs menu_id and qty 1-99");
+            }
+            $out[] = ['type' => 'fixed', 'menu_id' => (string)$it['menu_id'], 'qty' => $qty];
+        } elseif ($type === 'slot') {
+            $options = array_values(array_unique(array_map('strval', (array)($it['options'] ?? []))));
+            $pick = (int)($it['pick'] ?? 1);
+            $name = trim((string)($it['name'] ?? ''));
+            if ($name === '' || !$options || $pick < 1 || $pick > count($options)) {
+                jsonResponse(400, "items[$i]: slot needs name, options and pick between 1 and the number of options");
+            }
+            $extras = [];
+            foreach ((array)($it['extras'] ?? []) as $mid => $rupiah) {
+                if (!in_array((string)$mid, $options, true) || !is_numeric($rupiah) || $rupiah < 0) {
+                    jsonResponse(400, "items[$i]: extras must be rupiah (>= 0) for menus in options");
+                }
+                if ((int)$rupiah > 0) $extras[(string)$mid] = (int)$rupiah;
+            }
+            $out[] = ['type' => 'slot', 'name' => $name, 'pick' => $pick, 'options' => $options, 'extras' => (object)$extras];
+        } else {
+            jsonResponse(400, "items[$i]: type must be fixed or slot");
+        }
+    }
+    return $out;
+}
+
+/** menu_ids for the fixed menus of items (repeated by qty). */
+function packageFixedMenuIds(array $items): array {
+    $ids = [];
+    foreach ($items as $it) {
+        if ($it['type'] === 'fixed') {
+            for ($q = 0; $q < $it['qty']; $q++) $ids[] = $it['menu_id'];
+        }
+    }
+    return $ids;
+}
+
+function packageAssertMenusExist($conn, $schema, array $ids): void {
+    foreach (array_unique($ids) as $mid) {
+        // Nonaktif / archived menus are allowed: the package simply becomes unavailable.
+        if (referenceCount($conn, "SELECT COUNT(*) FROM {$schema}.menu WHERE menu_id = ?", (string)$mid) === 0) {
+            jsonResponse(404, "menu_id not found: $mid");
+        }
+    }
+}
+
+function packageTimeOrNull($v, string $field): ?string {
+    if ($v === null || $v === '') return null;
+    if (!preg_match('/^([01]\d|2[0-3]):[0-5]\d$/', (string)$v)) jsonResponse(400, "$field must be HH:MM");
+    return (string)$v;
+}
+
+function packageDateOrNull($v, string $field): ?string {
+    if ($v === null || $v === '') return null;
+    $d = DateTime::createFromFormat('Y-m-d', (string)$v);
+    if (!$d || $d->format('Y-m-d') !== $v) jsonResponse(400, "$field must be YYYY-MM-DD");
+    return (string)$v;
+}
+
+/**
+ * Columns of the revamp that are present in $input, as [assignments, types, values]:
+ * channels, status, availability, items and remove_image.
+ */
+function packageExtraColumns(array $input, ?array $items): array {
+    $set = [];
+    $types = '';
+    $vals = [];
+    $add = function (string $col, string $t, $v) use (&$set, &$types, &$vals) {
+        $set[] = "$col = ?";
+        $types .= $t;
+        $vals[] = $v;
+    };
+    foreach (['sell_outlet', 'sell_abang', 'is_active', 'is_archived'] as $f) {
+        if (isset($input[$f]) && $input[$f] !== '') {
+            $v = filter_var($input[$f], FILTER_VALIDATE_INT, ['options' => ['min_range' => 0, 'max_range' => 1]]);
+            if ($v === false) jsonResponse(400, "$f must be 0 or 1");
+            $add($f, 'i', $v);
+        }
+    }
+    foreach (['available_from', 'available_to'] as $f) {
+        if (array_key_exists($f, $input)) $add($f, 's', packageDateOrNull($input[$f], $f));
+    }
+    foreach (['available_time_from', 'available_time_to'] as $f) {
+        if (array_key_exists($f, $input)) $add($f, 's', packageTimeOrNull($input[$f], $f));
+    }
+    if (array_key_exists('available_days', $input)) {
+        $days = $input['available_days'];
+        if (is_string($days)) $days = json_decode($days, true);
+        if ($days !== null && $days !== [] && (!is_array($days) || array_diff(array_map('intval', $days), range(0, 6)))) {
+            jsonResponse(400, 'available_days must be an array of 0 (Minggu) .. 6 (Sabtu)');
+        }
+        $add('available_days', 's', $days ? json_encode(array_values(array_unique(array_map('intval', $days)))) : null);
+    }
+    if ($items !== null) $add('items', 's', json_encode($items));
+    return [$set, $types, $vals];
+}
+
+function packageBool($v): int { return (int)(bool)$v; }
+
+/** Decodes the JSON columns and casts flags; adds `available_now` (is the package inside its window right now). */
+function packageDecorate(array $p): array {
+    $p['items'] = isset($p['items']) && $p['items'] !== null ? json_decode($p['items'], true) : null;
+    $p['available_days'] = isset($p['available_days']) && $p['available_days'] !== null ? json_decode($p['available_days'], true) : [];
+    foreach (['sell_outlet', 'sell_abang', 'is_active', 'is_archived'] as $f) {
+        if (array_key_exists($f, $p)) $p[$f] = (int)$p[$f];
+    }
+    return $p;
+}
+
+/** Pure: is a package inside its availability window at $now (Asia/Jakarta)? */
+function packageInWindow(array $p, DateTimeInterface $now): bool {
+    $date = $now->format('Y-m-d');
+    if (!empty($p['available_from']) && $date < $p['available_from']) return false;
+    if (!empty($p['available_to']) && $date > $p['available_to']) return false;
+    if (!empty($p['available_days']) && !in_array((int)$now->format('w'), $p['available_days'], true)) return false;
+    $time = $now->format('H:i');
+    if (!empty($p['available_time_from']) && $time < $p['available_time_from']) return false;
+    if (!empty($p['available_time_to']) && $time > $p['available_time_to']) return false;
+    return true;
+}
+
 function packageImageUpload() {
     if (empty($_FILES['image']) || !isset($_FILES['image']['error']) || $_FILES['image']['error'] === UPLOAD_ERR_NO_FILE) {
         return [null, null];
@@ -48,313 +173,516 @@ function packageImageUpload() {
     }
     try {
         return handle_menu_image_upload($_FILES['image'], 'package');
+    } catch (ApiException $e) {
+        throw $e;
     } catch (RuntimeException $e) {
-        jsonResponse(400, $e->getMessage());
+        error_log('packageImageUpload: ' . $e->getMessage());
+        jsonResponse(500, 'Image upload failed');
     }
 }
 
 function createPackage($conn, $schema, $input, $username) {
-    $package_name  = isset($input['package_name'])  ? mysqli_real_escape_string($conn, trim($input['package_name']))  : null;
-    $package_price = isset($input['package_price']) ? (int)$input['package_price'] : null;
-    $menu_ids      = packageMenuIds($input['menu_ids'] ?? null) ?? [];   // array of menu_id
-
-    if (!$package_name || empty($menu_ids) || !is_array($menu_ids)) {
-        jsonResponse(400, 'package_name and menu_ids (array) are required');
+    $package_name  = isset($input['package_name']) ? trim($input['package_name']) : null;
+    $package_price = isset($input['package_price']) ? $input['package_price'] : null;
+    $items         = packageParseItems($input['items'] ?? null);
+    $menu_ids      = packageMenuIds($input['menu_ids'] ?? null) ?? [];
+    if ($items !== null && !$menu_ids) {
+        $menu_ids = packageFixedMenuIds($items);
     }
 
-    // cek duplikat nama
-    $dupCheck = mysqli_query($conn, "SELECT package_id FROM {$schema}.package WHERE package_name = '$package_name'");
-    if (mysqli_num_rows($dupCheck) > 0) {
+    if (!$package_name || (empty($menu_ids) && $items === null) || !is_array($menu_ids)) {
+        jsonResponse(400, 'package_name and menu_ids (array) or items are required');
+    }
+
+    if ($package_price !== null && $package_price !== '' && !is_numeric($package_price)) {
+        jsonResponse(400, 'package_price must be numeric');
+    }
+    $price_val = ($package_price !== null && $package_price !== '') ? (float)$package_price : null;
+
+    $stmt = $conn->prepare("SELECT package_id FROM {$schema}.package WHERE package_name = ?");
+    if (!$stmt) {
+        jsonResponse(500, 'Database query error');
+    }
+    $stmt->bind_param('s', $package_name);
+    $stmt->execute();
+    $dupResult = $stmt->get_result();
+    if ($dupResult && $dupResult->num_rows > 0) {
+        $stmt->close();
         jsonResponse(400, 'Package name already exists');
     }
+    $stmt->close();
 
-    // validasi semua menu_id ada di tabel menu
-    foreach ($menu_ids as $mid) {
-        $mid = mysqli_real_escape_string($conn, $mid);
-        $chk = mysqli_query($conn, "SELECT menu_id FROM {$schema}.menu WHERE menu_id = '$mid' AND is_active = 1");
-        if (!$chk || mysqli_num_rows($chk) === 0) {
-            jsonResponse(404, "menu_id '$mid' not found or inactive");
-        }
-    }
+    packageAssertMenusExist($conn, $schema, array_merge($menu_ids, ...array_map(fn($it) => $it['type'] === 'slot' ? $it['options'] : [], $items ?? [])));
+    [$extraSet, $extraTypes, $extraVals] = packageExtraColumns($input, $items);
 
-    $package_id    = 'pkg' . uniqid();
-    $now           = getCurrentDateTimeJakarta();
-    $price_sql     = ($package_price !== null) ? $package_price : 'NULL';
+    $package_id = 'pkg' . uniqid();
+    $now        = getCurrentDateTimeJakarta();
 
     [$image_url, $thumb_url] = packageImageUpload();
-    $img_sql   = $image_url ? "'" . mysqli_real_escape_string($conn, $image_url) . "'" : 'NULL';
-    $thumb_sql = $thumb_url ? "'" . mysqli_real_escape_string($conn, $thumb_url) . "'" : 'NULL';
 
     mysqli_begin_transaction($conn);
     try {
-        $insertPkg = "INSERT INTO {$schema}.package (package_id, package_name, package_price, image_url, thumb_url, created_by, created_at)
-                      VALUES ('$package_id', '$package_name', $price_sql, $img_sql, $thumb_sql, '$username', '$now')";
-        if (!mysqli_query($conn, $insertPkg)) {
-            throw new Exception('Failed to insert package: ' . mysqli_error($conn));
+        $stmt = $conn->prepare("INSERT INTO {$schema}.package (package_id, package_name, package_price, image_url, thumb_url, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)");
+        if (!$stmt) {
+            throw new Exception('Database query error');
         }
+        $stmt->bind_param('ssdssss', $package_id, $package_name, $price_val, $image_url, $thumb_url, $username, $now);
+        if (!$stmt->execute()) {
+            $stmt->close();
+            throw new Exception('Failed to insert package');
+        }
+        $stmt->close();
 
         foreach ($menu_ids as $mid) {
-            $mid   = mysqli_real_escape_string($conn, $mid);
-            $pmId  = 'pkgmenu' . uniqid();
-            $insertPm = "INSERT INTO {$schema}.package_menu (package_menu_id, package_id, menu_id, created_at)
-                         VALUES ('$pmId', '$package_id', '$mid', '$now')";
-            if (!mysqli_query($conn, $insertPm)) {
-                throw new Exception('Failed to insert package_menu: ' . mysqli_error($conn));
+            $pmId = 'pkgmenu' . uniqid();
+            $stmt = $conn->prepare("INSERT INTO {$schema}.package_menu (package_menu_id, package_id, menu_id, created_at) VALUES (?, ?, ?, ?)");
+            if (!$stmt) {
+                throw new Exception('Database query error');
             }
+            $stmt->bind_param('ssss', $pmId, $package_id, $mid, $now);
+            if (!$stmt->execute()) {
+                $stmt->close();
+                throw new Exception('Failed to insert package_menu');
+            }
+            $stmt->close();
+        }
+
+        if ($extraSet) {
+            $stmt = $conn->prepare("UPDATE {$schema}.package SET " . implode(', ', $extraSet) . " WHERE package_id = ?");
+            $vals = array_merge($extraVals, [$package_id]);
+            $stmt->bind_param($extraTypes . 's', ...$vals);
+            $stmt->execute();
+            $stmt->close();
         }
 
         mysqli_commit($conn);
         jsonResponse(201, 'Package created successfully', ['package_id' => $package_id, 'package_name' => $package_name, 'image_url' => $image_url, 'thumb_url' => $thumb_url]);
     } catch (Exception $e) {
         mysqli_rollback($conn);
-        jsonResponse(500, $e->getMessage());
+        delete_menu_image_urls([$image_url, $thumb_url]);
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 500,
+            'endpoint'      => '/menu/package.php',
+            'method'        => 'POST',
+            'error_message' => $e->getMessage(),
+            'user_identifier' => $username ?? null,
+            'company_id'      => null,
+        ]);
+        jsonResponse(500, 'Failed to create package');
     }
 }
 
-// ─────────────────────────────────────────────
-// GET ALL
-// ─────────────────────────────────────────────
-function getAllPackages($conn, $schema, $params, $page = 1, $limit = 20) {
-    $offset = ($page - 1) * $limit;
-    $params = mysqli_real_escape_string($conn, $params ?? '');
+/** POS rules: inside the window, every fixed menu aktif and unarchived, every choice with at least one aktif option (nonaktif options are hidden). */
+function packageFilterForTill($conn, $schema, array $packages): array {
+    $now = new DateTimeImmutable('now', new DateTimeZone('Asia/Jakarta'));
+    $menuOk = [];
+    foreach ($conn->query("SELECT menu_id, is_active, is_archived FROM {$schema}.menu")->fetch_all(MYSQLI_ASSOC) as $m) {
+        $menuOk[$m['menu_id']] = (int)$m['is_active'] === 1 && (int)$m['is_archived'] === 0;
+    }
+    $out = [];
+    foreach ($packages as $p) {
+        if (!packageInWindow($p, $now)) continue;
+        if ($p['items'] === null) {
+            // Legacy package: only its plain menus.
+            foreach ($p['menus'] as $m) if (!$menuOk[$m['menu_id']]) continue 2;
+            $out[] = $p;
+            continue;
+        }
+        $items = [];
+        foreach ($p['items'] as $it) {
+            if ($it['type'] === 'fixed') {
+                if (empty($menuOk[$it['menu_id']])) continue 2;
+            } else {
+                $it['options'] = array_values(array_filter($it['options'], fn($id) => !empty($menuOk[$id])));
+                if (!$it['options']) continue 2;
+                $it['pick'] = min($it['pick'], count($it['options']));
+            }
+            $items[] = $it;
+        }
+        $p['items'] = $items;
+        $out[] = $p;
+    }
+    return $out;
+}
 
-    $countResult = mysqli_query($conn, "SELECT COUNT(*) as total FROM {$schema}.package WHERE package_name LIKE '%$params%'");
-    $total       = (int)mysqli_fetch_assoc($countResult)['total'];
+function getAllPackages($conn, $schema, $params, $page = 1, $limit = 20, $showAll = false, $channel = null) {
+    $page = (int)$page;
+    $limit = pageLimit($limit);
+    $offset = ($page - 1) * $limit;
+    $search = '%' . ($params ?? '') . '%';
+
+    // The till only sees active, unarchived packages sold on its channel; availability and menu rules are applied below.
+    $visible = $showAll ? '' : ' AND p.is_active = 1 AND p.is_archived = 0' . ($channel === 'outlet' ? ' AND p.sell_outlet = 1' : '') . ($channel === 'abang' ? ' AND p.sell_abang = 1' : '');
+
+    $stmt = $conn->prepare("SELECT COUNT(*) as total FROM {$schema}.package p WHERE p.package_name LIKE ?{$visible}");
+    if (!$stmt) {
+        jsonResponse(500, 'Database query error');
+    }
+    $stmt->bind_param('s', $search);
+    $stmt->execute();
+    $countResult = $stmt->get_result();
+    $total = (int)$countResult->fetch_assoc()['total'];
+    $stmt->close();
 
     $query = "SELECT p.package_id, p.package_name, p.package_price, p.image_url, p.thumb_url,
-                     p.created_by, p.created_at, p.updated_by, p.updated_at
+                     p.created_by, p.created_at, p.updated_by, p.updated_at,
+                     p.items, p.sell_outlet, p.sell_abang, p.is_active, p.is_archived,
+                     p.available_from, p.available_to, p.available_days, p.available_time_from, p.available_time_to
               FROM {$schema}.package p
-              WHERE p.package_name LIKE '%$params%'
+              WHERE p.package_name LIKE ?{$visible}
               ORDER BY p.created_at DESC
-              LIMIT $limit OFFSET $offset";
+              LIMIT ? OFFSET ?";
+    $stmt = $conn->prepare($query);
+    if (!$stmt) {
+        jsonResponse(500, 'Database query error');
+    }
+    $stmt->bind_param('sii', $search, $limit, $offset);
+    $stmt->execute();
+    $result = $stmt->get_result();
 
-    $result = mysqli_query($conn, $query);
-
-    if (!$result || mysqli_num_rows($result) === 0) {
+    if (!$result || $result->num_rows === 0) {
+        $stmt->close();
         jsonResponse(404, 'No packages found');
     }
 
-    $packages = mysqli_fetch_all($result, MYSQLI_ASSOC);
+    $packages = array_map('packageDecorate', $result->fetch_all(MYSQLI_ASSOC));
+    $stmt->close();
 
-    // attach menus for each package
     foreach ($packages as &$pkg) {
-        $pid      = mysqli_real_escape_string($conn, $pkg['package_id']);
-        $menuRes  = mysqli_query($conn,
-            "SELECT m.menu_id, m.menu_name, m.price, cm.category_name, m.image_url, m.thumb_url
-             FROM {$schema}.package_menu pm
-             JOIN {$schema}.menu m  ON pm.menu_id = m.menu_id
-             LEFT JOIN {$schema}.category_menu cm ON m.category_id = cm.category_id
-             WHERE pm.package_id = '$pid'"
-        );
-        $pkg['menus'] = $menuRes ? mysqli_fetch_all($menuRes, MYSQLI_ASSOC) : [];
+        $stmt = $conn->prepare("SELECT m.menu_id, m.menu_name, m.price, cm.category_name, m.image_url, m.thumb_url, m.is_active, m.is_archived
+                 FROM {$schema}.package_menu pm
+                 JOIN {$schema}.menu m ON pm.menu_id = m.menu_id
+                 LEFT JOIN {$schema}.category_menu cm ON m.category_id = cm.category_id
+                 WHERE pm.package_id = ?");
+        if ($stmt) {
+            $stmt->bind_param('s', $pkg['package_id']);
+            $stmt->execute();
+            $menuRes = $stmt->get_result();
+            $pkg['menus'] = $menuRes ? $menuRes->fetch_all(MYSQLI_ASSOC) : [];
+            $stmt->close();
+        } else {
+            $pkg['menus'] = [];
+        }
     }
     unset($pkg);
+
+    if (!$showAll) {
+        $packages = packageFilterForTill($conn, $schema, $packages);
+    }
 
     jsonResponse(200, 'Packages found', [
         'data' => $packages,
         'pagination' => [
             'total'       => $total,
-            'page'        => (int)$page,
-            'limit'       => (int)$limit,
+            'page'        => $page,
+            'limit'       => $limit,
             'total_pages' => (int)ceil($total / $limit),
         ]
     ]);
 }
 
-// ─────────────────────────────────────────────
-// GET DETAIL
-// ─────────────────────────────────────────────
 function getDetailPackage($conn, $schema, $package_id) {
-    $package_id = mysqli_real_escape_string($conn, $package_id);
+    $stmt = $conn->prepare("SELECT package_id, package_name, package_price, image_url, thumb_url, created_by, created_at, updated_by, updated_at, items, sell_outlet, sell_abang, is_active, is_archived, available_from, available_to, available_days, available_time_from, available_time_to FROM {$schema}.package WHERE package_id = ?");
+    if (!$stmt) {
+        jsonResponse(500, 'Database query error');
+    }
+    $stmt->bind_param('s', $package_id);
+    $stmt->execute();
+    $result = $stmt->get_result();
 
-    $result = mysqli_query($conn,
-        "SELECT package_id, package_name, package_price, image_url, thumb_url, created_by, created_at, updated_by, updated_at
-         FROM {$schema}.package WHERE package_id = '$package_id'"
-    );
-
-    if (!$result || mysqli_num_rows($result) === 0) {
+    if (!$result || $result->num_rows === 0) {
+        $stmt->close();
         jsonResponse(404, 'Package not found');
     }
 
-    $package = mysqli_fetch_assoc($result);
+    $package = packageDecorate($result->fetch_assoc());
+    $stmt->close();
 
-    $menuRes = mysqli_query($conn,
-        "SELECT m.menu_id, m.menu_name, m.price, cm.category_name, m.image_url, m.thumb_url
-         FROM {$schema}.package_menu pm
-         JOIN {$schema}.menu m  ON pm.menu_id = m.menu_id
-         LEFT JOIN {$schema}.category_menu cm ON m.category_id = cm.category_id
-         WHERE pm.package_id = '$package_id'"
-    );
-    $package['menus'] = $menuRes ? mysqli_fetch_all($menuRes, MYSQLI_ASSOC) : [];
+    $stmt = $conn->prepare("SELECT m.menu_id, m.menu_name, m.price, cm.category_name, m.image_url, m.thumb_url
+             FROM {$schema}.package_menu pm
+             JOIN {$schema}.menu m ON pm.menu_id = m.menu_id
+             LEFT JOIN {$schema}.category_menu cm ON m.category_id = cm.category_id
+             WHERE pm.package_id = ?");
+    if ($stmt) {
+        $stmt->bind_param('s', $package_id);
+        $stmt->execute();
+        $menuRes = $stmt->get_result();
+        $package['menus'] = $menuRes ? $menuRes->fetch_all(MYSQLI_ASSOC) : [];
+        $stmt->close();
+    } else {
+        $package['menus'] = [];
+    }
 
     jsonResponse(200, 'Package found', $package);
 }
 
-// ─────────────────────────────────────────────
-// UPDATE
-// ─────────────────────────────────────────────
 function updatePackage($conn, $schema, $input, $username) {
-    $package_id = isset($input['package_id']) ? mysqli_real_escape_string($conn, $input['package_id']) : null;
-
-    if (!$package_id) {
-        jsonResponse(400, 'package_id is required');
+    $package_id = trim((string)($input['package_id'] ?? ''));
+    if ($package_id === '') {
+        apiReject($conn, '/menu/package.php', 'PUT', $username, 400, 'package_id is required');
     }
 
-    $check = mysqli_query($conn, "SELECT package_id FROM {$schema}.package WHERE package_id = '$package_id'");
-    if (!$check || mysqli_num_rows($check) === 0) {
-        jsonResponse(404, 'Package not found');
+    $stmt = $conn->prepare("SELECT package_name, image_url, thumb_url FROM {$schema}.package WHERE package_id = ?");
+    if (!$stmt) {
+        jsonResponse(500, 'Database query error');
+    }
+    $stmt->bind_param('s', $package_id);
+    $stmt->execute();
+    $existing = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    if (!$existing) {
+        apiReject($conn, '/menu/package.php', 'PUT', $username, 404, 'Package not found');
     }
 
     $fields = [];
-    $now    = getCurrentDateTimeJakarta();
+    $types = '';
+    $values = [];
+    $now = getCurrentDateTimeJakarta();
 
     if (isset($input['package_name'])) {
-        $name     = mysqli_real_escape_string($conn, trim($input['package_name']));
-        $fields[] = "package_name = '$name'";
+        $name = trim((string)$input['package_name']);
+        if ($name === '') {
+            apiReject($conn, '/menu/package.php', 'PUT', $username, 400, 'package_name cannot be empty');
+        }
+        if ($name !== $existing['package_name']) {
+            $stmt = $conn->prepare("SELECT package_id FROM {$schema}.package WHERE package_name = ? AND package_id <> ?");
+            if (!$stmt) {
+                jsonResponse(500, 'Database query error');
+            }
+            $stmt->bind_param('ss', $name, $package_id);
+            $stmt->execute();
+            $taken = $stmt->get_result()->num_rows > 0;
+            $stmt->close();
+            if ($taken) {
+                apiReject($conn, '/menu/package.php', 'PUT', $username, 400, 'Package name already exists');
+            }
+        }
+        $fields[] = "package_name = ?";
+        $types .= 's';
+        $values[] = $name;
     }
-    if (isset($input['package_price'])) {
-        $price    = (int)$input['package_price'];
-        $fields[] = "package_price = $price";
+    if (isset($input['package_price']) && $input['package_price'] !== '') {
+        if (!is_numeric($input['package_price']) || (float)$input['package_price'] < 0) {
+            apiReject($conn, '/menu/package.php', 'PUT', $username, 400, 'package_price must be a non-negative number');
+        }
+        $fields[] = "package_price = ?";
+        $types .= 'd';
+        $values[] = (float)$input['package_price'];
     }
+
+    // Validate the menu list up front so bad input is a 400, not a rolled-back 500.
+    $items = packageParseItems($input['items'] ?? null);
+    $menu_ids = packageMenuIds($input['menu_ids'] ?? null);
+    if ($items !== null && $menu_ids === null) {
+        $menu_ids = packageFixedMenuIds($items);
+    }
+    if ($items !== null) {
+        packageAssertMenusExist($conn, $schema, array_merge(...array_map(fn($it) => $it['type'] === 'slot' ? $it['options'] : [$it['menu_id']], $items)));
+    }
+    if ($menu_ids !== null) {
+        if (!is_array($menu_ids) || empty($menu_ids)) {
+            apiReject($conn, '/menu/package.php', 'PUT', $username, 400, 'menu_ids must be a non-empty array');
+        }
+        $menu_ids = array_values(array_map('strval', $menu_ids));
+        packageAssertMenusExist($conn, $schema, $menu_ids);
+    }
+
+    [$extraSet, $extraTypes, $extraVals] = packageExtraColumns($input, $items);
+    foreach ($extraSet as $i => $clause) {
+        $fields[] = $clause;
+    }
+    $types .= $extraTypes;
+    $values = array_merge($values, $extraVals);
 
     [$image_url, $thumb_url] = packageImageUpload();
-    if ($image_url) {
-        $fields[] = "image_url = '" . mysqli_real_escape_string($conn, $image_url) . "'";
-        $fields[] = "thumb_url = '" . mysqli_real_escape_string($conn, $thumb_url) . "'";
+    if ($image_url !== null) {
+        $fields[] = "image_url = ?";
+        $types .= 's';
+        $values[] = $image_url;
+        $fields[] = "thumb_url = ?";
+        $types .= 's';
+        $values[] = $thumb_url;
     }
 
-    $menu_ids = packageMenuIds($input['menu_ids'] ?? null);
+    $removeImage = $image_url === null && filter_var($input['remove_image'] ?? false, FILTER_VALIDATE_BOOLEAN);
+    if ($removeImage) {
+        $fields[] = "image_url = NULL";
+        $fields[] = "thumb_url = NULL";
+    }
 
     if (empty($fields) && $menu_ids === null) {
-        jsonResponse(400, 'No fields provided for update');
+        apiReject($conn, '/menu/package.php', 'PUT', $username, 400, 'No fields provided for update');
     }
 
     mysqli_begin_transaction($conn);
     try {
         if (!empty($fields)) {
-            $fields[] = "updated_by = '$username'";
-            $fields[] = "updated_at = '$now'";
-            $updateQuery = "UPDATE {$schema}.package SET " . implode(', ', $fields) . " WHERE package_id = '$package_id'";
-            if (!mysqli_query($conn, $updateQuery)) {
-                throw new Exception('Failed to update package: ' . mysqli_error($conn));
+            $fields[] = "updated_by = ?";
+            $types .= 's';
+            $values[] = $username;
+            $fields[] = "updated_at = ?";
+            $types .= 's';
+            $values[] = $now;
+            $types .= 's';
+            $values[] = $package_id;
+
+            $stmt = $conn->prepare("UPDATE {$schema}.package SET " . implode(', ', $fields) . " WHERE package_id = ?");
+            if (!$stmt) {
+                throw new Exception('Database query error');
             }
+            $stmt->bind_param($types, ...$values);
+            if (!$stmt->execute()) {
+                $stmt->close();
+                throw new Exception('Failed to update package');
+            }
+            $stmt->close();
         }
 
         if ($menu_ids !== null) {
-            if (!is_array($menu_ids) || empty($menu_ids)) {
-                throw new Exception('menu_ids must be a non-empty array');
+            $stmt = $conn->prepare("DELETE FROM {$schema}.package_menu WHERE package_id = ?");
+            if (!$stmt) {
+                throw new Exception('Database query error');
             }
-
-            // validasi menu_ids
-            foreach ($menu_ids as $mid) {
-                $mid = mysqli_real_escape_string($conn, $mid);
-                $chk = mysqli_query($conn, "SELECT menu_id FROM {$schema}.menu WHERE menu_id = '$mid' AND is_active = 1");
-                if (!$chk || mysqli_num_rows($chk) === 0) {
-                    throw new Exception("menu_id '$mid' not found or inactive");
-                }
+            $stmt->bind_param('s', $package_id);
+            if (!$stmt->execute()) {
+                $stmt->close();
+                throw new Exception('Failed to remove old menus');
             }
-
-            // hapus lama, insert baru
-            if (!mysqli_query($conn, "DELETE FROM {$schema}.package_menu WHERE package_id = '$package_id'")) {
-                throw new Exception('Failed to remove old menus: ' . mysqli_error($conn));
-            }
+            $stmt->close();
 
             foreach ($menu_ids as $mid) {
-                $mid  = mysqli_real_escape_string($conn, $mid);
                 $pmId = 'pkgmenu' . uniqid();
-                $ins  = "INSERT INTO {$schema}.package_menu (package_menu_id, package_id, menu_id, created_at)
-                         VALUES ('$pmId', '$package_id', '$mid', '$now')";
-                if (!mysqli_query($conn, $ins)) {
-                    throw new Exception('Failed to insert package_menu: ' . mysqli_error($conn));
+                $stmt = $conn->prepare("INSERT INTO {$schema}.package_menu (package_menu_id, package_id, menu_id, created_at) VALUES (?, ?, ?, ?)");
+                if (!$stmt) {
+                    throw new Exception('Database query error');
                 }
+                $stmt->bind_param('ssss', $pmId, $package_id, $mid, $now);
+                if (!$stmt->execute()) {
+                    $stmt->close();
+                    throw new Exception('Failed to insert package_menu');
+                }
+                $stmt->close();
             }
         }
 
         mysqli_commit($conn);
-        jsonResponse(200, 'Package updated successfully', ['package_id' => $package_id]);
-    } catch (Exception $e) {
+    } catch (Throwable $e) {
         mysqli_rollback($conn);
-        jsonResponse(500, $e->getMessage());
+        delete_menu_image_urls([$image_url, $thumb_url]);
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 500,
+            'endpoint'      => '/menu/package.php',
+            'method'        => 'PUT',
+            'error_message' => $e->getMessage(),
+            'user_identifier' => $username ?? null,
+            'company_id'      => null,
+        ]);
+        jsonResponse(500, 'Failed to update package');
     }
+
+    if ($image_url !== null || $removeImage) {
+        delete_menu_image_urls([$existing['image_url'], $existing['thumb_url']]);
+    }
+    jsonResponse(200, 'Package updated successfully', ['package_id' => $package_id]);
 }
 
-// ─────────────────────────────────────────────
-// DELETE
-// ─────────────────────────────────────────────
-function deletePackage($conn, $schema, $package_id) {
+function deletePackage($conn, $schema, $package_id, $username) {
     if (!$package_id) {
-        jsonResponse(400, 'package_id is required');
+        apiReject($conn, '/menu/package.php', 'DELETE', $username, 400, 'package_id is required');
     }
 
-    $package_id = mysqli_real_escape_string($conn, $package_id);
+    $stmt = $conn->prepare("SELECT image_url, thumb_url FROM {$schema}.package WHERE package_id = ?");
+    if (!$stmt) {
+        jsonResponse(500, 'Database query error');
+    }
+    $stmt->bind_param('s', $package_id);
+    $stmt->execute();
+    $existing = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    if (!$existing) {
+        apiReject($conn, '/menu/package.php', 'DELETE', $username, 404, 'Package not found');
+    }
 
-    $check = mysqli_query($conn, "SELECT package_id FROM {$schema}.package WHERE package_id = '$package_id'");
-    if (!$check || mysqli_num_rows($check) === 0) {
-        jsonResponse(404, 'Package not found');
+    $sales = referenceCount($conn,
+        "SELECT COUNT(DISTINCT transaction_id) FROM {$schema}.transaction_detail WHERE package_id = ?", $package_id);
+    if ($sales > 0) {
+        apiReject($conn, '/menu/package.php', 'DELETE', $username, 409,
+            "Can't delete this package: it appears in $sales sale(s) and is needed for sales history.");
     }
 
     mysqli_begin_transaction($conn);
     try {
-        if (!mysqli_query($conn, "DELETE FROM {$schema}.package_menu WHERE package_id = '$package_id'")) {
-            throw new Exception('Failed to delete package menus: ' . mysqli_error($conn));
+        $stmt = $conn->prepare("DELETE FROM {$schema}.package_menu WHERE package_id = ?");
+        if (!$stmt) {
+            throw new Exception('Database query error');
         }
-        if (!mysqli_query($conn, "DELETE FROM {$schema}.package WHERE package_id = '$package_id'")) {
-            throw new Exception('Failed to delete package: ' . mysqli_error($conn));
+        $stmt->bind_param('s', $package_id);
+        if (!$stmt->execute()) {
+            $stmt->close();
+            throw new Exception('Failed to delete package menus');
         }
+        $stmt->close();
+
+        $stmt = $conn->prepare("DELETE FROM {$schema}.package WHERE package_id = ?");
+        if (!$stmt) {
+            throw new Exception('Database query error');
+        }
+        $stmt->bind_param('s', $package_id);
+        if (!$stmt->execute()) {
+            $stmt->close();
+            throw new Exception('Failed to delete package');
+        }
+        $stmt->close();
+
         mysqli_commit($conn);
-        jsonResponse(200, 'Package deleted successfully');
-    } catch (Exception $e) {
+    } catch (Throwable $e) {
         mysqli_rollback($conn);
-        jsonResponse(500, $e->getMessage());
+        logApiError($conn, [
+            'error_level'   => 'error',
+            'http_status'   => 500,
+            'endpoint'      => '/menu/package.php',
+            'method'        => 'DELETE',
+            'error_message' => $e->getMessage(),
+            'user_identifier' => $username ?? null,
+            'company_id'      => null,
+        ]);
+        jsonResponse(500, 'Failed to delete package');
     }
+
+    delete_menu_image_urls([$existing['image_url'], $existing['thumb_url']]);
+    jsonResponse(200, 'Package deleted successfully');
 }
 
-// ─────────────────────────────────────────────
-// ROUTING
-// ─────────────────────────────────────────────
 $method         = $_SERVER['REQUEST_METHOD'];
 $conn           = DB::conn();
 $schema         = DB_SCHEMA;
 $token_username = null;
 
-// ONLY REQUIRE TOKEN FOR NON-GET REQUESTS
-if ($method !== 'GET') {
-    $headers    = function_exists('getallheaders') ? getallheaders() : [];
-    $authHeader = $headers['Authorization'] ?? $headers['authorization'] ?? ($_SERVER['HTTP_AUTHORIZATION'] ?? null);
+$showAll = $method === 'GET' && in_array((string)($_GET['show_all'] ?? ''), ['1', 'true'], true);
 
-    if (!$authHeader) {
+if ($method !== 'GET' || $showAll) {
+    $decoded = requireAuth();
+    $token_username = $decoded->username;
+    if (!isMenuManager($decoded)) {
         logApiError($conn, [
-            'error_level'     => 'error',
-            'http_status'     => 401,
+            'error_level'     => 'warning',
+            'http_status'     => 403,
             'endpoint'        => '/menu/package.php',
             'method'          => $method,
-            'error_message'   => 'Authorization header not found',
-            'user_identifier' => null,
+            'error_message'   => 'Only the Owner can manage packages',
+            'user_identifier' => $token_username,
             'company_id'      => null,
         ]);
-        jsonResponse(401, 'Authorization header not found');
+        jsonResponse(403, 'Only the Owner can manage packages');
     }
-
-    try {
-        $token          = preg_replace('/^Bearer\s+/i', '', $authHeader);
-        $decoded        = JWT::decode($token, new Key($_ENV['JWT_SECRET'], 'HS256'));
-        $token_username = $decoded->username;
-    } catch (Exception $e) {
-        logApiError($conn, [
-            'error_level'     => 'error',
-            'http_status'     => 401,
-            'endpoint'        => '/menu/package.php',
-            'method'          => $method,
-            'error_message'   => $e->getMessage(),
-            'user_identifier' => null,
-            'company_id'      => null,
-        ]);
-        jsonResponse(401, 'Invalid or expired token', ['error' => $e->getMessage()]);
+    if ($method === 'POST' || $method === 'PUT') {
+        rejectOversizedBody();
     }
 }
 
 try {
-
     switch ($method) {
         case 'GET':
             $package_id = $_GET['package_id'] ?? null;
@@ -364,13 +692,12 @@ try {
                 $params = $_GET['params'] ?? null;
                 $page   = $_GET['page']   ?? 1;
                 $limit  = $_GET['limit']  ?? 20;
-                getAllPackages($conn, $schema, $params, $page, $limit);
+                $channel = in_array($_GET['channel'] ?? null, ['outlet', 'abang'], true) ? $_GET['channel'] : null;
+                getAllPackages($conn, $schema, $params, $page, $limit, $showAll, $channel);
             }
             break;
 
         case 'POST':
-            // JSON, or multipart/form-data when a photo (`image`) is attached. PHP only parses
-            // multipart bodies on POST, so a photo update is POST with package_id (like menu.php).
             $input = !empty($_POST) ? $_POST : (json_decode(file_get_contents('php://input'), true) ?? []);
 
             if (!empty($input['package_id'])) {
@@ -387,7 +714,7 @@ try {
 
         case 'DELETE':
             $package_id = $_GET['package_id'] ?? null;
-            deletePackage($conn, $schema, $package_id);
+            deletePackage($conn, $schema, $package_id, $token_username);
             break;
 
         default:
@@ -404,6 +731,8 @@ try {
             break;
     }
 
+} catch (ApiException $e) {
+    throw $e;
 } catch (Exception $e) {
     logApiError($conn, [
         'error_level'     => 'error',
@@ -414,5 +743,5 @@ try {
         'user_identifier' => $token_username,
         'company_id'      => null,
     ]);
-    jsonResponse(500, 'Internal Server Error', ['error' => $e->getMessage()]);
+    jsonResponse(500, 'Internal Server Error');
 }

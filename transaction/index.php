@@ -8,12 +8,16 @@ require_once '../notification/notification.php';
 require_once '../notification/email.php';
 require_once '../log.php';
 require_once '../promo/engine.php';
+require_once '../voucher/engine.php';
+require_once '../setoran/lib.php';
 
 // Cashier roles (app_role.role_name) whose sales get a No. Antrian from pos_queue_counter.
 // The Outlet POS saves through this endpoint; the Abang app uses /pos/transaction.php.
 const QUEUE_NUMBER_ROLES = ['Outlet'];
 
-function createTransaction($conn, $schema, $input, $username, $role = null, $token_company_id = null){
+// $edit = the existing transaction row when this is a PUT: the sale is rebuilt under the same id, time and kasir.
+function createTransaction($conn, $schema, $input, $username, $role = null, $token_company_id = null, ?array $edit = null){
+    $coreSchema = MOVIRA_CORE_SCHEMA;
     // Basic validation
     if (!$input || !isset($input['items']) || !is_array($input['items']) || count($input['items']) === 0) {
         logApiError($conn, [
@@ -45,7 +49,53 @@ function createTransaction($conn, $schema, $input, $username, $role = null, $tok
         jsonResponse(400, 'company_id is required (not found in payload or token).');
     }
 
-    $total_items = $input['total_items'];
+    // Acting on another outlet needs access to it (an Owner's own outlets); a Mitra / cashier stays in their company.
+    $actor = (object)['role' => $role, 'username' => $username, 'company_id' => $token_company_id];
+    if ($edit) {
+        if ($company_id !== $edit['company_id']) {
+            jsonResponse(400, 'company_id does not match the transaction');
+        }
+        $input['transaction_date'] = $input['transaction_date'] ?? $edit['transaction_date'];
+    }
+    if ($company_id !== $token_company_id && !in_array($company_id, accessCompanyIds($conn, $actor), true)) {
+        jsonResponse(403, 'Kamu tidak punya akses ke outlet ini');
+    }
+
+    // Abang day bundle: recorded by an Owner / Mitra on behalf of an abang, with a manual discount and no promo.
+    $source = ($input['source'] ?? 'outlet') === 'bundle' ? 'bundle' : 'outlet';
+    $created_for = null;
+    $manual_discount = 0;
+    if ($source === 'bundle') {
+        if (!accessIsManager($actor)) {
+            jsonResponse(403, 'Hanya Owner atau Mitra yang bisa mencatat bundle abang');
+        }
+        $created_for = trim((string)($input['created_for'] ?? ''));
+        if ($created_for === '') {
+            jsonResponse(400, 'created_for (username abang) wajib diisi untuk bundle');
+        }
+        $stmtAb = $conn->prepare("SELECT 1 FROM {$coreSchema}.app_user WHERE username = ? AND company_id = ? AND app_role_id = ? LIMIT 1");
+        $abangRole = ACCESS_ROLE_ABANG;
+        $stmtAb->bind_param('sss', $created_for, $company_id, $abangRole);
+        $stmtAb->execute();
+        if (!$stmtAb->get_result()->fetch_row()) {
+            jsonResponse(400, 'created_for bukan abang di outlet ini');
+        }
+        $stmtAb->close();
+        $input['apply_promo'] = false;
+        unset($input['voucher_code']);
+        $manual_discount = max(0, (int)($input['discount_amount'] ?? 0));
+    }
+    $notes = isset($input['notes']) && trim((string)$input['notes']) !== '' ? mb_substr(trim((string)$input['notes']), 0, 500) : null;
+    $time_ok = fn($t) => $t === null || $t === '' || preg_match('/^([01]\d|2[0-3]):[0-5]\d$/', (string)$t);
+    $sell_start = $input['sell_start'] ?? null;
+    $sell_end = $input['sell_end'] ?? null;
+    if (!$time_ok($sell_start) || !$time_ok($sell_end)) {
+        jsonResponse(400, 'sell_start / sell_end harus berformat HH:MM');
+    }
+    $sell_start = $sell_start === '' ? null : $sell_start;
+    $sell_end = $sell_end === '' ? null : $sell_end;
+    $extra_columns = $source === 'bundle' || $notes !== null || $sell_start !== null || $sell_end !== null || $edit !== null;
+
     // Jakarta explicitly: the promo day check is judged on this date, and PHP's default timezone isn't guaranteed to be Asia/Jakarta.
     $transaction_date = isset($input['transaction_date']) && !empty($input['transaction_date']) ? $input['transaction_date'] : getCurrentDateTimeJakarta();
 
@@ -181,14 +231,19 @@ function createTransaction($conn, $schema, $input, $username, $role = null, $tok
     $gross_amount = $total_amount;
     $discount_amount = 0;
     $promo_applied = null;
+    $promo_discount = 0;
+    $promo_result = null;
 
     if ($apply_promo) {
         $promo_result = promoEvaluateRequest(
             $conn, $schema, (string)$company_id, promoResolveRoleName($conn, $role),
-            $input['transaction_date'] ?? null, $promo_lines
+            $input['transaction_date'] ?? null, $promo_lines,
+            ['channel' => in_array($input['channel'] ?? null, ['outlet', 'abang'], true) ? $input['channel'] : null,
+             'allow_past' => promoIsManagerRole(promoResolveRoleName($conn, $role))]
         );
         $discount_amount = $promo_result['discount_amount'];
         $promo_applied = $promo_result['applied'];
+        $promo_discount = $discount_amount;
 
         if ($discount_amount > 0) {
             $line_discounts = array_column($promo_result['lines'], 'discount_amount', 'index');
@@ -200,6 +255,48 @@ function createTransaction($conn, $schema, $input, $username, $role = null, $tok
             unset($pi);
             $total_amount = $gross_amount - $discount_amount;
         }
+    }
+
+    // --- Voucher (optional, stacks with the promo) ---
+    // Computed on the cart after the promo and validated again here; the use is recorded inside the
+    // DB transaction below. A bad code rejects the sale (the POS shows the reason).
+    $voucher_code = voucherNormalizeCode($input['voucher_code'] ?? '');
+    $voucher_applied = null;
+    $voucher_discount = 0;
+    $sale_channel = in_array($input['channel'] ?? null, ['outlet', 'abang'], true) ? $input['channel'] : null;
+    if ($voucher_code !== '') {
+        $voucher_row = voucherFindByCode($conn, $schema, $voucher_code);
+        $cart_after_promo = $promo_result['lines'] ?? voucherPlainCart($promo_lines);
+        $ve = $voucher_row
+            ? voucherEvaluate($conn, $schema, $voucher_row, (string)$company_id, $sale_channel, $cart_after_promo,
+                promoLoadMenuInfo($conn, $schema, array_column($promo_lines, 'menu_id')), promoSaleDate($input['transaction_date'] ?? null, promoTodayJakarta()))
+            : voucherRejected('not_found');
+        if (!$ve['valid']) {
+            jsonResponse(400, $ve['message'], ['reason' => $ve['reason']]);
+        }
+        $voucher_discount = $ve['discount_amount'];
+        foreach ($prepared_items as &$pi) {
+            $share = $ve['line_discounts'][$pi['cart_index']] ?? 0;
+            $pi['discount_amount'] += $share;
+            $pi['subtotal'] -= $share;
+        }
+        unset($pi);
+        $discount_amount += $voucher_discount;
+        $total_amount = $gross_amount - $discount_amount;
+        $voucher_applied = ['voucher_id' => $ve['voucher_id'], 'voucher_name' => $ve['voucher_name'], 'code' => $ve['code'], 'discount_amount' => $voucher_discount];
+    }
+
+    // Bundle: manual discount spread over the lines in proportion to their value.
+    if ($manual_discount > 0) {
+        $manual_discount = min($manual_discount, (int)$gross_amount);
+        $shares = promoAllocate($manual_discount, array_map(fn($pi) => (int)$pi['subtotal'], $prepared_items));
+        foreach ($prepared_items as $i => &$pi) {
+            $pi['discount_amount'] += $shares[$i] ?? 0;
+            $pi['subtotal'] -= $shares[$i] ?? 0;
+        }
+        unset($pi);
+        $discount_amount += $manual_discount;
+        $total_amount = $gross_amount - $discount_amount;
     }
 
         // --- Payment breakdown (cash / qris) ---
@@ -295,7 +392,7 @@ function createTransaction($conn, $schema, $input, $username, $role = null, $tok
         ]);
         // With apply_promo, tell the POS what the server expects so it can refresh its numbers.
         jsonResponse(400, "Total payment (sum of all payment_method entries) must equal total_amount. total_paid=$total_paid, total_amount=$total_amount",
-            $apply_promo ? ['gross_amount' => $gross_amount, 'discount_amount' => $discount_amount, 'total_amount' => $total_amount, 'promo' => $promo_applied] : []);
+            ($apply_promo || $voucher_applied) ? ['gross_amount' => $gross_amount, 'discount_amount' => $discount_amount, 'total_amount' => $total_amount, 'promo' => $promo_applied, 'voucher' => $voucher_applied] : []);
     }
 
     // Decides both the queue number below and the per-transaction notification after commit.
@@ -306,14 +403,22 @@ function createTransaction($conn, $schema, $input, $username, $role = null, $tok
 
     try {
         // Generate IDs
-        $transaction_id = 'trx' . uniqid();
+        $transaction_id = $edit ? $edit['transaction_id'] : 'trx' . uniqid();
+        if ($edit) {
+            foreach (['transaction_detail', 'transaction_payment', 'transaction_promo', 'voucher_usage', 'transaction'] as $table) {
+                $stmtClear = $conn->prepare("DELETE FROM {$schema}.$table WHERE transaction_id = ?");
+                $stmtClear->bind_param('s', $transaction_id);
+                $stmtClear->execute();
+                $stmtClear->close();
+            }
+        }
 
         // No. Antrian: POS sales take the next number from the same per-company, per-day counter
         // as /pos/queue-next.php, inside this DB transaction so a failed sale doesn't burn a number.
         // The day is the real (DB) date, not transaction_date: the number goes on the ticket handed
         // out now. Dashboard entries by other roles are left NULL.
         $queue_number = null;
-        if (in_array($creatorRoleName, QUEUE_NUMBER_ROLES, true)) {
+        if (!$edit && in_array($creatorRoleName, QUEUE_NUMBER_ROLES, true)) {
             $stmtQueue = $conn->prepare("INSERT INTO {$schema}.pos_queue_counter (company_id, queue_date, counter) VALUES (?, CURDATE(), LAST_INSERT_ID(1)) ON DUPLICATE KEY UPDATE counter = LAST_INSERT_ID(counter + 1)");
             if (!$stmtQueue) {
                 throw new Exception('Prepare queue number failed: ' . $conn->error);
@@ -366,6 +471,20 @@ function createTransaction($conn, $schema, $input, $username, $role = null, $tok
                 'company_id'      => $decoded->company_id ?? null,
             ]);
             throw new Exception('Execute header failed: ' . $stmtHeader->error);
+        }
+
+        if ($edit) {
+            // Keep who and when it was originally recorded.
+            $stmtKeep = $conn->prepare("UPDATE {$schema}.transaction SET created_at = ?, created_by = ?, queue_number = ?, session_id = ?, latitude = ?, longitude = ?, source_type = ? WHERE transaction_id = ?");
+            $stmtKeep->bind_param('ssisddss', $edit['created_at'], $edit['created_by'], $edit['queue_number'], $edit['session_id'], $edit['latitude'], $edit['longitude'], $edit['source_type'], $transaction_id);
+            $stmtKeep->execute();
+            $stmtKeep->close();
+        }
+        if ($extra_columns) {
+            $stmtExtra = $conn->prepare("UPDATE {$schema}.transaction SET source = ?, created_for = ?, notes = ?, sell_start = ?, sell_end = ? WHERE transaction_id = ?");
+            $stmtExtra->bind_param('ssssss', $source, $created_for, $notes, $sell_start, $sell_end, $transaction_id);
+            $stmtExtra->execute();
+            $stmtExtra->close();
         }
 
         // Insert details
@@ -473,16 +592,20 @@ function createTransaction($conn, $schema, $input, $username, $role = null, $tok
         }
 
         // Audit which promo discounted this sale (promo_name is a snapshot; see promo_migration.sql).
-        if ($promo_applied && $discount_amount > 0) {
+        if ($promo_applied && $promo_discount > 0) {
             $stmtPromo = $conn->prepare("INSERT INTO {$schema}.transaction_promo (transaction_promo_id, transaction_id, promo_id, promo_name, applications, discount_amount) VALUES (?, ?, ?, ?, ?, ?)");
             $promo_row_id = 'trp' . uniqid();
             $promo_id = $promo_applied['promo_id'];
             $promo_name = $promo_applied['promo_name'];
             $promo_applications = $promo_applied['applications'];
-            $stmtPromo->bind_param('ssssii', $promo_row_id, $transaction_id, $promo_id, $promo_name, $promo_applications, $discount_amount);
+            $stmtPromo->bind_param('ssssii', $promo_row_id, $transaction_id, $promo_id, $promo_name, $promo_applications, $promo_discount);
             if (!$stmtPromo->execute()) {
                 throw new Exception('Execute promo usage failed: ' . $stmtPromo->error);
             }
+        }
+
+        if ($voucher_applied) {
+            voucherRecordUse($conn, $schema, $voucher_code, $transaction_id, (string)$username, (string)$company_id, $sale_channel, $voucher_discount);
         }
 
         // compute total cups (exclude certain menu IDs, e.g. non-cup items)
@@ -498,6 +621,12 @@ function createTransaction($conn, $schema, $input, $username, $role = null, $tok
         // Commit
         $conn->commit();
 
+        // A sale added to or changed on a finished day reopens that day's setoran.
+        setoranReopen($conn, $schema, (string)$company_id, (string)$transaction_date);
+        if ($edit) {
+            setoranReopen($conn, $schema, (string)$company_id, (string)$edit['transaction_date']);
+        }
+
         // Outlet-created transactions are recapped once a day (18:00 WIB) instead of
         // notifying on every transaction — see notification/outlet_daily_recap.php.
         // ($creatorRoleName is resolved before the DB transaction.)
@@ -507,7 +636,7 @@ function createTransaction($conn, $schema, $input, $username, $role = null, $tok
         try {
             if ($creatorRoleName !== 'Outlet') {
                 // Fetch PIC contact from app_company
-                $sqlPhone = "SELECT pic_contact FROM movira_core.app_company WHERE company_id = ?";
+                $sqlPhone = "SELECT pic_contact FROM {$coreSchema}.app_company WHERE company_id = ?";
                 $stmtPhone = $conn->prepare($sqlPhone);
 
                 if ($stmtPhone) {
@@ -537,7 +666,7 @@ function createTransaction($conn, $schema, $input, $username, $role = null, $tok
                         error_log('Gagal kirim WhatsApp: ' . ($waResult['raw'] ?? ''));
 
                         // Fallback: send email to business owner
-                        $sqlOwnerEmail = "SELECT u.email FROM movira_core.app_user u JOIN movira_core.app_role r ON r.app_role_id = u.app_role_id WHERE u.company_id = ? AND r.role_name = 'Owner' AND u.email IS NOT NULL AND u.email != '' LIMIT 1";
+                        $sqlOwnerEmail = "SELECT u.email FROM {$coreSchema}.app_user u JOIN {$coreSchema}.app_role r ON r.app_role_id = u.app_role_id WHERE u.company_id = ? AND r.role_name = 'Owner' AND u.email IS NOT NULL AND u.email != '' LIMIT 1";
                         $stmtOwnerEmail = $conn->prepare($sqlOwnerEmail);
                         if ($stmtOwnerEmail) {
                             $stmtOwnerEmail->bind_param('s', $company_id);
@@ -581,7 +710,16 @@ function createTransaction($conn, $schema, $input, $username, $role = null, $tok
             $response['discount_amount'] = $discount_amount;
             $response['promo'] = $promo_applied;
         }
-        jsonResponse(201, 'Transaction created', $response);
+        if ($voucher_applied) {
+            $response['gross_amount'] = $gross_amount;
+            $response['discount_amount'] = $discount_amount;
+            $response['voucher'] = $voucher_applied;
+        }
+        $response['source'] = $source;
+        jsonResponse($edit ? 200 : 201, $edit ? 'Transaction updated' : 'Transaction created', $response);
+    } catch (VoucherRaceException $e) {
+        $conn->rollback();
+        jsonResponse(409, VOUCHER_REASON_MESSAGES[$e->getMessage()] ?? 'Voucher tidak bisa dipakai', ['reason' => $e->getMessage()]);
     } catch (Exception $e) {
         $conn->rollback();
         logApiError($conn, [
@@ -591,9 +729,9 @@ function createTransaction($conn, $schema, $input, $username, $role = null, $tok
             'method'        => 'POST',
             'error_message' =>  $e->getMessage(),
             'user_identifier' => $username ?? null,
-            'company_id'      => $decoded->company_id ?? null,
+            'company_id'      => $company_id ?? null,
          ]);
-        jsonResponse(500, 'Failed to create transaction', ['error' => $e->getMessage()]);
+        jsonResponse(500, 'Failed to create transaction');
     }
 }
 
@@ -707,10 +845,10 @@ function getDetailTransaction($conn, $schema, $trx_id, $username){
 }
 
 function getAllTransaction($conn, $schema, $company_id = null, $username = null, $page = 1, $limit = 10){
+    $coreSchema = MOVIRA_CORE_SCHEMA;
     $page = (int)$page;
-    $limit = (int)$limit;
+    $limit = pageLimit($limit);
     if ($page < 1) { $page = 1; }
-    if ($limit < 1) { $limit = 10; }
 
     $offset = ($page - 1) * $limit;
 
@@ -815,7 +953,7 @@ function getAllTransaction($conn, $schema, $company_id = null, $username = null,
     $total = (int)($totalRow['total'] ?? 0);
 
     // --- Query data transaksi + nama company ---
-    $baseSelect = "SELECT t.transaction_id, t.company_id, t.transaction_date, t.total_amount, t.created_at, t.created_by, t.updated_at, t.updated_by, t.total_item, ac.company_name FROM {$schema}.transaction t LEFT JOIN movira_core.app_company ac ON ac.company_id = t.company_id";
+    $baseSelect = "SELECT t.transaction_id, t.company_id, t.transaction_date, t.total_amount, t.created_at, t.created_by, t.updated_at, t.updated_by, t.total_item, ac.company_name FROM {$schema}.transaction t LEFT JOIN {$coreSchema}.app_company ac ON ac.company_id = t.company_id";
 
     if ($hasCompanyFilter && $hasUsernameFilter) {
         $sql = $baseSelect . " WHERE t.company_id = ? AND t.created_by = ? ORDER BY t.transaction_date DESC, t.created_at DESC LIMIT ?, ?";
@@ -886,114 +1024,88 @@ function getAllTransaction($conn, $schema, $company_id = null, $username = null,
     jsonResponse(200, 'Success', $response);
 }
 
-function deleteTransaction ($conn, $schema, $transaction_id){
-    if($transaction_id === null || $transaction_id === ''){
-        logApiError($conn, [
-            'error_level'   => 'error',
-            'http_status'   => 400,
-            'endpoint'      => '/transaction/index.php',
-            'method'        => 'DELETE',
-            'error_message' =>  'Missing required fields (transaction_id)',
-            'user_identifier' => $username ?? null,
-            'company_id'      => $decoded->company_id ?? null,
-        ]);
+// The transaction row if the caller may change it: same company as the token (legacy rule) or one of an Owner's outlets.
+function loadEditableTransaction($conn, $schema, $transaction_id, object $decoded): array {
+    if ($transaction_id === null || $transaction_id === '') {
         jsonResponse(400, 'Missing required fields (transaction_id)');
     }
+    $stmt = $conn->prepare("SELECT * FROM {$schema}.transaction WHERE transaction_id = ? LIMIT 1");
+    $stmt->bind_param('s', $transaction_id);
+    $stmt->execute();
+    $trx = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    if (!$trx) {
+        jsonResponse(404, 'Transaction not found');
+    }
+    $own = $decoded->company_id ?? null;
+    if ($trx['company_id'] !== $own && !in_array($trx['company_id'], accessCompanyIds($conn, $decoded), true)) {
+        jsonResponse(403, 'You do not have permission to change this transaction');
+    }
+    return $trx;
+}
 
-    $query = "SELECT * FROM {$schema}.transaction WHERE transaction_id = '$transaction_id'";
-    $result = mysqli_query($conn, $query);
+function deleteTransaction ($conn, $schema, $transaction_id, object $decoded){
+    $trx = loadEditableTransaction($conn, $schema, $transaction_id, $decoded);
 
-    if(mysqli_num_rows($result) > 0) {
-        $query_one =  "DELETE FROM {$schema}.transaction_detail WHERE transaction_id = '$transaction_id'";
-        $query = "DELETE FROM {$schema}.transaction WHERE transaction_id = '$transaction_id'";
+    $conn->begin_transaction();
 
-        if (mysqli_query($conn, $query_one)) {
-            if (mysqli_query($conn, $query)) {
-                jsonResponse(200, 'Transaction deleted successfully');
-            } else {
-                logApiError($conn, [
-                    'error_level'   => 'error',
-                    'http_status'   => 400,
-                    'endpoint'      => '/transaction/index.php',
-                    'method'        => 'DELETE',
-                    'error_message' =>  mysqli_error($conn),
-                    'user_identifier' => $username ?? null,
-                    'company_id'      => $decoded->company_id ?? null,
-                ]);
-                jsonResponse(500, 'Failed to delete transaction');
-            }
-        } else {
-            logApiError($conn, [
-                'error_level'   => 'error',
-                'http_status'   => 500,
-                'endpoint'      => '/transaction/index.php',
-                'method'        => 'DELETE',
-                'error_message' =>  'Failed to delete transaction detail',
-                'user_identifier' => $username ?? null,
-                'company_id'      => $decoded->company_id ?? null,
-            ]);
-            jsonResponse(500, 'Failed to delete transaction detail');
+    try {
+        // A voucher code used by this sale becomes usable again.
+        $stmt = $conn->prepare("UPDATE {$schema}.voucher_code SET used_at = NULL, used_by = NULL, transaction_id = NULL WHERE transaction_id = ?");
+        $stmt->bind_param('s', $transaction_id);
+        $stmt->execute();
+        $stmt->close();
+
+        foreach (['transaction_detail', 'transaction_payment', 'transaction_promo', 'voucher_usage', 'setoran_qris_flag', 'transaction'] as $table) {
+            $stmt = $conn->prepare("DELETE FROM {$schema}.$table WHERE transaction_id = ?");
+            $stmt->bind_param('s', $transaction_id);
+            $stmt->execute();
+            $stmt->close();
         }
-    } else {
+
+        $conn->commit();
+        setoranReopen($conn, $schema, $trx['company_id'], $trx['transaction_date']);
+        jsonResponse(200, 'Transaction deleted successfully');
+    } catch (Exception $e) {
+        $conn->rollback();
         logApiError($conn, [
             'error_level'   => 'error',
             'http_status'   => 500,
             'endpoint'      => '/transaction/index.php',
             'method'        => 'DELETE',
-            'error_message' =>  'Transaction is not registered in systems',
-            'user_identifier' => $username ?? null,
-            'company_id'      => $decoded->company_id ?? null,
+            'error_message' => 'Failed to delete transaction: ' . $e->getMessage(),
         ]);
-        jsonResponse(404, 'Transaction is not registered in systems');
+        jsonResponse(500, 'Failed to delete transaction');
     }
 }
 
 use Firebase\JWT\JWT;
 use Firebase\JWT\Key;
 
-$headers = getallheaders();
-if (!isset($headers['Authorization'])) {
-    logApiError($conn, [
-        'error_level'   => 'error',
-        'http_status'   => 500,
-        'endpoint'      => '/transaction/index.php',
-        'method'        => '',
-        'error_message' =>  'Authorization header not found',
-        'user_identifier' => $username ?? null,
-        'company_id'      => $decoded->company_id ?? null,
-    ]);
-    jsonResponse(401, 'Authorization header not found');
-}
-
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-    header("Access-Control-Allow-Origin: *");
-    header("Access-Control-Allow-Methods: POST, GET, OPTIONS, PUT, DELETE");
-    header("Access-Control-Allow-Headers: Origin, X-Requested-With, Content-Type, Accept");
     http_response_code(200);
     exit();
 }
 
 try {
-    $token = str_replace('Bearer ', '', $headers['Authorization']);
-    $decoded = JWT::decode($token, new Key($_ENV['JWT_SECRET'], 'HS256'));
+    $decoded = requireAuth();
 
     $conn = DB::conn();
     $schema = DB_SCHEMA;
 
     $token_username = $decoded->username;
+    $token_company = $decoded->company_id ?? null;
     $method = $_SERVER['REQUEST_METHOD'];
 
     switch($method){
         case 'POST':
             if (stripos($_SERVER['CONTENT_TYPE'] ?? '', 'application/json') === false) {
-                // Not fatal, but helps clients send correct header
-                // continue anyway as we read raw body
             }
             $input = json_decode(file_get_contents('php://input'), true);
             if (json_last_error() !== JSON_ERROR_NONE) {
                 jsonResponse(400, 'Invalid JSON body');
             }
-            createTransaction($conn, $schema, $input, $token_username, $decoded->role ?? null, $decoded->company_id ?? null);
+            createTransaction($conn, $schema, $input, $token_username, $decoded->role ?? null, $token_company);
             break;
         case 'GET':
             $company_id = $_GET['company_id'] ?? null;
@@ -1009,20 +1121,22 @@ try {
             break;
         case 'DELETE':
             $transaction_id = $_GET['transaction_id'] ?? null;
-            deleteTransaction($conn, $schema, $transaction_id);
+            deleteTransaction($conn, $schema, $transaction_id, $decoded);
+            break;
+        case 'PUT':
+            requireManager($decoded);
+            $input = json_decode(file_get_contents('php://input'), true);
+            if (json_last_error() !== JSON_ERROR_NONE || !is_array($input)) {
+                jsonResponse(400, 'Invalid JSON body');
+            }
+            $existing = loadEditableTransaction($conn, $schema, $input['transaction_id'] ?? null, $decoded);
+            if (!empty($existing['voucher_id'])) {
+                jsonResponse(409, 'Transaksi dengan voucher tidak bisa diedit. Hapus lalu catat ulang.', ['reason' => 'has_voucher']);
+            }
+            $input['company_id'] = $existing['company_id'];
+            createTransaction($conn, $schema, $input, $token_username, $decoded->role ?? null, $token_company, $existing);
             break;
         default:
-            $conn = DB::conn();
-
-            logApiError($conn, [
-                'error_level'   => 'error',
-                'http_status'   => 405,
-                'endpoint'      => '/transaction/index.php',
-                'method'        => 'POST',
-                'error_message' => 'Method Not Allowed',
-                'user_identifier' => $decoded->username ?? null,
-                'company_id'      => $decoded->company_id ?? null,
-            ]);
             jsonResponse(405, 'Method Not Allowed');
             break;
     }
@@ -1032,15 +1146,13 @@ try {
 
     logApiError($conn, [
         'error_level'   => 'error',
-        'http_status'   => 401,
+        'http_status'   => 500,
         'endpoint'      => '/transaction/index.php',
-        'method'        => 'POST',
+        'method'        => $_SERVER['REQUEST_METHOD'] ?? '',
         'error_message' => $e->getMessage(),
-        'user_identifier' => $username ?? null,
-        'company_id'      => $decoded->company_id ?? null,
     ]);
 
-    jsonResponse(500, 'Internal Server Error', ['error' => $e->getMessage()]);
+    jsonResponse(500, 'Internal Server Error');
 }
 
 ?>

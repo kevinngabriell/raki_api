@@ -16,6 +16,7 @@ function calcGrowth($current, $previous): ?float {
 }
 
 function fetchCompanySummary($conn, $schema, string $start, string $end, $companyParam, bool $isExclude): array {
+    $coreSchema = MOVIRA_CORE_SCHEMA;
     $op  = $isExclude ? '!=' : '=';
     $sql = "SELECT
                 ac.company_id,
@@ -24,7 +25,7 @@ function fetchCompanySummary($conn, $schema, string $start, string $end, $compan
                 COUNT(t.transaction_id)            AS total_trx,
                 COALESCE(AVG(t.total_amount), 0)  AS avg_per_trx
             FROM {$schema}.`transaction` t
-            JOIN movira_core.app_company ac ON ac.company_id = t.company_id
+            JOIN {$coreSchema}.app_company ac ON ac.company_id = t.company_id
             WHERE t.transaction_date BETWEEN ? AND ?
               AND t.company_id {$op} ?
             GROUP BY t.company_id, ac.company_name
@@ -82,6 +83,7 @@ function fetchPaymentBreakdown($conn, $schema, string $start, string $end, $comp
 }
 
 function fetchCashierPerformance($conn, $schema, string $start, string $end, $companyParam, bool $isExclude): array {
+    $coreSchema = MOVIRA_CORE_SCHEMA;
     $op  = $isExclude ? '!=' : '=';
     $sql = "SELECT
                 t.created_by,
@@ -90,7 +92,7 @@ function fetchCashierPerformance($conn, $schema, string $start, string $end, $co
                 COUNT(t.transaction_id)            AS trx_count,
                 COALESCE(SUM(t.total_amount), 0)   AS total_revenue
             FROM {$schema}.`transaction` t
-            JOIN movira_core.app_company ac ON ac.company_id = t.company_id
+            JOIN {$coreSchema}.app_company ac ON ac.company_id = t.company_id
             WHERE t.transaction_date BETWEEN ? AND ?
               AND t.company_id {$op} ?
             GROUP BY t.created_by, t.company_id, ac.company_name

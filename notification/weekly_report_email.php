@@ -8,9 +8,6 @@ require_once __DIR__ . '/../log.php';
 require_once __DIR__ . '/email.php';
 require_once __DIR__ . '/../dashboard/weekly_report_data.php';
 
-use Firebase\JWT\JWT;
-use Firebase\JWT\Key;
-
 // ── Formatting helpers ────────────────────────────────────────────────────────
 
 function wrFmtRp(float $n): string {
@@ -256,7 +253,7 @@ function sendWeeklyReportEmail($conn, $schema, string $to, string $recipientName
     return sendEmail($to, $subject, $html, $altBody);
 }
 
-// ── HTTP endpoint: POST /notification/weekly_report_email.php ─────────────────
+// ── Context detection ─────────────────────────────────────────────────────────
 
 $isCli  = php_sapi_name() === 'cli';
 $isHttp = !$isCli
@@ -267,46 +264,22 @@ if (!$isCli && !$isHttp) {
     return;
 }
 
-// ── Skip HTTP handling when included by another file ─────────────────────────
-$isCli  = php_sapi_name() === 'cli';
-$isHttp = !$isCli
-    && isset($_SERVER['SCRIPT_FILENAME'])
-    && basename($_SERVER['SCRIPT_FILENAME']) === basename(__FILE__);
+if ($isCli) {
+    return;
+}
 
-if ($isCli || (!$isCli && !$isHttp)) return;
-// ─────────────────────────────────────────────────────────────────────────────
-
+// ── HTTP endpoint ─────────────────────────────────────────────────────────────
 
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-    header("Access-Control-Allow-Origin: *");
-    header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
-    header("Access-Control-Allow-Headers: Origin, X-Requested-With, Content-Type, Accept, Authorization");
     http_response_code(200);
     exit();
 }
 
 if (!in_array($_SERVER['REQUEST_METHOD'], ['GET', 'POST'], true)) {
-    header('Content-Type: application/json');
-    http_response_code(405);
-    echo json_encode(['status_code' => 405, 'status_message' => 'Method Not Allowed. Use GET or POST.']);
-    exit;
+    jsonResponse(405, 'Method Not Allowed. Use GET or POST.');
 }
 
-$headers = getallheaders();
-if (!isset($headers['Authorization'])) {
-    http_response_code(401);
-    echo json_encode(['status_code' => 401, 'status_message' => 'Authorization header not found.']);
-    exit;
-}
-
-try {
-    $token   = str_replace('Bearer ', '', $headers['Authorization']);
-    $decoded = JWT::decode($token, new Key($_ENV['JWT_SECRET'], 'HS256'));
-} catch (Exception $e) {
-    http_response_code(401);
-    echo json_encode(['status_code' => 401, 'status_message' => 'Invalid or expired token.']);
-    exit;
-}
+$decoded = requireAuth();
 
 // ── GET: debug / preview ──────────────────────────────────────────────────────
 if ($_SERVER['REQUEST_METHOD'] === 'GET') {
@@ -319,24 +292,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
     $mode           = $_GET['mode']           ?? 'data'; // 'data' | 'preview'
 
     if ($mode === 'check') {
-        header('Content-Type: application/json');
-        $where = $company_id
-            ? "WHERE company_id = '" . $conn->real_escape_string($company_id) . "'"
-            : "WHERE 1=1";
-        $sql = "SELECT
-                    company_id,
-                    MIN(transaction_date) AS first_trx,
-                    MAX(transaction_date) AS last_trx,
-                    COUNT(*)              AS total_trx
-                FROM {$schema}.`transaction`
-                {$where}
-                GROUP BY company_id
-                ORDER BY last_trx DESC";
-        $res  = $conn->query($sql);
+        if ($company_id) {
+            $stmtCheck = $conn->prepare("SELECT company_id, MIN(transaction_date) AS first_trx, MAX(transaction_date) AS last_trx, COUNT(*) AS total_trx FROM {$schema}.`transaction` WHERE company_id = ? GROUP BY company_id ORDER BY last_trx DESC");
+            $stmtCheck->bind_param('s', $company_id);
+            $stmtCheck->execute();
+            $res = $stmtCheck->get_result();
+            $stmtCheck->close();
+        } else {
+            $stmtCheck = $conn->prepare("SELECT company_id, MIN(transaction_date) AS first_trx, MAX(transaction_date) AS last_trx, COUNT(*) AS total_trx FROM {$schema}.`transaction` GROUP BY company_id ORDER BY last_trx DESC");
+            $stmtCheck->execute();
+            $res = $stmtCheck->get_result();
+            $stmtCheck->close();
+        }
         $rows = [];
         while ($row = $res->fetch_assoc()) $rows[] = $row;
-        echo json_encode(['status_code' => 200, 'data' => $rows], JSON_PRETTY_PRINT);
-        exit;
+        jsonResponse(200, 'OK', $rows);
     }
 
     $data = buildWeeklyReportData($conn, $schema, $company_id, $start_date, $end_date);
@@ -355,10 +325,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
 $input = json_decode(file_get_contents('php://input'), true);
 
 if (json_last_error() !== JSON_ERROR_NONE || empty($input)) {
-    header('Content-Type: application/json');
-    http_response_code(400);
-    echo json_encode(['status_code' => 400, 'status_message' => 'Invalid JSON body.']);
-    exit;
+    jsonResponse(400, 'Invalid JSON body.');
 }
 
 $to             = $input['to']             ?? null;
@@ -368,10 +335,7 @@ $start_date     = $input['start_date']     ?? null;
 $end_date       = $input['end_date']       ?? null;
 
 if (empty($to)) {
-    header('Content-Type: application/json');
-    http_response_code(400);
-    echo json_encode(['status_code' => 400, 'status_message' => 'Missing required field: to.']);
-    exit;
+    jsonResponse(400, 'Missing required field: to.');
 }
 
 $conn   = DB::conn();
@@ -379,10 +343,8 @@ $schema = DB_SCHEMA;
 
 $result = sendWeeklyReportEmail($conn, $schema, $to, $recipient_name, $company_id, $start_date, $end_date);
 
-header('Content-Type: application/json');
 if ($result['success']) {
-    http_response_code(200);
-    echo json_encode(['status_code' => 200, 'status_message' => 'Weekly report email sent successfully.']);
+    jsonResponse(200, 'Weekly report email sent successfully.');
 } else {
     logApiError($conn, [
         'error_level'     => 'error',
@@ -393,8 +355,7 @@ if ($result['success']) {
         'user_identifier' => $decoded->username ?? null,
         'company_id'      => $company_id ?? null,
     ]);
-    http_response_code(500);
-    echo json_encode(['status_code' => 500, 'status_message' => 'Failed to send email.', 'error' => $result['error'] ?? null]);
+    jsonResponse(500, 'Failed to send email.');
 }
 
 exit;

@@ -1,2 +1,7 @@
 .env
 .history
+vendor/
+.DS_Store
+*.log
+storage/logs/
+*.jsonl

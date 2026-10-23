@@ -9,17 +9,9 @@ require_once '../log.php';
 header("Content-Type: application/json");
 
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-    header("Access-Control-Allow-Origin: *");
-    header("Vary: Origin");
-    header("Access-Control-Allow-Methods: GET, OPTIONS");
-    header("Access-Control-Allow-Headers: Authorization, Content-Type");
-    header("Access-Control-Allow-Credentials: true");
-    http_response_code(204);
+    http_response_code(200);
     exit();
 }
-
-use Firebase\JWT\JWT;
-use Firebase\JWT\Key;
 
 /**
  * Split [start, end] into Mon-Sat bonus weeks whose Saturday (payout day) falls
@@ -31,12 +23,12 @@ function getBonusWeekPeriods(string $start, string $end): array {
     $rangeEnd = new DateTime($end);
 
     $cursor = new DateTime($start);
-    $dow    = (int)$cursor->format('N'); // 1=Mon ... 7=Sun
-    $cursor->modify('-' . ($dow - 1) . ' days'); // back up to Monday on/before $start
+    $dow    = (int)$cursor->format('N');
+    $cursor->modify('-' . ($dow - 1) . ' days');
 
     while (true) {
         $weekStart = clone $cursor;
-        $weekEnd   = (clone $cursor)->modify('+5 days'); // Saturday
+        $weekEnd   = (clone $cursor)->modify('+5 days');
         if ($weekEnd > $rangeEnd) {
             break;
         }
@@ -54,49 +46,68 @@ function getBonusWeekPeriods(string $start, string $end): array {
 
 /**
  * Get all drivers' bonus achievement for a date range.
- *
- * Bonus weeks run Mon-Sat (paid every Saturday). A range spanning several weeks
- * (e.g. a full month) is NOT a single tier lookup against the range's item total -
- * each Mon-Sat week awards its own tier independently, and those are summed.
- * This also means the current-week default case (start=Monday, end=Saturday of
- * the same week) still behaves exactly as before: exactly one week is produced.
- *
- * - Drivers are fetched from movira_core.app_user by company_id + role,
- *   excluding inactive accounts (account_status suspended/disabled/rejected)
- * - Bonus tiers are fetched from bonus_schema, scoped to this company
- * - For each Mon-Sat week in range, each driver's tier is the highest qty <= that week's total_item
- * - current_bonus / next_target reflect the most recent week in the requested range
  */
 function getAllDriverBonus($conn, $schema, $company_id, $start = null, $end = null) {
+    $coreSchema = MOVIRA_CORE_SCHEMA;
     $start ??= date('Y-m-d', strtotime('monday this week'));
     $end   ??= date('Y-m-d', strtotime('saturday this week'));
 
-    $company_id_esc = mysqli_real_escape_string($conn, $company_id);
-
     // 1. Get all drivers for this company
-    $driverQuery = "SELECT username, first_name
-                    FROM movira_core.app_user
-                    WHERE company_id = '$company_id_esc'
+    $stmtDrivers = $conn->prepare("SELECT username, first_name
+                    FROM {$coreSchema}.app_user
+                    WHERE company_id = ?
                     AND app_role_id = 'app_role6902bc0cbb991'
                     AND account_status NOT IN ('suspended', 'disabled', 'rejected')
-                    ORDER BY username ASC";
+                    ORDER BY username ASC");
 
-    $driverResult = mysqli_query($conn, $driverQuery);
+    if (!$stmtDrivers) {
+        logApiError($conn, [
+            'error_level'     => 'error',
+            'http_status'     => 500,
+            'endpoint'        => '/abang/bonus.php',
+            'method'          => 'GET',
+            'error_message'   => 'Failed to prepare statement for drivers',
+            'user_identifier' => null,
+            'company_id'      => $company_id,
+        ]);
+        jsonResponse(500, 'Failed to prepare statement');
+    }
 
-    if (!$driverResult || mysqli_num_rows($driverResult) === 0) {
+    $stmtDrivers->bind_param('s', $company_id);
+    $stmtDrivers->execute();
+    $driverResult = $stmtDrivers->get_result();
+
+    if (!$driverResult || $driverResult->num_rows === 0) {
         jsonResponse(404, 'No drivers found for this company');
     }
 
-    $drivers = mysqli_fetch_all($driverResult, MYSQLI_ASSOC);
+    $drivers = $driverResult->fetch_all(MYSQLI_ASSOC);
+    $stmtDrivers->close();
 
     // 2. Get all active weekly bonus schemas for this company once (reused for every week)
-    $schemaResult = mysqli_query($conn,
-        "SELECT schema_id, schema_name, qty, bonus_nominal
+    $stmtSchema = $conn->prepare("SELECT schema_id, schema_name, qty, bonus_nominal
          FROM {$schema}.bonus_schema
-         WHERE company_id = '$company_id_esc' AND frequency = 'weekly' AND is_active = 1
-         ORDER BY qty ASC"
-    );
-    $bonus_schemas = $schemaResult ? mysqli_fetch_all($schemaResult, MYSQLI_ASSOC) : [];
+         WHERE company_id = ? AND frequency = 'weekly' AND is_active = 1
+         ORDER BY qty ASC");
+
+    if (!$stmtSchema) {
+        logApiError($conn, [
+            'error_level'     => 'error',
+            'http_status'     => 500,
+            'endpoint'        => '/abang/bonus.php',
+            'method'          => 'GET',
+            'error_message'   => 'Failed to prepare statement for bonus schemas',
+            'user_identifier' => null,
+            'company_id'      => $company_id,
+        ]);
+        jsonResponse(500, 'Failed to prepare statement');
+    }
+
+    $stmtSchema->bind_param('s', $company_id);
+    $stmtSchema->execute();
+    $schemaResult = $stmtSchema->get_result();
+    $bonus_schemas = $schemaResult ? $schemaResult->fetch_all(MYSQLI_ASSOC) : [];
+    $stmtSchema->close();
 
     // 3. Initialize per-driver accumulators
     $result = [];
@@ -115,19 +126,42 @@ function getAllDriverBonus($conn, $schema, $company_id, $start = null, $end = nu
     // 4. Walk each Mon-Sat week in the requested range and award that week's own tier
     $weekPeriods = getBonusWeekPeriods($start, $end);
 
+    // Prepare the weekly transaction query once (reused for each week)
+    // Cups only: add-ons (Topping / Add-on category) do not count, a package counts each menu inside it, and a
+    // bundle counts for the abang it was recorded for (created_for), not for the Owner / Mitra who typed it.
+    $stmtTrx = $conn->prepare("SELECT COALESCE(t.created_for, t.created_by) AS created_by, COALESCE(SUM(td.quantity), 0) AS total_item
+             FROM {$schema}.transaction t
+             JOIN {$schema}.transaction_detail td ON td.transaction_id = t.transaction_id
+             LEFT JOIN {$schema}.menu m ON m.menu_id = td.menu_id
+             LEFT JOIN {$schema}.category_menu c ON c.category_id = m.category_id
+             WHERE t.company_id = ?
+             AND DATE(t.transaction_date) BETWEEN ? AND ?
+             AND COALESCE(c.category_name, '') NOT REGEXP '^(topping|add-?on)$'
+             GROUP BY COALESCE(t.created_for, t.created_by)");
+
+    if (!$stmtTrx) {
+        logApiError($conn, [
+            'error_level'     => 'error',
+            'http_status'     => 500,
+            'endpoint'        => '/abang/bonus.php',
+            'method'          => 'GET',
+            'error_message'   => 'Failed to prepare statement for weekly transactions',
+            'user_identifier' => null,
+            'company_id'      => $company_id,
+        ]);
+        jsonResponse(500, 'Failed to prepare statement');
+    }
+
     foreach ($weekPeriods as $i => $week) {
         $weekStart = $week['start'];
         $weekEnd   = $week['end'];
 
-        $trxResult = mysqli_query($conn,
-            "SELECT created_by, COALESCE(SUM(total_item), 0) as total_item
-             FROM {$schema}.transaction
-             WHERE company_id = '$company_id_esc'
-             AND DATE(transaction_date) BETWEEN '$weekStart' AND '$weekEnd'
-             GROUP BY created_by"
-        );
+        $stmtTrx->bind_param('sss', $company_id, $weekStart, $weekEnd);
+        $stmtTrx->execute();
+        $trxResult = $stmtTrx->get_result();
+
         $weekItemsByDriver = [];
-        while ($row = mysqli_fetch_assoc($trxResult)) {
+        while ($row = $trxResult->fetch_assoc()) {
             $weekItemsByDriver[mb_strtolower($row['created_by'])] = (int)$row['total_item'];
         }
 
@@ -137,7 +171,6 @@ function getAllDriverBonus($conn, $schema, $company_id, $start = null, $end = nu
             $username        = $driver['username'];
             $week_total_item = $weekItemsByDriver[mb_strtolower($username)] ?? 0;
 
-            // Highest tier achieved THIS week (qty <= week_total_item)
             $week_bonus = null;
             foreach ($bonus_schemas as $s) {
                 if ((int)$s['qty'] <= $week_total_item) {
@@ -183,10 +216,10 @@ function getAllDriverBonus($conn, $schema, $company_id, $start = null, $end = nu
             }
         }
     }
+    $stmtTrx->close();
 
     $result = array_values($result);
 
-    // Sort by total bonus earned in the period descending (top performer first)
     usort($result, fn($a, $b) => $b['total_bonus_nominal'] - $a['total_bonus_nominal']);
 
     $driversWithBonus = count(array_filter($result, fn($d) => $d['total_bonus_nominal'] > 0));
@@ -204,31 +237,12 @@ function getAllDriverBonus($conn, $schema, $company_id, $start = null, $end = nu
     ]);
 }
 
-// ─────────────────────────────────────────────
-// ROUTING
-// ─────────────────────────────────────────────
-$method  = $_SERVER['REQUEST_METHOD'];
-$conn    = DB::conn();
-$headers = function_exists('getallheaders') ? getallheaders() : [];
-$authHeader = $headers['Authorization'] ?? $headers['authorization'] ?? ($_SERVER['HTTP_AUTHORIZATION'] ?? null);
-
-if (!$authHeader) {
-    logApiError($conn, [
-        'error_level'     => 'error',
-        'http_status'     => 401,
-        'endpoint'        => '/abang/bonus.php',
-        'method'          => $method,
-        'error_message'   => 'Authorization header not found',
-        'user_identifier' => null,
-        'company_id'      => null,
-    ]);
-    jsonResponse(401, 'Authorization header not found');
-}
+$method = $_SERVER['REQUEST_METHOD'];
 
 try {
-    $token   = preg_replace('/^Bearer\s+/i', '', $authHeader);
-    $decoded = JWT::decode($token, new Key($_ENV['JWT_SECRET'], 'HS256'));
+    $decoded = requireAuth();
 
+    $conn       = DB::conn();
     $schema     = DB_SCHEMA;
     $company_id = $decoded->company_id;
 
@@ -237,6 +251,7 @@ try {
             $start      = $_GET['start']      ?? null;
             $end        = $_GET['end']        ?? null;
             $company_id = $_GET['company_id'] ?? $company_id;
+            requireCompanyAccess($conn, $decoded, $company_id);
             getAllDriverBonus($conn, $schema, $company_id, $start, $end);
             break;
 
@@ -255,14 +270,15 @@ try {
     }
 
 } catch (Exception $e) {
+    $conn = DB::conn();
     logApiError($conn, [
         'error_level'     => 'error',
         'http_status'     => 500,
         'endpoint'        => '/abang/bonus.php',
         'method'          => $method ?? '',
         'error_message'   => $e->getMessage(),
-        'user_identifier' => $decoded->username ?? null,
-        'company_id'      => $decoded->company_id ?? null,
+        'user_identifier' => null,
+        'company_id'      => null,
     ]);
-    jsonResponse(500, 'Internal Server Error', ['error' => $e->getMessage()]);
+    jsonResponse(500, 'Internal Server Error');
 }

@@ -81,25 +81,24 @@ function createPOSTransacton($conn, $schema, $input, $username, $decoded){
         jsonResponse(400, 'Invalid payload. Require payments array with at least one item.');
     }
 
-    $company_id_esc = mysqli_real_escape_string($conn, $company_id);
-    $user_id_esc    = mysqli_real_escape_string($conn, $username);
-
     // 1) Find active session
-    $qSess = "SELECT session_id, started_at, cash_start FROM {$schema}.work_session WHERE company_id='$company_id_esc' AND user_id='$user_id_esc' AND status='active' ORDER BY started_at DESC LIMIT 1";
-
-    $rSess = mysqli_query($conn, $qSess);
-    if (!$rSess) {
+    $qSess = "SELECT session_id, started_at, cash_start FROM {$schema}.work_session WHERE company_id=? AND user_id=? AND status='active' ORDER BY started_at DESC LIMIT 1";
+    $stmtSess = $conn->prepare($qSess);
+    if (!$stmtSess) {
         logApiError($conn, [
             'error_level'   => 'error',
             'http_status'   => 500,
             'endpoint'      => '/pos/transaction.php',
             'method'        => 'POST',
-            'error_message' => mysqli_error($conn),
+            'error_message' => 'Prepare session query failed: ' . $conn->error,
             'user_identifier' => $decoded->username ?? null,
             'company_id'      => $decoded->company_id ?? null,
         ]);
-        jsonResponse(500, 'DB error', ['error' => mysqli_error($conn)]);
+        jsonResponse(500, 'Database error');
     }
+    $stmtSess->bind_param('ss', $company_id, $username);
+    $stmtSess->execute();
+    $rSess = $stmtSess->get_result();
 
     if (mysqli_num_rows($rSess) !== 1) {
         logApiError($conn, [
@@ -227,28 +226,27 @@ function createPOSTransacton($conn, $schema, $input, $username, $decoded){
         jsonResponse(400, "Total payment (cash + qris) must equal total_amount. total_paid=$total_paid, total_amount=$total_amount");
     }
 
-    // 4) Oversell guard: check qty_left for each menu in this session
-    $sid_esc = mysqli_real_escape_string($conn, $session_id);
-
     foreach ($prepared_items as $pi) {
-        $menu_id = mysqli_real_escape_string($conn, $pi['menu_id']);
+        $menu_id = $pi['menu_id'];
         $qtyReq  = (int)$pi['quantity'];
 
-        $qLeft = "SELECT MAX(wss.qty_start) AS qty_start, COALESCE(SUM(td.quantity), 0) AS qty_sold FROM {$schema}.work_session_stock wss LEFT JOIN {$schema}.`transaction` t ON t.session_id = wss.session_id LEFT JOIN {$schema}.transaction_detail td ON td.transaction_id = t.transaction_id AND td.menu_id = wss.menu_id WHERE wss.session_id = '$sid_esc' AND wss.menu_id = '$menu_id' GROUP BY wss.session_id, wss.menu_id LIMIT 1";
-
-        $rLeft = mysqli_query($conn, $qLeft);
-        if (!$rLeft) {
+        $qLeft = "SELECT MAX(wss.qty_start) AS qty_start, COALESCE(SUM(td.quantity), 0) AS qty_sold FROM {$schema}.work_session_stock wss LEFT JOIN {$schema}.`transaction` t ON t.session_id = wss.session_id LEFT JOIN {$schema}.transaction_detail td ON td.transaction_id = t.transaction_id AND td.menu_id = wss.menu_id WHERE wss.session_id = ? AND wss.menu_id = ? GROUP BY wss.session_id, wss.menu_id LIMIT 1";
+        $stmtLeft = $conn->prepare($qLeft);
+        if (!$stmtLeft) {
             logApiError($conn, [
                 'error_level'   => 'error',
                 'http_status'   => 500,
                 'endpoint'      => '/pos/transaction.php',
                 'method'        => 'POST',
-                'error_message' => mysqli_error($conn),
+                'error_message' => 'Prepare stock query failed: ' . $conn->error,
                 'user_identifier' => $decoded->username ?? null,
                 'company_id'      => $decoded->company_id ?? null,
             ]);
-            jsonResponse(500, 'DB error', ['error' => mysqli_error($conn)]);
+            jsonResponse(500, 'Database error');
         }
+        $stmtLeft->bind_param('ss', $session_id, $menu_id);
+        $stmtLeft->execute();
+        $rLeft = $stmtLeft->get_result();
 
         if (mysqli_num_rows($rLeft) !== 1) {
             logApiError($conn, [
@@ -444,57 +442,13 @@ function createPOSTransacton($conn, $schema, $input, $username, $decoded){
             'company_id'      => $decoded->company_id ?? null,
         ]);
 
-        jsonResponse(500, 'Failed to create POS transaction', ['error' => $e->getMessage()]);
+        jsonResponse(500, 'Failed to create POS transaction');
     }
 }
 
-use Firebase\JWT\JWT;
-use Firebase\JWT\Key;
-
-$headers = function_exists('getallheaders') ? getallheaders() : [];
-
-// Case-insensitive Authorization lookup (some servers return 'authorization')
-$authHeader = null;
-foreach ($headers as $k => $v) {
-    if (strtolower($k) === 'authorization') {
-        $authHeader = $v;
-        break;
-    }
-}
-
-// Fallbacks for different SAPIs / proxies
-if (!$authHeader) {
-    $authHeader = $_SERVER['HTTP_AUTHORIZATION'] ?? null;
-}
-if (!$authHeader) {
-    $authHeader = $_SERVER['REDIRECT_HTTP_AUTHORIZATION'] ?? null;
-}
-
-if (!$authHeader) {
-    logApiError($conn, [
-        'error_level'   => 'error',
-        'http_status'   => 401,
-        'endpoint'      => '/pos/transaction.php',
-        'method'        => 'POST',
-        'error_message' => 'Authorization header not found',
-        'user_identifier' => $decoded->username ?? null,
-        'company_id'      => $decoded->company_id ?? null,
-    ]);
-    jsonResponse(401, 'Authorization header not found');
-}
-
-if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-    header("Access-Control-Allow-Origin: *");
-    header("Access-Control-Allow-Methods: POST, GET, OPTIONS, PUT, DELETE");
-    header("Access-Control-Allow-Headers: Origin, X-Requested-With, Content-Type, Accept, Authorization");
-    http_response_code(200);
-    exit();
-}
+$decoded = requireAuth();
 
 try {
-    $token = preg_replace('/^Bearer\s+/i', '', trim($authHeader));
-    $decoded = JWT::decode($token, new Key($_ENV['JWT_SECRET'], 'HS256'));
-
     $conn = DB::conn();
     $schema = DB_SCHEMA;
 
@@ -503,10 +457,6 @@ try {
 
     switch($method){
         case 'POST':
-            if (stripos($_SERVER['CONTENT_TYPE'] ?? '', 'application/json') === false) {
-                // Not fatal, but helps clients send correct header
-                // continue anyway as we read raw body
-            }
             $input = json_decode(file_get_contents('php://input'), true);
             if (json_last_error() !== JSON_ERROR_NONE) {
                 jsonResponse(400, 'Invalid JSON body');
@@ -514,8 +464,6 @@ try {
             createPOSTransacton($conn, $schema, $input, $token_username, $decoded);
             break;
         default:
-            $conn = DB::conn();
-
             logApiError($conn, [
                 'error_level'   => 'error',
                 'http_status'   => 405,
@@ -529,9 +477,7 @@ try {
     }
 
 } catch (Exception $e){
-    $conn = DB::conn();
-    
-    logApiError($conn, [
+    logApiError($conn ?? null, [
         'error_level'   => 'error',
         'http_status'   => 500,
         'endpoint'      => '/pos/transaction.php',
@@ -540,6 +486,6 @@ try {
         'user_identifier' => $decoded->username ?? null,
         'company_id'      => $decoded->company_id ?? null,
     ]);
-    
-    jsonResponse(500, 'Internal Server Error', ['error' => $e->getMessage()]);
+
+    jsonResponse(500, 'Internal Server Error');
 }

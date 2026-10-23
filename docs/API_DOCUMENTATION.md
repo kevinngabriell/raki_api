@@ -174,7 +174,7 @@ Owner review of self-registered accounts.
 { "user_id": "user6abc", "action": "reject", "reason": "Data tidak lengkap" }
 ```
 
-- `approve` sets `account_status = 'active'`, `app_role_id` and `company_id`. The role must be Mitra/Franchise, Abang or Outlet (403 otherwise). `company_id` defaults to the Owner's own company, and any other company is refused (403).
+- `approve` sets `account_status = 'verified'`, `app_role_id` and `company_id`. The role must be Mitra/Franchise, Abang or Outlet (403 otherwise). `company_id` defaults to the Owner's own company, and any other company is refused (403).
 - `reject` sets `account_status = 'rejected'`. `reason` is echoed back but not stored.
 - 404 if the user isn't a RAKI account, 409 if it isn't pending anymore.
 
@@ -372,7 +372,7 @@ Retrieve the authenticated user's profile.
   "data": {
     "user_id": "usr_abc123",
     "username": "driver001",
-    "account_status": "active",
+    "account_status": "verified",
     "app_id": "06660e87-37e7-491b-92c3-c772130eb57c",
     "app_role_id": "driver",
     "company_id": "company6abc123",
@@ -470,7 +470,7 @@ Get company information.
 
 Get all menus or a single menu by ID.
 
-**Auth:** Bearer Token
+**Auth:** none for active menus (public, used by the landing page). `show_all=1` also returns inactive menus and needs the Owner's Bearer Token (403 for any other role).
 
 **Query Parameters:**
 
@@ -479,7 +479,10 @@ Get all menus or a single menu by ID.
 | `menu_id` | string | No | — | Return a single menu by ID |
 | `params` | string | No | — | Search keyword |
 | `page` | int | No | 1 | Page number |
-| `limit` | int | No | 50 | Items per page |
+| `limit` | int | No | 50 | Items per page (minimum 1) |
+| `show_all` | `1` | No | — | Include inactive menus (`is_active = 0`). Requires auth |
+
+Results are ordered by creation time. `image_url` / `thumb_url` are `null` when the menu has no photo. Photos uploaded from this release on live in the cloud bucket; older menus keep their previous URLs.
 
 **Response 200:**
 
@@ -517,7 +520,7 @@ Get all menus or a single menu by ID.
 
 Create a new menu item. Supports `multipart/form-data` for image upload.
 
-**Auth:** Bearer Token
+**Auth:** Bearer Token, **Owner role only** (`app_role6902bbb67a429`, configurable with `MENU_MANAGER_ROLE_IDS`). Other roles get 403. The same applies to PUT and DELETE. A request body over the server limit (16 MB) returns 413.
 
 **Request Body (`multipart/form-data` or `application/json`):**
 
@@ -525,8 +528,10 @@ Create a new menu item. Supports `multipart/form-data` for image upload.
 |-------|------|----------|-------------|
 | `menu_name` | string | Yes | Menu item name |
 | `category_id` | string | Yes | Category ID |
-| `price` | int | No | Price in IDR |
-| `image` | file | No | Menu image (JPEG/PNG) |
+| `price` | int | No | Price in IDR, must be ≥ 0 |
+| `image` | file | No | Menu photo, JPG / PNG / WEBP, max 10 MB and 4000px per side. A 600px WEBP thumbnail is generated automatically |
+
+`category_id` must exist (404 `Category not found` otherwise). Names are unique.
 
 **Response 201:**
 
@@ -535,7 +540,10 @@ Create a new menu item. Supports `multipart/form-data` for image upload.
   "status_code": 201,
   "status_message": "New menu has been created successfully",
   "data": {
-    "menu": "Kopi Susu"
+    "menu": "Kopi Susu",
+    "menu_id": "menu6abc123",
+    "image_url": "https://kencana.basic.box.cloudeka.id/xlabbucket-xox45z/menu/2026-10/ab12.jpg",
+    "thumb_url": "https://kencana.basic.box.cloudeka.id/xlabbucket-xox45z/menu/2026-10/ab12_thumb.webp"
   }
 }
 ```
@@ -544,7 +552,7 @@ Create a new menu item. Supports `multipart/form-data` for image upload.
 
 ### PUT /menu/menu.php
 
-Update an existing menu item.
+Update an existing menu item. To change the photo, send `multipart/form-data` with `POST /menu/menu.php` and include `menu_id` (PHP doesn't parse multipart on `PUT`).
 
 **Auth:** Bearer Token
 
@@ -556,7 +564,10 @@ Update an existing menu item.
 | `menu_name` | string | No | New name |
 | `category_id` | string | No | New category ID |
 | `price` | int | No | New price |
-| `image` | file | No | New image |
+| `is_active` | int | No | `1` active, `0` hidden from the POS and the public list |
+| `image` | file | No | New photo. The previous photo is removed from the bucket |
+
+`menu_name` is checked for duplicates, `category_id` must exist, and `updated_by` / `updated_at` are set.
 
 **Response 200:**
 
@@ -571,7 +582,7 @@ Update an existing menu item.
 
 ### DELETE /menu/menu.php
 
-**Auth:** Bearer Token | **Query Param:** `?menu_id=menu6abc123` | **Response 200**
+**Auth:** Bearer Token | **Query Param:** `?menu_id=menu6abc123` | **Response 200** · also removes the menu's photos from the bucket. To hide a menu but keep its history, set `is_active = 0` instead.
 
 ---
 
@@ -579,7 +590,7 @@ Update an existing menu item.
 
 Get all menu categories or a single category.
 
-**Auth:** Bearer Token
+**Auth:** Bearer Token. Reading is open to any logged-in role; `POST`, `PUT` and `DELETE` are **Owner only** (`app_role6902bbb67a429`), other roles get 403.
 
 **Query Parameters:**
 
@@ -606,8 +617,8 @@ Get all menu categories or a single category.
 ```
 
 **POST** — `{ "category_name": "Coffee" }` → 201  
-**PUT** — `{ "category_id": "cat001", "category_name": "Hot Coffee" }` → 200  
-**DELETE** — `?category_id=cat001` → 200
+**PUT** — `{ "category_id": "cat001", "category_name": "Hot Coffee" }` → 200. Names are trimmed and must be unique (400 otherwise); sets `updated_by` / `updated_at`.  
+**DELETE** — `?category_id=cat001` → 200. **409** `Can't delete this category: N menu(s) still use it…` while any menu (active or not) is in the category, and 409 while a promo still targets it. Move or delete those menus first.
 
 ---
 
@@ -615,7 +626,7 @@ Get all menu categories or a single category.
 
 Get all menu packages or a single package.
 
-**Auth:** Bearer Token
+**Auth:** Bearer Token. `POST`, `PUT` and `DELETE` are **Owner only** (`app_role6902bbb67a429`), other roles get 403. A body over the server limit (16 MB) returns 413.
 
 **Query Parameters:**
 
@@ -661,8 +672,8 @@ Get all menu packages or a single package.
 }
 ```
 
-**PUT** — `{ "package_id": "pkg001", "package_name": "...", "package_price": 0, "menu_ids": [] }` → 200  
-**DELETE** — `?package_id=pkg001` → 200
+**PUT** — `{ "package_id": "pkg001", "package_name": "...", "package_price": 0, "menu_ids": [] }` → 200. `package_name` must be unique and non-empty, `package_price` ≥ 0, `menu_ids` a non-empty list of active menus (400 / 404 with the offending id). With a new `image` the old photo is removed from the bucket.  
+**DELETE** — `?package_id=pkg001` → 200, and its photos are removed from the bucket. **409** `Can't delete this package: it appears in N sale(s)…` once the package has been sold, because sales history needs it.
 
 `image_url` / `thumb_url` are `null` when the package has no photo (same meaning as on menus).
 
@@ -730,18 +741,20 @@ Get all ingredients or a single ingredient.
 | `is_active` | bool | No | Active status |
 | `price` | int | Yes | Price per UOM |
 
-**PUT** — `{ "ingredient_id": "...", ...fields }` → 200  
-**DELETE** — `?ingredient_id=...` → 200
+**PUT** — `{ "ingredient_id": "...", ...fields }` → 200. Any of `ingredient_name`, `ingredient_category`, `uom`, `sku`, `price`, `is_active` (0/1). The name must be unique within the ingredient's company, the category and UOM must exist, `price` ≥ 0 (all 400).  
+**DELETE** — `?ingredient_id=...` → 200. **409** `Can't delete this ingredient: it is used in N supply order(s)`.
+
+**Auth:** reading is open to any logged-in role; `POST`, `PUT` and `DELETE` are **Owner only** (`app_role6902bbb67a429`), other roles get 403.
 
 ---
 
 ### /menu/ingredient_category.php
 
-Full CRUD for ingredient categories.
+Full CRUD for ingredient categories. Reading is open to any logged-in role; `POST`, `PUT` and `DELETE` are **Owner only** (`app_role6902bbb67a429`), other roles get 403.
 
 **POST** — `{ "category_name": "Dairy" }` → 201  
-**PUT** — `{ "category_id": "...", "category_name": "..." }` → 200  
-**DELETE** — `?category_id=...` → 200  
+**PUT** — `{ "category_id": "...", "category_name": "..." }` → 200. Names are trimmed and must be unique (400 otherwise).  
+**DELETE** — `?category_id=...` → 200. **409** `Can't delete this ingredient category: N ingredient(s) still use it…` while any ingredient is in it.  
 **GET** — `?category_id=...` or `?params=...&page=1&limit=10` → 200
 
 ---

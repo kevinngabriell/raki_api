@@ -7,6 +7,7 @@ require_once '../config.php';
 require_once '../log.php';
 
 function checkActiveDriverStocks($conn, $schema, $company_id){
+    $coreSchema = MOVIRA_CORE_SCHEMA;
     // company_id is optional for public endpoint; if provided, we filter.
     $whereCompany = '';
     if ($company_id !== null && $company_id !== '') {
@@ -14,7 +15,7 @@ function checkActiveDriverStocks($conn, $schema, $company_id){
         $whereCompany = " AND ws.company_id = '$company_id_esc' ";
     }
 
-    $q = "SELECT ws.session_id, MAX(ws.started_at) AS started_at, COALESCE(MAX(au.username), MAX(ws.user_id)) AS username, m.menu_id, MAX(m.menu_name) AS menu_name, MAX(cm.category_name) AS category_name, MAX(m.thumb_url) AS thumb_url, MAX(wss.qty_start) AS qty_start, COALESCE(SUM(td.quantity), 0) AS qty_sold FROM {$schema}.work_session ws LEFT JOIN movira_core.app_user au ON au.username = ws.user_id OR au.phone_number = ws.user_id OR au.user_id = ws.user_id JOIN {$schema}.work_session_stock wss ON wss.session_id = ws.session_id JOIN {$schema}.menu m ON m.menu_id = wss.menu_id LEFT JOIN {$schema}.category_menu cm ON cm.category_id = m.category_id LEFT JOIN {$schema}.`transaction` t ON t.session_id = ws.session_id LEFT JOIN {$schema}.transaction_detail td ON td.transaction_id = t.transaction_id AND td.menu_id = m.menu_id WHERE ws.status = 'active' $whereCompany GROUP BY ws.session_id, m.menu_id ORDER BY ws.started_at ASC, m.menu_name ASC";
+    $q = "SELECT ws.session_id, MAX(ws.started_at) AS started_at, COALESCE(MAX(au.username), MAX(ws.user_id)) AS username, m.menu_id, MAX(m.menu_name) AS menu_name, MAX(cm.category_name) AS category_name, MAX(m.thumb_url) AS thumb_url, MAX(wss.qty_start) AS qty_start, COALESCE(SUM(td.quantity), 0) AS qty_sold FROM {$schema}.work_session ws LEFT JOIN {$coreSchema}.app_user au ON au.username = ws.user_id OR au.phone_number = ws.user_id OR au.user_id = ws.user_id JOIN {$schema}.work_session_stock wss ON wss.session_id = ws.session_id JOIN {$schema}.menu m ON m.menu_id = wss.menu_id LEFT JOIN {$schema}.category_menu cm ON cm.category_id = m.category_id LEFT JOIN {$schema}.`transaction` t ON t.session_id = ws.session_id LEFT JOIN {$schema}.transaction_detail td ON td.transaction_id = t.transaction_id AND td.menu_id = m.menu_id WHERE ws.status = 'active' $whereCompany GROUP BY ws.session_id, m.menu_id ORDER BY ws.started_at ASC, m.menu_name ASC";
 
     $r = mysqli_query($conn, $q);
     if (!$r) {
@@ -27,7 +28,7 @@ function checkActiveDriverStocks($conn, $schema, $company_id){
             'user_identifier' => $username ?? null,
             'company_id'      => $decoded->company_id ?? null,
         ]);
-        jsonResponse(500, 'DB error', ['error' => mysqli_error($conn)]);
+        jsonResponse(500, 'Database error');
     }
 
     // Mask helper for public display (username is phone number)
@@ -71,9 +72,6 @@ function checkActiveDriverStocks($conn, $schema, $company_id){
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-    header("Access-Control-Allow-Origin: *");
-    header("Access-Control-Allow-Methods: POST, GET, OPTIONS, PUT, DELETE");
-    header("Access-Control-Allow-Headers: Origin, X-Requested-With, Content-Type, Accept, Authorization");
     http_response_code(200);
     exit();
 }
@@ -103,7 +101,7 @@ try {
         'user_identifier' => $username ?? null,
         'company_id'      => $decoded->company_id ?? null,
     ]);
-    jsonResponse(500, 'Internal Server Error', ['error' => $e->getMessage()]);
+    jsonResponse(500, 'Internal Server Error');
 }
 
 ?>

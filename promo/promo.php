@@ -6,8 +6,8 @@
 //   PUT    (Owner)               partial update
 //   DELETE (Owner)               remove
 //
-// Promos are per company and always scoped to the company in the JWT. Who may
-// write is PROMO_MANAGER_ROLES in engine.php. The rules themselves are evaluated
+// A promo is owned by the company that created it. Owner: any outlets (company_ids, empty = all); Mitra:
+// forced to their own outlet. GET lists what the caller manages. Who may write is PROMO_MANAGER_ROLES in engine.php. The rules themselves are evaluated
 // by the same engine that /promo/check.php and /transaction/index.php use.
 
 require_once '../connection/db.php';
@@ -64,13 +64,49 @@ function promoParseFields(array $input, bool $isCreate): array {
         $fields['promo_name'] = $name;
     }
 
-    if (array_key_exists('promo_type', $input) && $input['promo_type'] !== PROMO_TYPE_BUY_N_NOMINAL_OFF) {
-        jsonResponse(400, 'promo_type must be ' . PROMO_TYPE_BUY_N_NOMINAL_OFF);
+    if (array_key_exists('promo_type', $input)) {
+        if (!in_array($input['promo_type'], PROMO_TYPES, true)) {
+            jsonResponse(400, 'promo_type must be one of ' . implode(', ', PROMO_TYPES));
+        }
+        $fields['promo_type'] = $input['promo_type'];
+    } elseif ($isCreate) {
+        $fields['promo_type'] = PROMO_TYPE_BUY_N_NOMINAL_OFF;
+    }
+
+    foreach (['start_date', 'end_date'] as $dateField) {
+        if (!array_key_exists($dateField, $input)) continue;
+        if ($input[$dateField] === null || $input[$dateField] === '') {
+            $fields[$dateField] = null;
+            continue;
+        }
+        $d = DateTime::createFromFormat('Y-m-d', (string)$input[$dateField]);
+        if (!$d || $d->format('Y-m-d') !== $input[$dateField]) {
+            jsonResponse(400, "$dateField must be YYYY-MM-DD");
+        }
+        $fields[$dateField] = $input[$dateField];
+    }
+    if (!empty($fields['start_date']) && !empty($fields['end_date']) && $fields['start_date'] > $fields['end_date']) {
+        jsonResponse(400, 'start_date cannot be greater than end_date');
+    }
+
+    if (array_key_exists('is_archived', $input)) {
+        $arch = filter_var($input['is_archived'], FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
+        if ($arch === null) {
+            jsonResponse(400, 'is_archived must be 0 or 1');
+        }
+        $fields['is_archived'] = $arch ? 1 : 0;
+    }
+    if (array_key_exists('channels', $input)) {
+        $fields['channels'] = accessParseChannels($input['channels']);
     }
 
     foreach (PROMO_INT_FIELDS as $field => [$min, $nullable]) {
         if (!array_key_exists($field, $input)) {
             if ($isCreate && !$nullable) {
+                if ($field === 'buy_quantity' && ($input['promo_type'] ?? PROMO_TYPE_BUY_N_NOMINAL_OFF) !== PROMO_TYPE_BUY_N_NOMINAL_OFF) {
+                    $fields['buy_quantity'] = 1;
+                    continue;
+                }
                 jsonResponse(400, "$field is required");
             }
             continue;
@@ -87,6 +123,10 @@ function promoParseFields(array $input, bool $isCreate): array {
             jsonResponse(400, "$field must be an integer >= $min");
         }
         $fields[$field] = $value;
+    }
+
+    if (($fields['promo_type'] ?? $input['promo_type'] ?? null) === PROMO_TYPE_PERCENT_OFF && ($fields['discount_amount'] ?? 0) > 100) {
+        jsonResponse(400, 'discount_amount cannot be more than 100 for percent_off');
     }
 
     if (array_key_exists('is_active', $input)) {
@@ -178,7 +218,8 @@ function promoParseConditions(mysqli $conn, string $schema, array $input, string
 
 // The outlet types a promo can target = the role names of the RAKI app.
 function promoOutletTypes(mysqli $conn): array {
-    $stmt = $conn->prepare("SELECT role_name FROM movira_core.app_role WHERE app_id = ? ORDER BY role_name");
+    $coreSchema = MOVIRA_CORE_SCHEMA;
+    $stmt = $conn->prepare("SELECT role_name FROM {$coreSchema}.app_role WHERE app_id = ? ORDER BY role_name");
     $appId = PROMO_APP_ID;
     $stmt->bind_param('s', $appId);
     $stmt->execute();
@@ -222,6 +263,41 @@ function promoHydrate(mysqli $conn, string $schema, array $rows): array {
     }
     $stmt->close();
 
+    $stmt = $conn->prepare("SELECT promo_id, company_id FROM {$schema}.promo_company WHERE promo_id IN ($placeholders)");
+    $stmt->bind_param(str_repeat('s', count($ids)), ...$ids);
+    $stmt->execute();
+    $outlets = [];
+    foreach ($stmt->get_result() as $row) {
+        $outlets[$row['promo_id']][] = $row['company_id'];
+    }
+    $stmt->close();
+
+    $stmt = $conn->prepare("SELECT tp.promo_id, COUNT(*) AS used, COALESCE(SUM(tp.discount_amount),0) AS disc, COALESCE(SUM(t.total_amount),0) AS omzet
+        FROM {$schema}.transaction_promo tp LEFT JOIN {$schema}.transaction t ON t.transaction_id = tp.transaction_id
+        WHERE tp.promo_id IN ($placeholders) GROUP BY tp.promo_id");
+    $stmt->bind_param(str_repeat('s', count($ids)), ...$ids);
+    $stmt->execute();
+    $usage = [];
+    foreach ($stmt->get_result() as $row) {
+        $usage[$row['promo_id']] = $row;
+    }
+    $stmt->close();
+
+    $creators = array_values(array_unique(array_filter(array_column($rows, 'created_by'))));
+    $labels = [];
+    if ($creators) {
+        $core = MOVIRA_CORE_SCHEMA;
+        [$cin, $ctypes] = accessInList($creators);
+        $stmt = $conn->prepare("SELECT u.username, u.app_role_id, c.company_name FROM {$core}.app_user u LEFT JOIN {$core}.app_company c ON c.company_id = u.company_id WHERE u.username IN ($cin) AND u.app_id = ?");
+        $params = array_merge($creators, [ACCOUNT_RAKI_APP_ID]);
+        $stmt->bind_param($ctypes . 's', ...$params);
+        $stmt->execute();
+        foreach ($stmt->get_result() as $row) {
+            $labels[$row['username']] = $row['app_role_id'] === ACCESS_ROLE_MITRA ? 'Mitra · ' . ($row['company_name'] ?? '') : ($row['app_role_id'] === ACCESS_ROLE_OWNER ? 'Owner' : $row['username']);
+        }
+        $stmt->close();
+    }
+
     $out = [];
     foreach ($promos as $p) {
         $c = $p['conditions'];
@@ -238,6 +314,15 @@ function promoHydrate(mysqli $conn, string $schema, array $rows): array {
             'max_item_price'        => $p['max_item_price'],
             'min_eligible_subtotal' => $p['min_eligible_subtotal'],
             'is_active'             => $p['is_active'],
+            'is_archived'           => $p['is_archived'],
+            'start_date'            => $p['start_date'],
+            'end_date'              => $p['end_date'],
+            'channels'              => $p['channels'] ?: ['outlet', 'abang'],
+            'company_ids'           => $outlets[$p['promo_id']] ?? [],
+            'used_count'            => (int)($usage[$p['promo_id']]['used'] ?? 0),
+            'discount_total'        => (int)($usage[$p['promo_id']]['disc'] ?? 0),
+            'omzet_total'           => (int)($usage[$p['promo_id']]['omzet'] ?? 0),
+            'created_by_label'      => $labels[$p['created_by']] ?? $p['created_by'],
             'days_of_week'          => $c['day_of_week'],
             'category_ids'          => $c['category'],
             'menu_ids'              => $c['menu'],
@@ -252,9 +337,16 @@ function promoHydrate(mysqli $conn, string $schema, array $rows): array {
     return $out;
 }
 
-function promoFindOne(mysqli $conn, string $schema, string $promoId, string $companyId): ?array {
-    $stmt = $conn->prepare("SELECT * FROM {$schema}.promo WHERE promo_id = ? AND company_id = ?");
-    $stmt->bind_param('ss', $promoId, $companyId);
+// Companies whose promos the caller manages (Owner: all own outlets, Mitra: own).
+function promoVisibleCompanies(mysqli $conn, object $decoded): array {
+    return accessCompanyIds($conn, $decoded) ?: ['-'];
+}
+
+function promoFindOne(mysqli $conn, string $schema, string $promoId, array $companies): ?array {
+    [$in, $types] = accessInList($companies);
+    $stmt = $conn->prepare("SELECT * FROM {$schema}.promo WHERE promo_id = ? AND company_id IN ($in)");
+    $params = array_merge([$promoId], $companies);
+    $stmt->bind_param('s' . $types, ...$params);
     $stmt->execute();
     $row = $stmt->get_result()->fetch_assoc();
     $stmt->close();
@@ -273,12 +365,34 @@ function assertItemPriceRange(?int $min, ?int $max): void {
     }
 }
 
-function createPromo(mysqli $conn, string $schema, array $input, string $username, string $companyId): void {
+function promoReplaceOutlets(mysqli $conn, string $schema, string $promoId, array $companyIds): void {
+    $stmt = $conn->prepare("DELETE FROM {$schema}.promo_company WHERE promo_id = ?");
+    $stmt->bind_param('s', $promoId);
+    $stmt->execute();
+    $stmt->close();
+    $stmt = $conn->prepare("INSERT INTO {$schema}.promo_company (promo_id, company_id) VALUES (?, ?)");
+    foreach ($companyIds as $c) {
+        $stmt->bind_param('ss', $promoId, $c);
+        $stmt->execute();
+    }
+    $stmt->close();
+}
+
+function promoUsedCount(mysqli $conn, string $schema, string $promoId): int {
+    $stmt = $conn->prepare("SELECT COUNT(*) FROM {$schema}.transaction_promo WHERE promo_id = ?");
+    $stmt->bind_param('s', $promoId);
+    $stmt->execute();
+    $n = (int)$stmt->get_result()->fetch_row()[0];
+    $stmt->close();
+    return $n;
+}
+
+function createPromo(mysqli $conn, string $schema, array $input, string $username, string $companyId, object $decoded): void {
     $fields = promoParseFields($input, true);
     $conditions = promoParseConditions($conn, $schema, $input, $companyId);
     assertItemPriceRange($fields['min_item_price'] ?? null, $fields['max_item_price'] ?? null);
+    $outlets = accessParseCompanyIds($conn, $decoded, $input['company_ids'] ?? null);
 
-    $fields['promo_type'] = PROMO_TYPE_BUY_N_NOMINAL_OFF;
     $promoId = 'promo' . uniqid();
     $row = array_merge([
         'promo_id' => $promoId, 'company_id' => $companyId, 'max_applications' => null,
@@ -297,28 +411,34 @@ function createPromo(mysqli $conn, string $schema, array $input, string $usernam
         $stmt->execute();
         $stmt->close();
         promoInsertConditions($conn, $schema, $promoId, $conditions);
+        promoReplaceOutlets($conn, $schema, $promoId, $outlets);
         $conn->commit();
     } catch (Throwable $e) {
         $conn->rollback();
         throw $e;
     }
 
-    jsonResponse(201, 'Promo created successfully', promoFindOne($conn, $schema, $promoId, $companyId));
+    jsonResponse(201, 'Promo created successfully', promoFindOne($conn, $schema, $promoId, promoVisibleCompanies($conn, $decoded)));
 }
 
-function updatePromo(mysqli $conn, string $schema, array $input, string $username, string $companyId): void {
+function updatePromo(mysqli $conn, string $schema, array $input, string $username, string $companyId, object $decoded): void {
     $promoId = $input['promo_id'] ?? null;
     if (!is_string($promoId) || $promoId === '') {
         jsonResponse(400, 'promo_id is required');
     }
-    $existing = promoFindOne($conn, $schema, $promoId, $companyId);
+    $visible = promoVisibleCompanies($conn, $decoded);
+    $existing = promoFindOne($conn, $schema, $promoId, $visible);
     if (!$existing) {
         jsonResponse(404, 'Promo not found');
     }
+    if (accessIsMitra($decoded) && $existing['company_id'] !== $companyId) {
+        jsonResponse(403, 'Promo ini bukan milik outletmu');
+    }
 
     $fields = promoParseFields($input, false);
-    $conditions = promoParseConditions($conn, $schema, $input, $companyId);
-    if (!$fields && !$conditions) {
+    $conditions = promoParseConditions($conn, $schema, $input, $existing['company_id']);
+    $outlets = array_key_exists('company_ids', $input) ? accessParseCompanyIds($conn, $decoded, $input['company_ids']) : null;
+    if (!$fields && !$conditions && $outlets === null) {
         jsonResponse(400, 'No fields provided for update');
     }
     assertItemPriceRange(
@@ -328,8 +448,8 @@ function updatePromo(mysqli $conn, string $schema, array $input, string $usernam
 
     $fields['updated_by'] = $username;
     $assignments = array_map(fn($c) => "$c = ?", array_keys($fields));
-    $sql = "UPDATE {$schema}.promo SET " . implode(', ', $assignments) . ", updated_at = NOW() WHERE promo_id = ? AND company_id = ?";
-    $values = array_merge(array_values($fields), [$promoId, $companyId]);
+    $sql = "UPDATE {$schema}.promo SET " . implode(', ', $assignments) . ", updated_at = NOW() WHERE promo_id = ?";
+    $values = array_merge(array_values($fields), [$promoId]);
     $types = implode('', array_map(fn($v) => is_int($v) ? 'i' : 's', $values));
 
     $conn->begin_transaction();
@@ -347,42 +467,65 @@ function updatePromo(mysqli $conn, string $schema, array $input, string $usernam
             $del->close();
         }
         promoInsertConditions($conn, $schema, $promoId, $conditions);
+        if ($outlets !== null) {
+            promoReplaceOutlets($conn, $schema, $promoId, $outlets);
+        }
         $conn->commit();
     } catch (Throwable $e) {
         $conn->rollback();
         throw $e;
     }
 
-    jsonResponse(200, 'Promo updated successfully', promoFindOne($conn, $schema, $promoId, $companyId));
+    jsonResponse(200, 'Promo updated successfully', promoFindOne($conn, $schema, $promoId, $visible));
 }
 
-function deletePromo(mysqli $conn, string $schema, ?string $promoId, string $companyId): void {
+function deletePromo(mysqli $conn, string $schema, ?string $promoId, string $companyId, object $decoded): void {
     if (!$promoId) {
         jsonResponse(400, 'promo_id is required');
     }
-    $stmt = $conn->prepare("DELETE FROM {$schema}.promo WHERE promo_id = ? AND company_id = ?");
-    $stmt->bind_param('ss', $promoId, $companyId);
-    $stmt->execute();
-    $deleted = $stmt->affected_rows;
-    $stmt->close();
-
-    if ($deleted === 0) {
+    $existing = promoFindOne($conn, $schema, $promoId, promoVisibleCompanies($conn, $decoded));
+    if (!$existing) {
         jsonResponse(404, 'Promo not found');
+    }
+    if (accessIsMitra($decoded) && $existing['company_id'] !== $companyId) {
+        jsonResponse(403, 'Promo ini bukan milik outletmu');
+    }
+    if (promoUsedCount($conn, $schema, $promoId) > 0) {
+        jsonResponse(409, 'Promo sudah pernah dipakai. Arsipkan saja.', ['reason' => 'used']);
+    }
+
+    $conn->begin_transaction();
+    try {
+        foreach (['promo_condition', 'promo_company', 'promo'] as $table) {
+            $stmt = $conn->prepare("DELETE FROM {$schema}.$table WHERE promo_id = ?");
+            $stmt->bind_param('s', $promoId);
+            $stmt->execute();
+            $stmt->close();
+        }
+        $conn->commit();
+    } catch (Throwable $e) {
+        $conn->rollback();
+        throw $e;
     }
     jsonResponse(200, 'Promo deleted successfully');
 }
 
-function listPromos(mysqli $conn, string $schema, array $query, string $companyId): void {
+function listPromos(mysqli $conn, string $schema, array $query, array $companies): void {
     $page = max(1, (int)($query['page'] ?? 1));
-    $limit = min(100, max(1, (int)($query['limit'] ?? 10)));
+    $limit = pageLimit($query['limit'] ?? null);
     $offset = ($page - 1) * $limit;
 
-    $where = 'company_id = ?';
-    $params = [$companyId];
-    $types = 's';
+    [$in, $types] = accessInList($companies);
+    $where = "company_id IN ($in)";
+    $params = $companies;
     if (isset($query['is_active']) && $query['is_active'] !== '') {
         $where .= ' AND is_active = ?';
         $params[] = (int)(bool)filter_var($query['is_active'], FILTER_VALIDATE_BOOLEAN);
+        $types .= 'i';
+    }
+    if (isset($query['is_archived']) && $query['is_archived'] !== '') {
+        $where .= ' AND is_archived = ?';
+        $params[] = (int)(bool)filter_var($query['is_archived'], FILTER_VALIDATE_BOOLEAN);
         $types .= 'i';
     }
     if (!empty($query['search'])) {
@@ -414,7 +557,7 @@ function listPromos(mysqli $conn, string $schema, array $query, string $companyI
     ]);
 }
 
-$decoded = promoAuthenticate();
+$decoded = requireAuth();
 $conn = null;
 
 try {
@@ -431,14 +574,15 @@ try {
 
     switch ($method) {
         case 'GET':
+            $visible = promoVisibleCompanies($conn, $decoded);
             if (!empty($_GET['promo_id'])) {
-                $promo = promoFindOne($conn, $schema, $_GET['promo_id'], $companyId);
+                $promo = promoFindOne($conn, $schema, $_GET['promo_id'], $visible);
                 if (!$promo) {
                     jsonResponse(404, 'Promo not found');
                 }
                 jsonResponse(200, 'Promo detail retrieved successfully', $promo);
             }
-            listPromos($conn, $schema, $_GET, $companyId);
+            listPromos($conn, $schema, $_GET, $visible);
             break;
 
         case 'POST':
@@ -449,13 +593,13 @@ try {
                 jsonResponse(400, 'Invalid JSON body');
             }
             $method === 'POST'
-                ? createPromo($conn, $schema, $input, $username, $companyId)
-                : updatePromo($conn, $schema, $input, $username, $companyId);
+                ? createPromo($conn, $schema, $input, $username, $companyId, $decoded)
+                : updatePromo($conn, $schema, $input, $username, $companyId, $decoded);
             break;
 
         case 'DELETE':
             requirePromoManager($roleName);
-            deletePromo($conn, $schema, $_GET['promo_id'] ?? null, $companyId);
+            deletePromo($conn, $schema, $_GET['promo_id'] ?? null, $companyId, $decoded);
             break;
 
         default:
@@ -471,5 +615,5 @@ try {
         'user_identifier' => $decoded->username ?? null,
         'company_id'      => $decoded->company_id ?? null,
     ]);
-    jsonResponse(500, 'Internal Server Error', ['error' => $e->getMessage()]);
+    jsonResponse(500, 'Internal Server Error');
 }

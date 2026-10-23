@@ -6,59 +6,112 @@ require_once '../general.php';
 require_once '../config.php';
 require_once '../log.php';
 
-use Firebase\JWT\JWT;
-use Firebase\JWT\Key;
-
 function getPointsHistory($conn, $schema, $username, $company_id, array $params) {
-    $username   = mysqli_real_escape_string($conn, $username);
-    $company_id = mysqli_real_escape_string($conn, $company_id);
+    $coreSchema = MOVIRA_CORE_SCHEMA;
+    // 1. Resolve user_id
+    $stmtUser = $conn->prepare("SELECT user_id FROM {$coreSchema}.app_user WHERE username = ? LIMIT 1");
 
-    $userResult = mysqli_query($conn,
-        "SELECT user_id FROM movira_core.app_user
-         WHERE username = '$username' LIMIT 1"
-    );
+    if (!$stmtUser) {
+        logApiError($conn, [
+            'error_level'     => 'error',
+            'http_status'     => 500,
+            'endpoint'        => '/member/points-history.php',
+            'method'          => 'GET',
+            'error_message'   => 'Failed to prepare statement for user lookup',
+            'user_identifier' => $username,
+            'company_id'      => $company_id,
+        ]);
+        jsonResponse(500, 'Failed to prepare statement');
+    }
 
-    if (!$userResult || mysqli_num_rows($userResult) === 0) {
+    $stmtUser->bind_param('s', $username);
+    $stmtUser->execute();
+    $userResult = $stmtUser->get_result();
+
+    if (!$userResult || $userResult->num_rows === 0) {
         jsonResponse(404, 'User not found');
     }
 
-    $user_id = mysqli_fetch_assoc($userResult)['user_id'];
-    $user_id = mysqli_real_escape_string($conn, $user_id);
+    $user_id = $userResult->fetch_assoc()['user_id'];
+    $stmtUser->close();
 
+    // 2. Pagination
     $page   = isset($params['page'])  ? max(1, (int)$params['page'])  : 1;
-    $limit  = isset($params['limit']) ? min(100, max(1, (int)$params['limit'])) : 20;
+    $limit  = pageLimit($params['limit'] ?? null, 15);
     $offset = ($page - 1) * $limit;
+    $filterType = !empty($params['type']) ? $params['type'] : null;
 
-    $where = "WHERE user_id = '$user_id' AND company_id = '$company_id'";
-
-    // optional filter by type: earn | redeem | adjustment
-    if (!empty($params['type'])) {
-        $type    = mysqli_real_escape_string($conn, $params['type']);
-        $where  .= " AND type = '$type'";
+    // 3. Count query
+    $sqlCount = "SELECT COUNT(*) AS total FROM {$schema}.member_point_ledger WHERE user_id = ? AND company_id = ?";
+    $bindTypes = 'ss';
+    $bindVals = [$user_id, $company_id];
+    if ($filterType) {
+        $sqlCount .= " AND type = ?";
+        $bindTypes .= 's';
+        $bindVals[] = $filterType;
     }
 
-    $countResult = mysqli_query($conn,
-        "SELECT COUNT(*) AS total FROM {$schema}.member_point_ledger $where"
-    );
-    $total = (int) mysqli_fetch_assoc($countResult)['total'];
+    $stmtCount = $conn->prepare($sqlCount);
+    if (!$stmtCount) {
+        logApiError($conn, [
+            'error_level'     => 'error',
+            'http_status'     => 500,
+            'endpoint'        => '/member/points-history.php',
+            'method'          => 'GET',
+            'error_message'   => 'Failed to prepare statement for count',
+            'user_identifier' => $username,
+            'company_id'      => $company_id,
+        ]);
+        jsonResponse(500, 'Failed to prepare statement');
+    }
+    $stmtCount->bind_param($bindTypes, ...$bindVals);
+    $stmtCount->execute();
+    $total = (int) $stmtCount->get_result()->fetch_assoc()['total'];
+    $stmtCount->close();
 
-    $rows = mysqli_query($conn,
-        "SELECT ledger_id   AS id,
+    // 4. Data query
+    $sqlData = "SELECT ledger_id AS id,
                 notes       AS description,
                 points,
                 type,
                 created_at
          FROM {$schema}.member_point_ledger
-         $where
-         ORDER BY created_at DESC
-         LIMIT $limit OFFSET $offset"
-    );
+         WHERE user_id = ? AND company_id = ?";
+    $bindTypes2 = 'ss';
+    $bindVals2 = [$user_id, $company_id];
+    if ($filterType) {
+        $sqlData .= " AND type = ?";
+        $bindTypes2 .= 's';
+        $bindVals2[] = $filterType;
+    }
+    $sqlData .= " ORDER BY created_at DESC LIMIT ? OFFSET ?";
+    $bindTypes2 .= 'ii';
+    $bindVals2[] = $limit;
+    $bindVals2[] = $offset;
+
+    $stmtData = $conn->prepare($sqlData);
+    if (!$stmtData) {
+        logApiError($conn, [
+            'error_level'     => 'error',
+            'http_status'     => 500,
+            'endpoint'        => '/member/points-history.php',
+            'method'          => 'GET',
+            'error_message'   => 'Failed to prepare statement for data query',
+            'user_identifier' => $username,
+            'company_id'      => $company_id,
+        ]);
+        jsonResponse(500, 'Failed to prepare statement');
+    }
+    $stmtData->bind_param($bindTypes2, ...$bindVals2);
+    $stmtData->execute();
+    $dataResult = $stmtData->get_result();
 
     $data = [];
-    while ($row = mysqli_fetch_assoc($rows)) {
+    while ($row = $dataResult->fetch_assoc()) {
         $row['points'] = (int) $row['points'];
         $data[] = $row;
     }
+    $stmtData->close();
 
     jsonResponse(200, 'Points history', [
         'data' => $data,
@@ -71,24 +124,13 @@ function getPointsHistory($conn, $schema, $username, $company_id, array $params)
     ]);
 }
 
-$headers = getallheaders();
-if (!isset($headers['Authorization'])) {
-    $conn = DB::conn();
-    logApiError($conn, [
-        'error_level'     => 'error',
-        'http_status'     => 401,
-        'endpoint'        => '/member/points-history.php',
-        'method'          => '',
-        'error_message'   => 'Authorization header not found',
-        'user_identifier' => null,
-        'company_id'      => null,
-    ]);
-    jsonResponse(401, 'Authorization header not found');
+if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+    http_response_code(200);
+    exit();
 }
 
 try {
-    $token   = str_replace('Bearer ', '', $headers['Authorization']);
-    $decoded = JWT::decode($token, new Key($_ENV['JWT_SECRET'], 'HS256'));
+    $decoded = requireAuth();
 
     $conn   = DB::conn();
     $schema = DB_SCHEMA;
@@ -121,11 +163,11 @@ try {
         'endpoint'        => '/member/points-history.php',
         'method'          => '',
         'error_message'   => $e->getMessage(),
-        'user_identifier' => $decoded->username ?? null,
-        'company_id'      => $decoded->company_id ?? null,
+        'user_identifier' => null,
+        'company_id'      => null,
     ]);
 
-    jsonResponse(500, 'Internal Server Error', ['error' => $e->getMessage()]);
+    jsonResponse(500, 'Internal Server Error');
 }
 
 ?>

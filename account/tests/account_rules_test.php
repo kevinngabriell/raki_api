@@ -38,7 +38,11 @@ function valid(array $overrides = []): array {
 // --- account status ---
 check('pending blocked', accountStatusBlockMessage('pending'), 'Akun kamu masih menunggu persetujuan admin.');
 check('rejected blocked', accountStatusBlockMessage('Rejected'), 'Pendaftaran akun kamu ditolak. Hubungi admin RAKI.');
-check('active allowed', accountStatusBlockMessage('active'), null);
+check('disabled blocked as nonaktif', accountStatusBlockMessage('disabled'), 'Akun kamu nonaktif. Hubungi admin RAKI.');
+check('nonaktif detected', accountIsNonaktif('Inactive'), true);
+check('verified is not nonaktif', accountIsNonaktif('verified'), false);
+check('register rejects shared default password', isset(accountValidateRegistration(['username'=>'a.b','password'=>'RAKI12345','full_name'=>'A','phone_number'=>'6281234567890','email'=>'a@b.co'])['error']), true);
+check('verified allowed', accountStatusBlockMessage('verified'), null);
 check('NULL (existing users) allowed', accountStatusBlockMessage(null), null);
 check('unknown legacy value allowed', accountStatusBlockMessage('verified'), null);
 
@@ -74,6 +78,28 @@ check('bad email rejected', accountValidateRegistration(valid(['email' => 'adi@'
 check('other app rejected', accountValidateRegistration(valid(['app_id' => 'bizion']))['error'], 'App ID tidak valid.');
 check('non-array body rejected', isset(accountValidateRegistration(null)['error']), true);
 
+// --- profile update ---
+$me = ['username' => 'adi.raki', 'first_name' => 'Adi', 'email' => 'adi@email.com', 'phone_number' => '081234567890', 'language' => 'id'];
+$upd = fn(array $in) => accountValidateProfileUpdate($in, $me);
+
+check('first_name alone needs no password', $upd(['first_name' => ' Budi ']), ['changes' => ['first_name' => 'Budi'], 'needs_password' => false]);
+check('language alone needs no password', $upd(['language' => 'EN']), ['changes' => ['language' => 'en'], 'needs_password' => false]);
+check('username needs password', $upd(['username' => 'budi.raki'])['needs_password'], true);
+check('email needs password', $upd(['email' => 'budi@email.com'])['needs_password'], true);
+check('phone needs password', $upd(['phone_number' => '0812 9999 8888']), ['changes' => ['phone_number' => '6281299998888'], 'needs_password' => true]);
+check('same phone in another format is no change', $upd(['phone_number' => '+6281234567890'])['error'], 'Tidak ada perubahan untuk disimpan.');
+check('same values are no change', $upd(['username' => 'adi.raki', 'first_name' => 'Adi'])['error'], 'Tidak ada perubahan untuk disimpan.');
+check('unchanged sensitive field does not force password', $upd(['email' => 'adi@email.com', 'first_name' => 'Budi'])['needs_password'], false);
+check('empty body is no change', $upd([])['error'], 'Tidak ada perubahan untuk disimpan.');
+check('unknown fields ignored', $upd(['role' => 'owner', 'first_name' => 'Budi'])['changes'], ['first_name' => 'Budi']);
+check('uppercase username rejected', isset($upd(['username' => 'Budi'])['error']), true);
+check('bad email rejected', $upd(['email' => 'adi@'])['error'], 'Format email tidak valid.');
+check('bad phone rejected', isset($upd(['phone_number' => '123'])['error']), true);
+check('blank first_name rejected', $upd(['first_name' => '  '])['error'], 'Nama depan wajib diisi.');
+check('language outside id/en rejected', $upd(['language' => 'fr'])['error'], "Bahasa harus 'id' atau 'en'.");
+check('non-string first_name rejected', $upd(['first_name' => ['x']])['error'], 'Nama depan wajib diisi.');
+check('non-array body rejected', isset(accountValidateProfileUpdate(null, $me)['error']), true);
+
 // --- roles ---
 check('Outlet grantable', accountIsGrantableRole('Outlet'), true);
 check('Abang grantable', accountIsGrantableRole('Abang'), true);
@@ -86,6 +112,20 @@ check('Owner is manager', accountIsManagerRole('Owner'), true);
 check('Mitra is manager', accountIsManagerRole('Mitra'), true);
 check('Outlet is not manager', accountIsManagerRole('Outlet'), false);
 check('Abang is not manager', accountIsManagerRole('Abang'), false);
+
+// --- forgot password ---
+check('shared password blocked', accountIsBlockedPassword('raki12345'), true);
+check('shared password blocked, case and spaces', accountIsBlockedPassword('  RAKI12345 '), true);
+check('other password allowed', accountIsBlockedPassword('raki123456'), false);
+check('pending cannot reset', accountResetBlockReason('pending'), 'pending');
+check('rejected cannot reset', accountResetBlockReason('Rejected'), 'inactive');
+check('suspended cannot reset', accountResetBlockReason('suspended'), 'inactive');
+check('nonaktif cannot reset', accountResetBlockReason('nonaktif'), 'inactive');
+check('verified may reset', accountResetBlockReason('verified'), null);
+check('legacy NULL status may reset', accountResetBlockReason(null), null);
+check('mask 62 number', accountMaskPhone('6281234567890'), '6281••••••890');
+check('mask short number', accountMaskPhone('62812'), '•••••');
+check('mask ignores + and spaces', accountMaskPhone('+62 812 3456 7890'), '6281••••••890');
 
 echo $failures === 0 ? "OK: $checks checks passed\n" : "\n$failures of $checks checks FAILED\n";
 exit($failures === 0 ? 0 : 1);
