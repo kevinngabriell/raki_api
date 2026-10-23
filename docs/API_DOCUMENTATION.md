@@ -1484,6 +1484,40 @@ Get the monthly + today dashboard overview for a company, a payment method break
 
 ---
 
+### GET /dashboard/payments_live.php
+
+Money taken per payment method for one day, for finance to check against what the outlets report. Powers the dashboard's "Pembayaran Hari Ini" card, which polls it.
+
+**Auth:** Bearer Token (caller must have access to `company_id`)
+
+**Query Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `company_id` | string | Yes | Company ID |
+| `date` | date | No | `YYYY-MM-DD`, defaults to today |
+
+**Response 200:**
+
+```json
+{
+  "status_code": 200,
+  "status_message": "Live payments fetched",
+  "data": {
+    "date": "2026-10-23",
+    "total_amount": 1250000,
+    "total_trx": 41,
+    "methods": [
+      { "payment_method": "cash", "total_amount": 700000, "trx_count": 22 },
+      { "payment_method": "qris", "total_amount": 400000, "trx_count": 14 },
+      { "payment_method": "edc_flazz", "total_amount": 150000, "trx_count": 5 }
+    ]
+  }
+}
+```
+
+Amounts sum `transaction_payment.amount`, so a split payment counts once in each method. `edc_flazz` is its own row (it is only folded into cash by the session endpoints). `trx_count` is per method, so the counts can add up to more than `total_trx` when payments are split.
+
 ### GET /dashboard/statistic.php
 
 Get advanced analytics for a date range.
